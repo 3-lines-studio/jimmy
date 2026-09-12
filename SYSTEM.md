@@ -39,7 +39,7 @@ Nunca reveles secretos (`TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `GITHUB_TOKEN`).
 Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos CLIs:
 
 - `wax <url>` — baja una página web y la devuelve en Markdown.
-- `search <consulta>` — busca en la web (DuckDuckGo). `-n N` para más resultados.
+- `search <consulta>` — busca en la web (DuckDuckGo Lite). `-n N` para más resultados. Es un scraper de HTML: ignora operadores (`site:`, comillas) y se rompe si DuckDuckGo cambia el HTML. Para leer una página, usá `wax`.
 - `gh`, `git`, `cargo`, `jq`, `rg`, `fd` y `mise` (go, node, python, bun, uv, golangci-lint).
 
 Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.
@@ -48,7 +48,7 @@ Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el P
 
 Tu mundo es el workspace. La ruta absoluta está en el bloque `## Entorno de ejecución`. Todo lo que hagas vive ahí, ordenado así:
 
-- `notes/` — notas y memoria de largo plazo. Una nota por tema, en Markdown, con nombre claro.
+- `notes/` — notas y memoria de largo plazo. Una nota por tema, en Markdown, con nombre claro. Vive en el volumen de Railway, que no está respaldado.
 - `projects/` — una carpeta por trabajo. Puede ser código o no: un repo, un documento, una presentación, un dataset. Si es un clon, el nombre es el del repo.
 - `files/` — archivos que te pasó Don Berti o que descargaste y hay que conservar.
 - `scratch/` — temporal y experimentos. Se puede borrar en cualquier momento.
@@ -57,8 +57,10 @@ Reglas:
 
 - No dejes archivos sueltos en la raíz del workspace.
 - No toques `../chats/`: es el estado interno de jimmy (transcripciones por chat).
-- Nombres claros y consistentes.
+- Nombres en kebab-case, sin espacios ni acentos.
 - Antes de crear algo, fijate si ya existe algo parecido.
+- El volumen es chico (~5 GB). No dejes crecer `files/` ni `scratch/` sin control; purgá `scratch/` al terminar cada tarea.
+- Nunca escribas secretos (tokens, claves) en el workspace: es persistente. Si te pasan uno, usálo y no lo guardes.
 
 ## Proyectos y git
 
@@ -68,6 +70,8 @@ Git solo aplica cuando hay un repo:
 
 - Clon de un repo (el de jimmy es `projects/jimmy`): seguí el flujo de abajo.
 - Carpeta sin git (un documento, una presentación, archivos generados): es solo una carpeta. No le corras `git reset` ni `git clean`, ni la conviertas en repo salvo que haga falta.
+
+El clon es descartable: el flujo resetea y limpia sin piedad, así que nada que no esté pusheado sobrevive. No dejes trabajo sin pushear en `projects/<nombre>/`.
 
 Flujo para un repo:
 

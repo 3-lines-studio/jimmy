@@ -27,9 +27,24 @@ on line boundaries, with code fences closed and reopened across chunks.
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
+| `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 
 Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
 Telegram user who finds the bot gets shell access to the machine.
+
+## Workspace
+
+`JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.
+Jimmy creates it at startup with a fixed layout and `SYSTEM.md` tells the agent
+to keep to it:
+
+- `notes/` — long-lived notes and memory
+- `projects/` — code and repos, one directory per project
+- `files/` — documents to keep
+- `scratch/` — temporary, safe to delete
+
+`$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl` holds each chat's history. It is
+Jimmy's own state and the agent is told to leave it alone.
 
 ## Model, base URL, and system prompt
 

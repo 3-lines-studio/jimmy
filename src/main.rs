@@ -4,7 +4,7 @@ mod telegram;
 
 use agent::Agent;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use telegram::Telegram;
@@ -72,7 +72,9 @@ fn main() {
             "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
         );
     }
-    std::fs::create_dir_all(&config.workspace).ok();
+    for dir in ["", "notes", "projects", "files", "scratch"] {
+        std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
+    }
     let agent = Agent::new(
         config.base.clone(),
         config.model.clone(),

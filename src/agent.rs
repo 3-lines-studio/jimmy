@@ -102,12 +102,14 @@ impl Agent {
             match end.outcome {
                 Outcome::Done => {
                     save_entries(&dir, &entries)?;
-                    finalize(tg, chat_id, sink.take_status(), &answer(&end.messages));
+                    let reply = answer(&end.messages[history.len()..]);
+                    finalize(tg, chat_id, sink.take_status(), &reply);
                     return Ok(());
                 }
                 Outcome::MaxTurns => {
                     save_entries(&dir, &entries)?;
-                    finalize(tg, chat_id, sink.take_status(), &answer(&end.messages));
+                    let reply = answer(&end.messages[history.len()..]);
+                    finalize(tg, chat_id, sink.take_status(), &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {

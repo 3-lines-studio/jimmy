@@ -1,0 +1,11 @@
+[tools]
+go = "latest"
+node = "latest"
+python = "latest"
+bun = "latest"
+uv = "latest"
+github-cli = "latest"
+jq = "latest"
+ripgrep = "latest"
+fd = "latest"
+golangci-lint = "latest"

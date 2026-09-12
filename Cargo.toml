@@ -1,0 +1,10 @@
+[package]
+name = "jimmy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "c5d57f276d174f7505a8079d481bbb3c8f16cd16" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2"

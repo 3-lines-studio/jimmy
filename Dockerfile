@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.98-bookworm AS builder
-RUN rustup toolchain install nightly --profile minimal && rustup default nightly
+RUN rustup toolchain install nightly-2026-09-11 --profile minimal && rustup default nightly-2026-09-11
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock /build/jimmy/
@@ -32,7 +32,7 @@ RUN arch="$(dpkg --print-architecture)" \
 
 ENV RUSTUP_HOME=/root/.rustup
 ENV CARGO_HOME=/root/.cargo
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly -c rustfmt -c clippy
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly-2026-09-11 -c rustfmt -c clippy
 
 ENV MISE_DATA_DIR=/root/.local/share/mise
 ENV MISE_CONFIG_DIR=/root/.config/mise

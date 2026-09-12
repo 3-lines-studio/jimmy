@@ -9,6 +9,11 @@ One session per Telegram chat, stored as append-only JSONL under
 public URL and no webhook to configure. A live status message is edited while
 the agent works; the final answer is sent as a fresh message.
 
+Replies are converted from Markdown to Telegram HTML: bold and italic, inline
+code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
+rejects the markup, the message falls back to plain text. Long replies are split
+on line boundaries, with code fences closed and reopened across chunks.
+
 ## Config
 
 | Variable | Default | Meaning |

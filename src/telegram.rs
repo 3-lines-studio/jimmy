@@ -77,10 +77,23 @@ impl Telegram {
     }
 
     pub fn send_message(&self, chat_id: i64, text: &str) -> Result<i64, String> {
-        let value = self.call(
-            "sendMessage",
-            json!({ "chat_id": chat_id, "text": text, "disable_web_page_preview": true }),
-        )?;
+        self.send(chat_id, text, None)
+    }
+
+    pub fn send_html(&self, chat_id: i64, text: &str) -> Result<i64, String> {
+        self.send(chat_id, text, Some("HTML"))
+    }
+
+    fn send(&self, chat_id: i64, text: &str, parse_mode: Option<&str>) -> Result<i64, String> {
+        let mut body = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": true,
+        });
+        if let Some(mode) = parse_mode {
+            body["parse_mode"] = json!(mode);
+        }
+        let value = self.call("sendMessage", body)?;
         Ok(value
             .pointer("/result/message_id")
             .and_then(Value::as_i64)

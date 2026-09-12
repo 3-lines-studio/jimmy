@@ -1,4 +1,5 @@
 mod agent;
+mod markdown;
 mod telegram;
 
 use agent::Agent;

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 const STATUS_CHARS: usize = 3900;
 const MESSAGE_CHARS: usize = 4000;
+const MARKDOWN_CHARS: usize = 3500;
 const EDIT_EVERY: Duration = Duration::from_millis(1200);
 
 #[derive(Clone)]
@@ -103,13 +104,13 @@ impl Agent {
                 Outcome::Done => {
                     save_entries(&dir, &entries)?;
                     let reply = answer(&end.messages[history.len()..]);
-                    finalize(tg, chat_id, sink.take_status(), &reply);
+                    finalize_markdown(tg, chat_id, sink.take_status(), &reply);
                     return Ok(());
                 }
                 Outcome::MaxTurns => {
                     save_entries(&dir, &entries)?;
                     let reply = answer(&end.messages[history.len()..]);
-                    finalize(tg, chat_id, sink.take_status(), &reply);
+                    finalize_markdown(tg, chat_id, sink.take_status(), &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {
@@ -243,6 +244,18 @@ fn finalize(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
     }
     for chunk in chunks(text, MESSAGE_CHARS) {
         let _ = tg.send_message(chat_id, &chunk);
+    }
+}
+
+fn finalize_markdown(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
+    if let Some(id) = status {
+        tg.delete_message(chat_id, id);
+    }
+    for part in crate::markdown::split(text, MARKDOWN_CHARS) {
+        let html = crate::markdown::to_telegram_html(&part);
+        if tg.send_html(chat_id, &html).is_err() {
+            let _ = tg.send_message(chat_id, &part);
+        }
     }
 }
 

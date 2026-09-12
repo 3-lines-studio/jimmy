@@ -67,10 +67,39 @@ The image ships:
   `/root/.config/mise/config.toml`: `go`, `node`, `python`, `bun`, `uv`,
   `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`. The
   shims live in `/root/.local/share/mise/shims` and are on `PATH`.
+- Rust nightly with `cargo` (rustup, minimal profile) in `/root/.cargo`, so the
+  agent can build and test itself. `git` is configured to authenticate to
+  GitHub through `gh`, which reads `GITHUB_TOKEN`.
 
 Edit `mise.toml` or bump `WAX_VERSION` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
 `/data`, so they do not survive a Railway redeploy.
+
+## Self-improvement
+
+Jimmy can read and change its own source. The repo is private, so
+`GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
+fetches it without credentials. Shipping a change goes through a pull request:
+
+1. Clone the repo and create a branch.
+2. Edit, then run `cargo +nightly test`.
+3. `git push origin <branch>` — git authenticates through `gh`, which reads
+   `GITHUB_TOKEN`.
+4. `gh pr create`. You review and merge. Railway redeploys `main`.
+
+`GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
+**Pull requests: RW**. Without it, Jimmy cannot clone or push.
+
+Guardrails:
+
+- The runtime image ships Rust nightly, `cargo`, and `gh` so the agent can
+  build, test, and open PRs in place.
+- `git config --system` sets a `Jimmy` commit identity and the credential
+  helper; `GIT_TERMINAL_PROMPT=0` makes git fail instead of hanging.
+- Enable branch protection on `main` (require a pull request) so the flow is
+  enforced, not just requested by the prompt.
+- The agent runs with unsandboxed bash, so a leaked `GITHUB_TOKEN` is the blast
+  radius; scope it to this repo only.
 
 ## Build and run
 
@@ -120,7 +149,8 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ```
 src/main.rs       config, long-poll loop, per-chat locking
 src/telegram.rs   Bot API client (ureq)
-src/agent.rs      axe run, streaming status message, session persistence
+src/agent.rs      axe turn loop, runtime context, session persistence
+src/markdown.rs   Markdown to Telegram HTML, message splitting
 mise.toml         global mise tool set baked into the image
 SYSTEM.md         the assistant's system prompt, baked into the image
 ```

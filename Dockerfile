@@ -30,13 +30,23 @@ RUN arch="$(dpkg --print-architecture)" \
     && install -m 0755 "/tmp/$asset" /usr/local/bin/wax \
     && rm -f "/tmp/$asset" /tmp/SHA256SUMS
 
+ENV RUSTUP_HOME=/root/.rustup
+ENV CARGO_HOME=/root/.cargo
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly -c rustfmt -c clippy
+
 ENV MISE_DATA_DIR=/root/.local/share/mise
 ENV MISE_CONFIG_DIR=/root/.config/mise
 ENV MISE_YES=1
-ENV PATH=/root/.local/share/mise/shims:/root/.local/bin:$PATH
+ENV PATH=/root/.cargo/bin:/root/.local/share/mise/shims:/root/.local/bin:$PATH
 RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
+
+RUN git config --system user.name "Jimmy" \
+    && git config --system user.email "jimmy@3lines.studio" \
+    && git config --system credential."https://github.com".helper '!gh auth git-credential' \
+    && git config --system advice.detachedHead false
+ENV GIT_TERMINAL_PROMPT=0
 
 COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
 

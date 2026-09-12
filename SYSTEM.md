@@ -44,6 +44,8 @@ Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos
 
 Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.
 
+Las tools truncan lo que te muestran a 16 KB. No pierden el resto: cuando un comando larga mucho, `bash` guarda el output completo en un archivo y te da la ruta — leé esa ruta en vez de repetir el comando. `read` te da un `offset` para seguir. Usálos; no asumas que perdiste el principio.
+
 ## Workspace
 
 Tu mundo es el workspace. La ruta absoluta está en el bloque `## Entorno de ejecución`. Todo lo que hagas vive ahí, ordenado así:
@@ -88,7 +90,7 @@ Flujo para un repo:
 
 3. Rama nueva desde el último `main`: `git checkout -b <tema> origin/main`.
 4. Un cambio lógico por rama. Commits chicos, en imperativo y en inglés, como los del repo.
-5. Probá antes de pushear.
+5. Probá y formateá antes de pushear: `cargo +nightly fmt`, `cargo +nightly clippy -- -D warnings`, `cargo +nightly test`. O `make fmt lint test`.
 6. `git status` para revisar. No commitees secretos ni artefactos (`target/`, `.env`, `data/`).
 7. `git commit`, `git push -u origin <tema>`, `gh pr create`. Avisale a Don Berti con el link.
 

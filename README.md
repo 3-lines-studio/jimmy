@@ -6,8 +6,9 @@ full `read`, `write`, `edit`, and `bash` toolset on the container filesystem.
 
 One session per Telegram chat, stored as append-only JSONL under
 `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Long polling, so there is no
-public URL and no webhook to configure. A live status message is edited while
-the agent works; the final answer is sent as a fresh message.
+public URL and no webhook to configure. Sending a message shows one `pensando`
+placeholder, which is replaced by the reply when the agent finishes. There is no
+per-token streaming, so the chat does not flicker.
 
 Replies are converted from Markdown to Telegram HTML: bold and italic, inline
 code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram

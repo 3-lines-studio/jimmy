@@ -1,16 +1,13 @@
 use crate::telegram::Telegram;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, Entry};
-use axe::{Message, OpenAI, ToolCall, Usage};
+use axe::{Message, OpenAI};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-const STATUS_CHARS: usize = 3900;
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
-const EDIT_EVERY: Duration = Duration::from_millis(1200);
 
 #[derive(Clone)]
 pub struct Agent {
@@ -73,15 +70,7 @@ impl Agent {
         let cancel = Arc::new(AtomicBool::new(false));
 
         let status = tg.send_message(chat_id, "⚙️ pensando…").ok();
-        let mut sink = TgSink {
-            tg: tg.clone(),
-            chat_id,
-            status,
-            sent: "⚙️ pensando…".into(),
-            body: String::new(),
-            last_edit: Instant::now(),
-            threshold,
-        };
+        let mut sink = TgSink { threshold };
 
         let mut overflow_retried = false;
         loop {
@@ -104,18 +93,18 @@ impl Agent {
                 Outcome::Done => {
                     save_entries(&dir, &entries)?;
                     let reply = answer(&end.messages[history.len()..]);
-                    finalize_markdown(tg, chat_id, sink.take_status(), &reply);
+                    finalize_markdown(tg, chat_id, status, &reply);
                     return Ok(());
                 }
                 Outcome::MaxTurns => {
                     save_entries(&dir, &entries)?;
                     let reply = answer(&end.messages[history.len()..]);
-                    finalize_markdown(tg, chat_id, sink.take_status(), &reply);
+                    finalize_markdown(tg, chat_id, status, &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {
                     save_entries(&dir, &entries)?;
-                    finalize(tg, chat_id, sink.take_status(), "⚠️ interrumpido");
+                    finalize(tg, chat_id, status, "⚠️ interrumpido");
                     return Err("interrumpido".into());
                 }
                 Outcome::Compact => {
@@ -123,7 +112,7 @@ impl Agent {
                         Ok(history) => history,
                         Err(e) => {
                             save_entries(&dir, &entries)?;
-                            finalize(tg, chat_id, sink.take_status(), &format!("⚠️ {e}"));
+                            finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                             return Err(e);
                         }
                     };
@@ -135,14 +124,14 @@ impl Agent {
                             Ok(history) => history,
                             Err(e) => {
                                 save_entries(&dir, &entries)?;
-                                finalize(tg, chat_id, sink.take_status(), &format!("⚠️ {e}"));
+                                finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                                 return Err(e);
                             }
                         };
                         continue;
                     }
                     save_entries(&dir, &entries)?;
-                    finalize(tg, chat_id, sink.take_status(), &format!("⚠️ error: {e}"));
+                    finalize(tg, chat_id, status, &format!("⚠️ error: {e}"));
                     return Err(e);
                 }
             }
@@ -151,74 +140,14 @@ impl Agent {
 }
 
 struct TgSink {
-    tg: Telegram,
-    chat_id: i64,
-    status: Option<i64>,
-    sent: String,
-    body: String,
-    last_edit: Instant,
     threshold: Option<usize>,
 }
 
-impl TgSink {
-    fn flush(&mut self, force: bool) {
-        let text = clamp(self.body.trim_end(), STATUS_CHARS);
-        if text.is_empty() || text == self.sent {
-            return;
-        }
-        if !force && self.last_edit.elapsed() < EDIT_EVERY {
-            return;
-        }
-        if let Some(id) = self.status {
-            let _ = self.tg.edit_message(self.chat_id, id, &text);
-        } else {
-            self.status = self.tg.send_message(self.chat_id, &text).ok();
-        }
-        self.sent = text;
-        self.last_edit = Instant::now();
-    }
-
-    fn line(&mut self, text: &str) {
-        if !self.body.is_empty() && !self.body.ends_with('\n') {
-            self.body.push('\n');
-        }
-        self.body.push_str(text);
-    }
-
-    fn take_status(&mut self) -> Option<i64> {
-        self.status.take()
-    }
-}
-
 impl Sink for TgSink {
-    fn assistant_delta(&mut self, text: &str) {
-        self.body.push_str(text);
-        self.flush(false);
-    }
-
-    fn assistant_done(&mut self) {
-        self.flush(true);
-    }
-
-    fn tool_start(&mut self, call: &ToolCall) {
-        self.line(&format!("▸ {}", render_call(call)));
-        self.flush(false);
-    }
-
     fn should_compact(&mut self, input: usize, output: usize) -> bool {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
     }
-
-    fn tokens(&mut self, _input: usize, _output: usize, _cached_input: usize) {}
-
-    fn tool_result(&mut self, _call: &ToolCall) {}
-
-    fn tool_delta(&mut self, _call: &ToolCall, _text: &str) {}
-
-    fn assistant(&mut self, _turn: usize, _msg: &Message, _usage: Usage) {}
-
-    fn tool(&mut self, _turn: usize, _msg: &Message) {}
 }
 
 fn compact(
@@ -239,23 +168,46 @@ fn compact(
 }
 
 fn finalize(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
+    let mut parts = chunks(text, MESSAGE_CHARS).into_iter();
     if let Some(id) = status {
-        tg.delete_message(chat_id, id);
+        match parts.next() {
+            Some(first) => {
+                if tg.edit_message(chat_id, id, &first).is_err() {
+                    tg.delete_message(chat_id, id);
+                    let _ = tg.send_message(chat_id, &first);
+                }
+            }
+            None => tg.delete_message(chat_id, id),
+        }
     }
-    for chunk in chunks(text, MESSAGE_CHARS) {
-        let _ = tg.send_message(chat_id, &chunk);
+    for part in parts {
+        let _ = tg.send_message(chat_id, &part);
     }
 }
 
 fn finalize_markdown(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
+    let mut parts = crate::markdown::split(text, MARKDOWN_CHARS).into_iter();
     if let Some(id) = status {
-        tg.delete_message(chat_id, id);
-    }
-    for part in crate::markdown::split(text, MARKDOWN_CHARS) {
-        let html = crate::markdown::to_telegram_html(&part);
-        if tg.send_html(chat_id, &html).is_err() {
-            let _ = tg.send_message(chat_id, &part);
+        match parts.next() {
+            Some(first) => {
+                let html = crate::markdown::to_telegram_html(&first);
+                if tg.edit_html(chat_id, id, &html).is_err() {
+                    tg.delete_message(chat_id, id);
+                    send_markdown(tg, chat_id, &first);
+                }
+            }
+            None => tg.delete_message(chat_id, id),
         }
+    }
+    for part in parts {
+        send_markdown(tg, chat_id, &part);
+    }
+}
+
+fn send_markdown(tg: &Telegram, chat_id: i64, markdown: &str) {
+    let html = crate::markdown::to_telegram_html(markdown);
+    if tg.send_html(chat_id, &html).is_err() {
+        let _ = tg.send_message(chat_id, markdown);
     }
 }
 
@@ -293,32 +245,6 @@ fn save_entries(dir: &Path, entries: &[Entry]) -> Result<(), String> {
         out.push('\n');
     }
     axe::atomic_write(&dir.join("transcript.jsonl"), out.as_bytes()).map_err(|e| e.to_string())
-}
-
-fn render_call(call: &ToolCall) -> String {
-    #[derive(serde::Deserialize)]
-    struct Args {
-        path: Option<String>,
-        command: Option<String>,
-    }
-    if let Ok(args) = serde_json::from_str::<Args>(&call.arguments) {
-        if let Some(command) = args.command.filter(|c| !c.is_empty()) {
-            return format!("{}: {}", call.name, clamp(&command, 200));
-        }
-        if let Some(path) = args.path.filter(|p| !p.is_empty()) {
-            return format!("{}: {}", call.name, path);
-        }
-    }
-    call.name.clone()
-}
-
-fn clamp(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max).collect();
-    out.push('…');
-    out
 }
 
 fn chunks(s: &str, max: usize) -> Vec<String> {

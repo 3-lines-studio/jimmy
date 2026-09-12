@@ -101,16 +101,30 @@ impl Telegram {
     }
 
     pub fn edit_message(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), String> {
-        self.call(
-            "editMessageText",
-            json!({
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": text,
-                "disable_web_page_preview": true,
-            }),
-        )
-        .map(|_| ())
+        self.edit(chat_id, message_id, text, None)
+    }
+
+    pub fn edit_html(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), String> {
+        self.edit(chat_id, message_id, text, Some("HTML"))
+    }
+
+    fn edit(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        parse_mode: Option<&str>,
+    ) -> Result<(), String> {
+        let mut body = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "disable_web_page_preview": true,
+        });
+        if let Some(mode) = parse_mode {
+            body["parse_mode"] = json!(mode);
+        }
+        self.call("editMessageText", body).map(|_| ())
     }
 
     pub fn delete_message(&self, chat_id: i64, message_id: i64) {

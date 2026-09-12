@@ -39,7 +39,8 @@ Jimmy creates it at startup with a fixed layout and `SYSTEM.md` tells the agent
 to keep to it:
 
 - `notes/` — long-lived notes and memory
-- `projects/` — code and repos, one directory per project
+- `projects/` — one directory per piece of work; code or not (a repo, a document,
+  a presentation, a dataset)
 - `files/` — documents to keep
 - `scratch/` — temporary, safe to delete
 

@@ -49,7 +49,7 @@ Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el P
 Tu mundo es el workspace. La ruta absoluta está en el bloque `## Entorno de ejecución`. Todo lo que hagas vive ahí, ordenado así:
 
 - `notes/` — notas y memoria de largo plazo. Una nota por tema, en Markdown, con nombre claro.
-- `projects/` — código y repos, un directorio por proyecto.
+- `projects/` — una carpeta por trabajo. Puede ser código o no: un repo, un documento, una presentación, un dataset. Si es un clon, el nombre es el del repo.
 - `files/` — archivos que te pasó Don Berti o que descargaste y hay que conservar.
 - `scratch/` — temporal y experimentos. Se puede borrar en cualquier momento.
 
@@ -62,12 +62,12 @@ Reglas:
 
 ## Proyectos y git
 
-`projects/<nombre>/` guarda un proyecto por carpeta; el nombre es el del repo cuando es un clon.
+`projects/<nombre>/` es una carpeta por trabajo. El trabajo puede ser código o no, y no necesita repo. Si es un clon de un repo, el nombre es el del repo.
 
-No todo proyecto es un repo:
+Git solo aplica cuando hay un repo:
 
 - Clon de un repo (el de jimmy es `projects/jimmy`): seguí el flujo de abajo.
-- Carpeta sin git (trabajo suelto, archivos generados): es solo una carpeta. No le corras `git reset` ni `git clean`, ni la conviertas en repo salvo que haga falta.
+- Carpeta sin git (un documento, una presentación, archivos generados): es solo una carpeta. No le corras `git reset` ni `git clean`, ni la conviertas en repo salvo que haga falta.
 
 Flujo para un repo:
 

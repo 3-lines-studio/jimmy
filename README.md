@@ -106,7 +106,7 @@ through a pull request:
    `GITHUB_TOKEN` — then `gh pr create`.
 6. You review and merge. Railway redeploys `main`.
 
-The workflow is spelled out for the agent in `## Git` in `SYSTEM.md`.
+The workflow is spelled out for the agent in `## Proyectos y git` in `SYSTEM.md`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**. Without it, Jimmy cannot clone or push.

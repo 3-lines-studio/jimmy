@@ -52,6 +52,7 @@ COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY SYSTEM.md /root/.config/axe/SYSTEM.md
+COPY --chmod=0755 bin/search /usr/local/bin/search
 ENV WAX_NO_SANDBOX=1
 
 WORKDIR /data

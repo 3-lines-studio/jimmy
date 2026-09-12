@@ -102,7 +102,7 @@ through a pull request:
 2. Reset it to the latest `main`: `git fetch origin`, `git checkout main`,
    `git reset --hard origin/main`, `git clean -fd`.
 3. Branch from `origin/main`: `git checkout -b <topic> origin/main`.
-4. Edit, then run `cargo +nightly test`.
+4. Edit, then run `make fmt lint test` (`cargo +nightly fmt`, `clippy -- -D warnings`, `test`).
 5. `git push -u origin <topic>` — git authenticates through `gh`, which reads
    `GITHUB_TOKEN` — then `gh pr create`.
 6. You review and merge. Railway redeploys `main`.

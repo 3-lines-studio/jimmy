@@ -17,6 +17,7 @@ pub struct Agent {
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
+    context: String,
 }
 
 impl Agent {
@@ -28,6 +29,7 @@ impl Agent {
         root: PathBuf,
         workspace: String,
     ) -> Self {
+        let context = runtime_context(&model, &base, &root, &workspace);
         Self {
             base,
             model,
@@ -35,6 +37,7 @@ impl Agent {
             context_window,
             root,
             workspace,
+            context,
         }
     }
 
@@ -58,7 +61,11 @@ impl Agent {
         entries.push(Entry::Message { message: user });
 
         let tools = axe::tui::build_tools(&self.workspace);
-        let system = axe::system_prompt(&tools, &self.workspace);
+        let system = format!(
+            "{}\n\n{}Chat actual: {chat_id}\n",
+            axe::system_prompt(&tools, &self.workspace),
+            self.context
+        );
         let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
         let opts = RunOptions {
             model: &self.model,
@@ -148,6 +155,33 @@ impl Sink for TgSink {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
     }
+}
+
+fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str) -> String {
+    let mut out = String::from("## Entorno de ejecución\n");
+    out.push_str(&format!("- Modelo: {model} vía {base}\n"));
+    out.push_str(&format!("- Raíz persistente: {}\n", root.display()));
+    out.push_str(&format!("- Workspace: {workspace}\n"));
+    out.push_str(&format!(
+        "- Plataforma: {}/{}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    if let Some(sha) = env("RAILWAY_GIT_COMMIT_SHA").or_else(|| env("JIMMY_COMMIT_SHA")) {
+        let short: String = sha.chars().take(7).collect();
+        out.push_str(&format!("- Commit en ejecución: {short}\n"));
+    }
+    if env("RAILWAY_PROJECT_ID").is_some() {
+        out.push_str(&format!(
+            "- Corre en Railway desde un Dockerfile, con volumen persistente en {}\n",
+            root.display()
+        ));
+    }
+    out
+}
+
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
 fn compact(

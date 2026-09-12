@@ -94,13 +94,19 @@ Tools added at runtime with `mise use -g` land in the image filesystem, not on
 
 Jimmy can read and change its own source. The repo is private, so
 `GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
-fetches it without credentials. Shipping a change goes through a pull request:
+fetches it without credentials. Repos live in `projects/<name>/` and changes go
+through a pull request:
 
-1. Clone the repo and create a branch.
-2. Edit, then run `cargo +nightly test`.
-3. `git push origin <branch>` — git authenticates through `gh`, which reads
-   `GITHUB_TOKEN`.
-4. `gh pr create`. You review and merge. Railway redeploys `main`.
+1. Reuse the clone, or `git clone` into `projects/<name>`.
+2. Reset it to the latest `main`: `git fetch origin`, `git checkout main`,
+   `git reset --hard origin/main`, `git clean -fd`.
+3. Branch from `origin/main`: `git checkout -b <topic> origin/main`.
+4. Edit, then run `cargo +nightly test`.
+5. `git push -u origin <topic>` — git authenticates through `gh`, which reads
+   `GITHUB_TOKEN` — then `gh pr create`.
+6. You review and merge. Railway redeploys `main`.
+
+The workflow is spelled out for the agent in `## Git` in `SYSTEM.md`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**. Without it, Jimmy cannot clone or push.

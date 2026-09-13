@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".mkv"}
+MAX_BYTES = {
+    "sendPhoto": 10 * 1024 * 1024,
+    "sendVideo": 50 * 1024 * 1024,
+    "sendDocument": 50 * 1024 * 1024,
+}
+
+
+def method_for(path):
+    suffix = path.suffix.lower()
+    if suffix in PHOTO_SUFFIXES:
+        return "sendPhoto", "photo"
+    if suffix in VIDEO_SUFFIXES:
+        return "sendVideo", "video"
+    return "sendDocument", "document"
+
+
+def upload(token, method, field, path, chat, caption):
+    command = [
+        "curl",
+        "-sS",
+        f"https://api.telegram.org/bot{token}/{method}",
+        "-F",
+        f"chat_id={chat}",
+        "-F",
+        f"{field}=@{path}",
+    ]
+    if caption:
+        command += ["-F", f"caption={caption}"]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"send-media: curl failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit(f"send-media: bad response: {result.stdout.strip()[:200]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="send-media")
+    parser.add_argument("path")
+    parser.add_argument("--chat", required=True)
+    parser.add_argument("--caption")
+    args = parser.parse_args()
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise SystemExit("send-media: TELEGRAM_BOT_TOKEN is not set")
+
+    path = Path(args.path)
+    if not path.is_file():
+        raise SystemExit(f"send-media: no such file: {path}")
+
+    method, field = method_for(path)
+    size = path.stat().st_size
+    limit = MAX_BYTES[method]
+    if size > limit:
+        raise SystemExit(f"send-media: {size} bytes over the {limit} limit for {method}")
+
+    response = upload(token, method, field, path, args.chat, args.caption)
+    if not response.get("ok"):
+        raise SystemExit(f"send-media: telegram error: {response.get('description')}")
+
+    message_id = response.get("result", {}).get("message_id")
+    print(json.dumps({"ok": True, "method": method, "message_id": message_id}))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,7 @@
 use crate::telegram::Telegram;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
-use axe::{Message, OpenAI};
+use axe::{Image, Message, OpenAI};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -48,7 +48,13 @@ impl Agent {
         }
     }
 
-    pub fn respond(&self, tg: &Telegram, chat_id: i64, text: &str) -> Result<(), String> {
+    pub fn respond(
+        &self,
+        tg: &Telegram,
+        chat_id: i64,
+        text: &str,
+        images: Vec<Image>,
+    ) -> Result<(), String> {
         let dir = self.root.join("chats").join(chat_id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -62,7 +68,7 @@ impl Agent {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             reasoning: String::new(),
-            images: Vec::new(),
+            images,
         };
         history.push(user.clone());
         entries.push(Entry::Message { message: user });

@@ -122,10 +122,26 @@ fn main() {
                 );
                 continue;
             }
-            let Some(text) = message.text else {
-                continue;
-            };
             let chat_id = message.chat.id;
+            let text = message
+                .text
+                .clone()
+                .or_else(|| message.caption.clone())
+                .unwrap_or_default();
+            let file_id = message
+                .photo
+                .last()
+                .map(|photo| photo.file_id.clone())
+                .or_else(|| {
+                    message
+                        .document
+                        .as_ref()
+                        .filter(|document| document.mime_type.starts_with("image/"))
+                        .map(|document| document.file_id.clone())
+                });
+            if text.is_empty() && file_id.is_none() {
+                continue;
+            }
             let agent = agent.clone();
             let tg = tg.clone();
             std::thread::spawn(move || {
@@ -138,12 +154,36 @@ fn main() {
                     }
                     return;
                 }
-                if let Err(e) = agent.respond(&tg, chat_id, &text) {
+                let images = match file_id {
+                    Some(file_id) => match fetch_image(&tg, chat_id, &file_id) {
+                        Ok(image) => vec![image],
+                        Err(e) => {
+                            let _ = tg
+                                .send_message(chat_id, &format!("⚠️ no pude bajar la imagen: {e}"));
+                            return;
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                if let Err(e) = agent.respond(&tg, chat_id, &text, images) {
                     eprintln!("jimmy: chat {chat_id} falló: {e}");
                 }
             });
         }
     }
+}
+
+fn fetch_image(tg: &Telegram, chat_id: i64, file_id: &str) -> Result<axe::Image, String> {
+    let file_path = tg.get_file(file_id)?;
+    let data = tg.download(&file_path)?;
+    let ext = Path::new(&file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("jpg");
+    let name = format!("jimmy-image-{chat_id}-{}.{ext}", axe::session::now_ms());
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+    axe::image::attach(&path.display().to_string())
 }
 
 fn chat_lock(chat_id: i64) -> Arc<Mutex<()>> {

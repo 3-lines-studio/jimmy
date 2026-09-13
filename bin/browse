@@ -1,0 +1,318 @@
+#!/opt/browse-venv/bin/python
+import argparse
+import json
+import re
+import shutil
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
+
+CHROMIUM = "/usr/bin/chromium"
+STATE_DIR = Path("/data/state/browser")
+ARTIFACT_DIR = Path("/data/files/browse")
+TTL_DAYS = 7
+MAX_TEXT = 20000
+MAX_ELEMENTS = 150
+VIEWPORT = {"width": 1280, "height": 800}
+DEFAULT_TIMEOUT = 30000
+IDLE_WAIT = 5000
+
+CONTROLS_JS = """() => {
+  const sel = 'a[href], button, input, select, textarea, [role=button], [role=link]';
+  return [...document.querySelectorAll(sel)]
+    .filter(el => el.offsetParent !== null || el.tagName === 'INPUT')
+    .map(el => ({
+      tag: el.tagName.toLowerCase(),
+      type: el.getAttribute('type') || '',
+      id: el.id || '',
+      name: el.getAttribute('name') || '',
+      aria: el.getAttribute('aria-label') || '',
+      placeholder: el.getAttribute('placeholder') || '',
+      href: el.getAttribute('href') || '',
+      text: (el.innerText || el.value || '').trim().replace(/\\s+/g, ' ').slice(0, 80)
+    }));
+}"""
+
+
+def session_name(raw):
+    name = re.sub(r"[^A-Za-z0-9_-]", "", raw or "")
+    if not name:
+        raise SystemExit("browse: invalid session name")
+    return name
+
+
+def selector_for(el):
+    if el["id"]:
+        return f"#{el['id']}"
+    if el["name"]:
+        return f"{el['tag']}[name=\"{el['name']}\"]"
+    if el["tag"] == "a" and el["href"]:
+        return f"a[href=\"{el['href']}\"]"
+    if el["aria"]:
+        return f"[aria-label=\"{el['aria']}\"]"
+    if el["text"]:
+        return f"text={el['text']}"
+    return el["tag"]
+
+
+def describe(el):
+    return {
+        "selector": selector_for(el),
+        "tag": el["tag"],
+        "type": el["type"],
+        "name": el["name"],
+        "placeholder": el["placeholder"],
+        "text": el["text"],
+        "href": el["href"],
+    }
+
+
+def clip(text):
+    if len(text) <= MAX_TEXT:
+        return {"text": text, "truncated": False}
+    return {"text": text[:MAX_TEXT], "truncated": True}
+
+
+def run_artifact_dir(session, stamp):
+    path = ARTIFACT_DIR / session / stamp
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def purge_old():
+    if not ARTIFACT_DIR.is_dir():
+        return
+    cutoff = time.time() - TTL_DAYS * 86400
+    for session in ARTIFACT_DIR.iterdir():
+        if not session.is_dir():
+            continue
+        for run in session.iterdir():
+            try:
+                if run.stat().st_mtime < cutoff:
+                    shutil.rmtree(run)
+            except OSError:
+                continue
+        if not list(session.iterdir()):
+            shutil.rmtree(session, ignore_errors=True)
+
+
+def apply_step(page, step, artifacts, results):
+    action = step.get("action")
+    selector = step.get("selector")
+
+    if action == "goto":
+        page.goto(step["url"], wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
+        try:
+            page.wait_for_load_state("networkidle", timeout=IDLE_WAIT)
+        except PlaywrightError:
+            pass
+        return {"url": page.url, "title": page.title()}
+
+    if action == "click":
+        page.click(selector, timeout=DEFAULT_TIMEOUT)
+        return {"url": page.url}
+
+    if action == "fill":
+        page.fill(selector, step["value"], timeout=DEFAULT_TIMEOUT)
+        return {"value": step["value"]}
+
+    if action == "press":
+        if selector:
+            page.press(selector, step.get("key", "Enter"), timeout=DEFAULT_TIMEOUT)
+        else:
+            page.keyboard.press(step.get("key", "Enter"))
+        return {"key": step.get("key", "Enter"), "url": page.url}
+
+    if action == "select":
+        page.select_option(selector, step["value"], timeout=DEFAULT_TIMEOUT)
+        return {"value": step["value"]}
+
+    if action == "wait":
+        if selector:
+            page.wait_for_selector(selector, timeout=DEFAULT_TIMEOUT)
+        else:
+            page.wait_for_timeout(step.get("ms", 1000))
+        return {"waited": selector or step.get("ms", 1000)}
+
+    if action == "read":
+        locator = page.locator(selector) if selector else page.locator("body")
+        return clip(locator.inner_text(timeout=DEFAULT_TIMEOUT))
+
+    if action == "html":
+        raw = page.locator(selector).inner_html() if selector else page.content()
+        return clip(raw)
+
+    if action == "elements":
+        found = page.evaluate(CONTROLS_JS)
+        return {
+            "elements": [describe(el) for el in found[:MAX_ELEMENTS]],
+            "total": len(found),
+            "truncated": len(found) > MAX_ELEMENTS,
+        }
+
+    if action == "shot":
+        index = len([r for r in results if r["action"] == "shot"]) + 1
+        path = artifacts / f"shot-{index}.png"
+        page.screenshot(path=str(path), full_page=bool(step.get("full")))
+        return {"path": str(path)}
+
+    if action == "url":
+        return {"url": page.url}
+
+    raise SystemExit(f"browse: unknown action {action!r}")
+
+
+def execute(steps, session, record):
+    purge_old()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    artifacts = run_artifact_dir(session, stamp)
+    video_dir = artifacts / "video"
+    if record:
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    session_dir = STATE_DIR / session
+    session_dir.mkdir(parents=True, exist_ok=True)
+    storage = session_dir / "storage.json"
+    with sync_playwright() as driver:
+        browser = driver.chromium.launch(
+            executable_path=CHROMIUM,
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            viewport=VIEWPORT,
+            storage_state=str(storage) if storage.exists() else None,
+            record_video_dir=str(video_dir) if record else None,
+            record_video_size=VIEWPORT if record else None,
+        )
+        context.set_default_timeout(DEFAULT_TIMEOUT)
+        page = context.new_page()
+
+        failed = False
+        try:
+            for step in steps:
+                try:
+                    output = apply_step(page, step, artifacts, results)
+                    results.append({"action": step.get("action"), "ok": True, "result": output})
+                except PlaywrightError as error:
+                    results.append(
+                        {"action": step.get("action"), "ok": False, "error": str(error).splitlines()[0]}
+                    )
+                    failed = True
+                    break
+        finally:
+            url = page.url
+            context.storage_state(path=str(storage))
+            context.close()
+            browser.close()
+
+    if record:
+        for index, path in enumerate(sorted(video_dir.glob("*.webm")), 1):
+            path.rename(video_dir / f"video-{index}.webm")
+
+    videos = sorted(str(p) for p in video_dir.glob("*.webm")) if record else []
+    return {
+        "session": session,
+        "url": url,
+        "ok": not failed,
+        "steps": results,
+        "artifacts": sorted(str(p) for p in artifacts.glob("*.png")) + videos,
+    }
+
+
+def parse_steps(raw):
+    try:
+        steps = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"browse: steps are not valid JSON: {error}")
+    if not isinstance(steps, list) or not steps:
+        raise SystemExit("browse: steps must be a non-empty list")
+    for step in steps:
+        if not isinstance(step, dict) or "action" not in step:
+            raise SystemExit("browse: every step needs an action")
+    return steps
+
+
+def read_steps(source):
+    if source in (None, "-"):
+        return parse_steps(sys.stdin.read())
+    return parse_steps(Path(source).read_text(encoding="utf-8"))
+
+
+def list_files(session):
+    root = ARTIFACT_DIR / session
+    entries = []
+    if root.is_dir():
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                entries.append({"path": str(path), "bytes": path.stat().st_size})
+    return {"session": session, "files": entries}
+
+
+def list_sessions():
+    if not STATE_DIR.is_dir():
+        return {"sessions": []}
+    return {"sessions": sorted(p.name for p in STATE_DIR.iterdir() if p.is_dir())}
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="browse")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    goto = sub.add_parser("goto")
+    goto.add_argument("url")
+    goto.add_argument("--session", default="default")
+    goto.add_argument("--record", action="store_true")
+    goto.add_argument("--shot", action="store_true")
+
+    run = sub.add_parser("run")
+    run.add_argument("source", nargs="?")
+    run.add_argument("--session", default="default")
+    run.add_argument("--record", action="store_true")
+
+    files = sub.add_parser("files")
+    files.add_argument("--session", default="default")
+
+    sub.add_parser("sessions")
+
+    args = parser.parse_args()
+
+    if args.command == "sessions":
+        json.dump(list_sessions(), sys.stdout, ensure_ascii=False, indent=2)
+        print()
+        return
+
+    session = session_name(args.session)
+
+    if args.command == "files":
+        json.dump(list_files(session), sys.stdout, ensure_ascii=False, indent=2)
+        print()
+        return
+
+    if args.command == "goto":
+        steps = [{"action": "goto", "url": args.url}, {"action": "elements"}]
+        if args.shot:
+            steps.append({"action": "shot"})
+    else:
+        steps = read_steps(args.source)
+
+    try:
+        output = execute(steps, session, args.record)
+    except PlaywrightError as error:
+        json.dump({"session": session, "ok": False, "error": str(error).splitlines()[0]}, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+        sys.exit(1)
+
+    json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+    print()
+    if not output["ok"]:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

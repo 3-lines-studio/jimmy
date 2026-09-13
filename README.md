@@ -26,6 +26,13 @@ agent:
 
 Anything else, including unknown `/`-commands, goes to the agent.
 
+## Attachments
+
+Sending a photo, or an image sent as a file, attaches it to the prompt: the
+file is downloaded from Telegram and passed to the agent as an inline image, so
+the model can look at it. A caption becomes the prompt text; without a caption
+the image goes on its own. Non-image documents are ignored.
+
 ## Config
 
 | Variable | Default | Meaning |

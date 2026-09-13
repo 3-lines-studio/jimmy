@@ -1,5 +1,6 @@
 mod agent;
 mod markdown;
+mod schedule;
 mod telegram;
 
 use agent::Agent;
@@ -72,7 +73,7 @@ fn main() {
             "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
         );
     }
-    for dir in ["", "notes", "projects", "files", "scratch"] {
+    for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
     let agent = Agent::new(
@@ -84,6 +85,11 @@ fn main() {
         config.workspace.clone(),
     );
     let tg = Telegram::new(config.token.clone());
+    schedule::spawn(
+        tg.clone(),
+        agent.clone(),
+        PathBuf::from(config.workspace.clone()),
+    );
     eprintln!(
         "jimmy: iniciado (model={} base={} root={} workspace={})",
         config.model,

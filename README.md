@@ -33,6 +33,33 @@ file is downloaded from Telegram and passed to the agent as an inline image, so
 the model can look at it. A caption becomes the prompt text; without a caption
 the image goes on its own. Non-image documents are ignored.
 
+## Scheduled tasks
+
+`$JIMMY_WORKSPACE/state/schedule.toml` holds tasks the agent runs on a clock. A
+thread wakes every 60 seconds, re-reads the file, and runs whatever is due.
+Each run is a fresh agent run in a clean context — the system prompt and the
+task's `prompt`, nothing else — and the reply is sent to the task's chat. Runs
+are not written to the chat transcript.
+
+```toml
+[[task]]
+name = "morning-report"
+chat = 123456789
+at = "09:00"
+prompt = "Summarize what is still pending."
+```
+
+Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
+"HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
+Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is marked
+done in `state/schedule.state.json` after it fires; a daily task fires once per
+local date; an interval task fires once the interval has elapsed since its last
+run, so a restart catches up on a missed run. A task that fails reports the
+error to its chat, and each task is capped at 6 runs per hour.
+
+The file is meant to be edited by the agent: ask it to schedule something and it
+appends a block. The tick picks it up without a restart.
+
 ## Config
 
 | Variable | Default | Meaning |
@@ -45,6 +72,7 @@ the image goes on its own. Non-image documents are ignored.
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
+| `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 
 Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
@@ -61,6 +89,7 @@ to keep to it:
   a presentation, a dataset)
 - `files/` — documents to keep
 - `scratch/` — temporary, safe to delete
+- `state/` — the scheduler's task list and run state
 
 `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl` holds each chat's history. It is
 Jimmy's own state and the agent is told to leave it alone.
@@ -190,6 +219,7 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 src/main.rs       config, long-poll loop, per-chat locking
 src/telegram.rs   Bot API client (ureq)
 src/agent.rs      axe turn loop, runtime context, session persistence
+src/schedule.rs   scheduled tasks, clean-context runs
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 mise.toml         global mise tool set baked into the image
 SYSTEM.md         the assistant's system prompt, baked into the image

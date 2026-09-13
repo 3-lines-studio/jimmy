@@ -215,16 +215,21 @@ fn transcribe_voice(
     };
     let file_path = tg.get_file(file_id)?;
     let data = tg.download(&file_path)?;
-    let ext = Path::new(&file_path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("ogg");
+    let ext = audio_extension(&file_path);
     let name = format!("jimmy-voice-{chat_id}-{}.{ext}", axe::session::now_ms());
     let path = std::env::temp_dir().join(name);
     std::fs::write(&path, &data).map_err(|e| e.to_string())?;
     let result = audio::transcribe(&api_key, &path, duration);
     let _ = std::fs::remove_file(&path);
     result
+}
+
+fn audio_extension(file_path: &str) -> &str {
+    Path::new(file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| *ext != "oga")
+        .unwrap_or("ogg")
 }
 
 fn fetch_image(tg: &Telegram, chat_id: i64, file_id: &str) -> Result<axe::Image, String> {
@@ -256,4 +261,20 @@ fn clamp(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telegram_voice_extension_is_ogg_not_oga() {
+        assert_eq!(audio_extension("voice/file_12.oga"), "ogg");
+    }
+
+    #[test]
+    fn other_audio_extensions_pass_through() {
+        assert_eq!(audio_extension("audio/song.mp3"), "mp3");
+        assert_eq!(audio_extension("audio/no-extension"), "ogg");
+    }
 }

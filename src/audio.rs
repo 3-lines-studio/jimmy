@@ -32,10 +32,7 @@ pub fn transcribe(api_key: &str, path: &Path, duration: u64) -> Result<String, S
             &format!("multipart/form-data; boundary={boundary}"),
         )
         .send_bytes(&body)
-        .map_err(|e| match e {
-            ureq::Error::Status(401, _) => "la API key de Groq no sirve".into(),
-            other => format!("groq: {other}"),
-        })?;
+        .map_err(error_message)?;
 
     let raw = response.into_string().map_err(|e| e.to_string())?;
     let parsed: serde_json::Value =
@@ -51,6 +48,28 @@ pub fn transcribe(api_key: &str, path: &Path, duration: u64) -> Result<String, S
     }
 
     Ok(text.to_string())
+}
+
+fn error_message(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(code, response) => {
+            let body = response.into_string().unwrap_or_default();
+            let detail = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|json| {
+                    json.pointer("/error/message")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| body.trim().to_string());
+            if detail.is_empty() {
+                format!("groq http {code}")
+            } else {
+                format!("groq http {code}: {detail}")
+            }
+        }
+        other => format!("groq: {other}"),
+    }
 }
 
 fn nonce() -> u128 {

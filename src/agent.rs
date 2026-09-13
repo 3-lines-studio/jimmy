@@ -1,7 +1,7 @@
 use crate::telegram::Telegram;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
-use axe::{Message, OpenAI};
+use axe::{Image, Message, OpenAI};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -10,6 +10,7 @@ const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
 const OUTPUT_RESERVE: usize = 64 * 1024;
 const MEMORY_CHARS: usize = 8_000;
+const HELP: &str = "Comandos:\n/status — contexto usado y versión\n/clear — borrar el contexto de este chat\n/help — esto";
 const CONTEXT_OPTIONS: ContextOptions = ContextOptions {
     original_task: false,
     workspace_state: true,
@@ -47,7 +48,13 @@ impl Agent {
         }
     }
 
-    pub fn respond(&self, tg: &Telegram, chat_id: i64, text: &str) -> Result<(), String> {
+    pub fn respond(
+        &self,
+        tg: &Telegram,
+        chat_id: i64,
+        text: &str,
+        images: Vec<Image>,
+    ) -> Result<(), String> {
         let dir = self.root.join("chats").join(chat_id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -61,7 +68,7 @@ impl Agent {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             reasoning: String::new(),
-            images: Vec::new(),
+            images,
         };
         history.push(user.clone());
         entries.push(Entry::Message { message: user });
@@ -157,6 +164,51 @@ impl Agent {
                     return Err(e);
                 }
             }
+        }
+    }
+    pub fn command(&self, chat_id: i64, text: &str) -> Option<String> {
+        match text.split_whitespace().next()? {
+            "/start" | "/help" => Some(HELP.into()),
+            "/status" => Some(self.status(chat_id)),
+            "/clear" => Some(self.clear(chat_id)),
+            _ => None,
+        }
+    }
+
+    fn status(&self, chat_id: i64) -> String {
+        let dir = self.root.join("chats").join(chat_id.to_string());
+        let entries = load_entries(&dir);
+        let used = session::latest_context_tokens(&entries).unwrap_or(0);
+        let window = self.context_window.unwrap_or(0);
+        let percent = used.saturating_mul(100).checked_div(window).unwrap_or(0);
+        let commit = env("RAILWAY_GIT_COMMIT_SHA")
+            .or_else(|| env("JIMMY_COMMIT_SHA"))
+            .map(|sha| sha.chars().take(7).collect::<String>())
+            .unwrap_or_else(|| "?".into());
+        format!(
+            "📊 Estado\n\nModelo: {}\nContexto: {}K / {}K ({}%)\nCommit: {}\nWorkspace: {}",
+            self.model,
+            used / 1000,
+            window / 1000,
+            percent,
+            commit,
+            self.workspace
+        )
+    }
+
+    fn clear(&self, chat_id: i64) -> String {
+        let dir = self.root.join("chats").join(chat_id.to_string());
+        let path = dir.join("transcript.jsonl");
+        if !path.exists() {
+            return "🧹 no había nada que borrar".into();
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match std::fs::rename(&path, dir.join(format!("transcript.{stamp}.jsonl"))) {
+            Ok(()) => "🧹 contexto borrado".into(),
+            Err(e) => format!("⚠️ no pude borrar: {e}"),
         }
     }
 }

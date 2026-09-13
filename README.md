@@ -15,6 +15,24 @@ code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
 rejects the markup, the message falls back to plain text. Long replies are split
 on line boundaries, with code fences closed and reopened across chunks.
 
+## Commands
+
+Messages that start with a known command are handled before they reach the
+agent:
+
+- `/status` — context used vs. the window, model, commit, workspace.
+- `/clear` — archive this chat's transcript so the next message starts fresh.
+- `/help`, `/start` — list the commands.
+
+Anything else, including unknown `/`-commands, goes to the agent.
+
+## Attachments
+
+Sending a photo, or an image sent as a file, attaches it to the prompt: the
+file is downloaded from Telegram and passed to the agent as an inline image, so
+the model can look at it. A caption becomes the prompt text; without a caption
+the image goes on its own. Non-image documents are ignored.
+
 ## Config
 
 | Variable | Default | Meaning |

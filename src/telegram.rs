@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -19,6 +20,24 @@ pub struct Incoming {
     pub chat: Chat,
     pub from: Option<User>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub caption: Option<String>,
+    #[serde(default)]
+    pub photo: Vec<PhotoSize>,
+    #[serde(default)]
+    pub document: Option<Document>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Document {
+    pub file_id: String,
+    #[serde(default)]
+    pub mime_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +93,33 @@ impl Telegram {
         )?;
         let result = value.get("result").cloned().unwrap_or_else(|| json!([]));
         serde_json::from_value(result).map_err(|e| e.to_string())
+    }
+
+    pub fn get_file(&self, file_id: &str) -> Result<String, String> {
+        let value = self.call("getFile", json!({ "file_id": file_id }))?;
+        value
+            .pointer("/result/file_path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "telegram getFile: falta file_path".to_string())
+    }
+
+    pub fn download(&self, file_path: &str) -> Result<Vec<u8>, String> {
+        let url = format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            self.token, file_path
+        );
+        let response = self
+            .http
+            .get(&url)
+            .call()
+            .map_err(|e| format!("telegram file: {e}"))?;
+        let mut data = Vec::new();
+        response
+            .into_reader()
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        Ok(data)
     }
 
     pub fn send_message(&self, chat_id: i64, text: &str) -> Result<i64, String> {

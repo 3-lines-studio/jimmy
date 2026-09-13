@@ -37,7 +37,7 @@ def main():
         limit = int(args[1])
         args = args[2:]
     if not args:
-        sys.exit("uso: history [-n N] <transcript.jsonl> [consulta]")
+        sys.exit("uso: recall [-n N] <transcript.jsonl> [consulta]")
     path, query = args[0], " ".join(args[1:]).lower()
     found = [t for t in turns(path) if not query or query in t[1].lower()]
     for role, content in found[-limit:]:

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
+const OUTPUT_RESERVE: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct Agent {
@@ -73,7 +74,9 @@ impl Agent {
             tools: &tools,
             max_turns: usize::MAX,
         };
-        let threshold = self.context_window.map(|w| w.saturating_sub(16384));
+        let threshold = self
+            .context_window
+            .map(|w| w.saturating_sub(OUTPUT_RESERVE));
         let cancel = Arc::new(AtomicBool::new(false));
 
         let status = tg.send_message(chat_id, "⚙️ pensando…").ok();

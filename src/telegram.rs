@@ -25,7 +25,16 @@ pub struct Incoming {
     #[serde(default)]
     pub photo: Vec<PhotoSize>,
     #[serde(default)]
+    pub voice: Option<Voice>,
+    #[serde(default)]
     pub document: Option<Document>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Voice {
+    pub file_id: String,
+    #[serde(default)]
+    pub duration: u64,
 }
 
 #[derive(Debug, Deserialize)]

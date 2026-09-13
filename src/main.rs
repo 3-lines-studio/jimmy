@@ -132,6 +132,12 @@ fn main() {
                 let lock = chat_lock(chat_id);
                 let _guard = lock.lock().unwrap();
                 eprintln!("jimmy: chat {chat_id} -> {}", clamp(&text, 80));
+                if let Some(reply) = agent.command(chat_id, &text) {
+                    if let Err(e) = tg.send_message(chat_id, &reply) {
+                        eprintln!("jimmy: chat {chat_id} falló: {e}");
+                    }
+                    return;
+                }
                 if let Err(e) = agent.respond(&tg, chat_id, &text) {
                     eprintln!("jimmy: chat {chat_id} falló: {e}");
                 }

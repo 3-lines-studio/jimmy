@@ -15,6 +15,17 @@ code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
 rejects the markup, the message falls back to plain text. Long replies are split
 on line boundaries, with code fences closed and reopened across chunks.
 
+## Commands
+
+Messages that start with a known command are handled before they reach the
+agent:
+
+- `/status` — context used vs. the window, model, commit, workspace.
+- `/clear` — archive this chat's transcript so the next message starts fresh.
+- `/help`, `/start` — list the commands.
+
+Anything else, including unknown `/`-commands, goes to the agent.
+
 ## Config
 
 | Variable | Default | Meaning |

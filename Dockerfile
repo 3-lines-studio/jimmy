@@ -43,6 +43,11 @@ RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
 
+RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
+    && uv venv "$VENV" \
+    && uv pip install --python "$VENV/bin/python" playwright \
+    && "$VENV/bin/playwright" install ffmpeg
+
 RUN git config --system user.name "Jimmy" \
     && git config --system user.email "jimmy@3lines.studio" \
     && git config --system credential."https://github.com".helper '!gh auth git-credential' \
@@ -55,6 +60,7 @@ ENV XDG_CONFIG_HOME=/root/.config
 COPY SYSTEM.md /root/.config/axe/SYSTEM.md
 COPY --chmod=0755 bin/search /usr/local/bin/search
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
+COPY --chmod=0755 bin/browse /usr/local/bin/browse
 ENV WAX_NO_SANDBOX=1
 
 WORKDIR /data

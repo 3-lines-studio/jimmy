@@ -41,6 +41,9 @@ Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos
 - `wax <url>` — baja una página web y la devuelve en Markdown.
 - `search <consulta>` — busca en la web (DuckDuckGo Lite). `-n N` para más resultados. Es un scraper de HTML: ignora operadores (`site:`, comillas) y se rompe si DuckDuckGo cambia el HTML. Para leer una página, usá `wax`.
 - `recall <transcript.jsonl> [consulta]` — busca en el historial de este chat. `-n N` para más resultados. Es para cuando necesitás algo viejo que ya salió de tu contexto.
+- `browse goto <url>` — abre la página con un Chromium de verdad, así que ejecuta JavaScript, y devuelve el texto y los controles con un selector usable. `--session NOMBRE` reusa las cookies de esa sesión. `--shot` guarda una captura PNG, y la mirás con `read`.
+- `browse run <archivo|->` — corre una secuencia de pasos en un solo navegador, que es lo que hace falta cuando una acción depende de la anterior. Los pasos son una lista JSON: `[{"action":"goto","url":"..."},{"action":"fill","selector":"#user","value":"pepe"},{"action":"click","selector":"#go"},{"action":"read"}]`. Acciones: `goto`, `click`, `fill`, `press`, `select`, `wait`, `read`, `html`, `elements`, `shot`, `url`. Con `--record` graba un video de la corrida. Logueate una vez y esa sesión queda logueada: las cookies viven en `/data/state/browser/<sesión>/`.
+- `browse files --session NOMBRE` — lista las capturas y videos de la sesión. `browse sessions` lista las sesiones. Los artefactos quedan en `/data/files/browse/<sesión>/` y se borran solos a los 7 días.
 - `gh`, `git`, `cargo`, `jq`, `rg`, `fd` y `mise` (go, node, python, bun, uv, golangci-lint).
 
 Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.

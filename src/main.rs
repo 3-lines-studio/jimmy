@@ -1,4 +1,5 @@
 mod agent;
+mod audio;
 mod markdown;
 mod schedule;
 mod telegram;
@@ -13,6 +14,7 @@ use telegram::Telegram;
 struct Config {
     token: String,
     api_key: String,
+    transcribe_key: Option<String>,
     base: String,
     model: String,
     context_window: Option<usize>,
@@ -42,6 +44,7 @@ impl Config {
         Ok(Self {
             token,
             api_key,
+            transcribe_key: env("TRANSCRIBE_API_KEY"),
             base: env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
             model: env("AXE_MODEL").unwrap_or_else(|| "deepseek-flash".into()),
             context_window: Some(
@@ -145,14 +148,35 @@ fn main() {
                         .filter(|document| document.mime_type.starts_with("image/"))
                         .map(|document| document.file_id.clone())
                 });
-            if text.is_empty() && file_id.is_none() {
+            let voice = message
+                .voice
+                .as_ref()
+                .map(|voice| (voice.file_id.clone(), voice.duration));
+            if text.is_empty() && file_id.is_none() && voice.is_none() {
                 continue;
             }
             let agent = agent.clone();
             let tg = tg.clone();
+            let transcribe_key = config.transcribe_key.clone();
             std::thread::spawn(move || {
                 let lock = chat_lock(chat_id);
                 let _guard = lock.lock().unwrap();
+                let mut text = text;
+                if let Some((file_id, duration)) = voice {
+                    match transcribe_voice(&tg, chat_id, &file_id, duration, transcribe_key) {
+                        Ok(transcript) => {
+                            let _ = tg.send_message(chat_id, &format!("🎤 {transcript}"));
+                            text = transcript;
+                        }
+                        Err(e) => {
+                            let _ = tg.send_message(
+                                chat_id,
+                                &format!("⚠️ no pude transcribir el audio: {e}"),
+                            );
+                            return;
+                        }
+                    }
+                }
                 eprintln!("jimmy: chat {chat_id} -> {}", clamp(&text, 80));
                 if let Some(reply) = agent.command(chat_id, &text) {
                     if let Err(e) = tg.send_message(chat_id, &reply) {
@@ -177,6 +201,30 @@ fn main() {
             });
         }
     }
+}
+
+fn transcribe_voice(
+    tg: &Telegram,
+    chat_id: i64,
+    file_id: &str,
+    duration: u64,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let Some(api_key) = api_key else {
+        return Err("falta TRANSCRIBE_API_KEY".into());
+    };
+    let file_path = tg.get_file(file_id)?;
+    let data = tg.download(&file_path)?;
+    let ext = Path::new(&file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("ogg");
+    let name = format!("jimmy-voice-{chat_id}-{}.{ext}", axe::session::now_ms());
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+    let result = audio::transcribe(&api_key, &path, duration);
+    let _ = std::fs::remove_file(&path);
+    result
 }
 
 fn fetch_image(tg: &Telegram, chat_id: i64, file_id: &str) -> Result<axe::Image, String> {

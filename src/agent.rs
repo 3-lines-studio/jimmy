@@ -55,7 +55,7 @@ impl Agent {
         text: &str,
         images: Vec<Image>,
     ) -> Result<(), String> {
-        let dir = self.root.join("chats").join(chat_id.to_string());
+        let dir = self.chat_dir(chat_id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut entries = load_entries(&dir);
@@ -73,12 +73,39 @@ impl Agent {
         history.push(user.clone());
         entries.push(Entry::Message { message: user });
 
+        self.execute(tg, chat_id, history, entries, Some(dir))
+    }
+
+    pub fn run_task(&self, tg: &Telegram, chat_id: i64, prompt: &str) -> Result<(), String> {
+        let user = Message {
+            role: "user".into(),
+            content: prompt.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: String::new(),
+            reasoning: String::new(),
+            images: Vec::new(),
+        };
+        self.execute(tg, chat_id, vec![user], Vec::new(), None)
+    }
+
+    fn chat_dir(&self, chat_id: i64) -> PathBuf {
+        self.root.join("chats").join(chat_id.to_string())
+    }
+
+    fn execute(
+        &self,
+        tg: &Telegram,
+        chat_id: i64,
+        mut history: Vec<Message>,
+        mut entries: Vec<Entry>,
+        dir: Option<PathBuf>,
+    ) -> Result<(), String> {
         let tools = axe::tui::build_tools(&self.workspace);
         let mut system = format!(
             "{}\n\n{}Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
             axe::system_prompt(&tools, &self.workspace),
             self.context,
-            dir.display()
+            self.chat_dir(chat_id).display()
         );
         let memory = read_memory(&self.workspace);
         if !memory.is_empty() {
@@ -119,20 +146,14 @@ impl Agent {
                 });
             }
             match end.outcome {
-                Outcome::Done => {
-                    save_entries(&dir, &entries)?;
-                    let reply = answer(&end.messages[history.len()..]);
-                    finalize_markdown(tg, chat_id, status, &reply);
-                    return Ok(());
-                }
-                Outcome::MaxTurns => {
-                    save_entries(&dir, &entries)?;
+                Outcome::Done | Outcome::MaxTurns => {
+                    save(&dir, &entries)?;
                     let reply = answer(&end.messages[history.len()..]);
                     finalize_markdown(tg, chat_id, status, &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {
-                    save_entries(&dir, &entries)?;
+                    save(&dir, &entries)?;
                     finalize(tg, chat_id, status, "⚠️ interrumpido");
                     return Err("interrumpido".into());
                 }
@@ -140,7 +161,7 @@ impl Agent {
                     history = match compact(&provider, &self.model, &mut entries) {
                         Ok(history) => history,
                         Err(e) => {
-                            save_entries(&dir, &entries)?;
+                            save(&dir, &entries)?;
                             finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                             return Err(e);
                         }
@@ -152,14 +173,14 @@ impl Agent {
                         history = match compact(&provider, &self.model, &mut entries) {
                             Ok(history) => history,
                             Err(e) => {
-                                save_entries(&dir, &entries)?;
+                                save(&dir, &entries)?;
                                 finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                                 return Err(e);
                             }
                         };
                         continue;
                     }
-                    save_entries(&dir, &entries)?;
+                    save(&dir, &entries)?;
                     finalize(tg, chat_id, status, &format!("⚠️ error: {e}"));
                     return Err(e);
                 }
@@ -343,6 +364,13 @@ fn answer(messages: &[Message]) -> String {
         "✅ listo".into()
     } else {
         out
+    }
+}
+
+fn save(dir: &Option<PathBuf>, entries: &[Entry]) -> Result<(), String> {
+    match dir {
+        Some(dir) => save_entries(dir, entries),
+        None => Ok(()),
     }
 }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "c5d57f276d174f7505a8079d481bbb3c8f16cd16" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "2bf9ee9c577f2e7528b875b79a40db77d24bef39" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "2"

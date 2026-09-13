@@ -1,6 +1,6 @@
 use crate::telegram::Telegram;
 use axe::run::{self, Outcome, RunOptions, Sink};
-use axe::session::{self, Entry};
+use axe::session::{self, ContextOptions, Entry};
 use axe::{Message, OpenAI};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -10,6 +10,10 @@ const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
 const OUTPUT_RESERVE: usize = 64 * 1024;
 const MEMORY_CHARS: usize = 8_000;
+const CONTEXT_OPTIONS: ContextOptions = ContextOptions {
+    original_task: false,
+    workspace_state: true,
+};
 
 #[derive(Clone)]
 pub struct Agent {
@@ -48,7 +52,7 @@ impl Agent {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut entries = load_entries(&dir);
-        let mut history = session::context_messages(&entries);
+        let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
 
         let user = Message {
@@ -64,9 +68,10 @@ impl Agent {
 
         let tools = axe::tui::build_tools(&self.workspace);
         let mut system = format!(
-            "{}\n\n{}Chat actual: {chat_id}\n",
+            "{}\n\n{}Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
             axe::system_prompt(&tools, &self.workspace),
-            self.context
+            self.context,
+            dir.display()
         );
         let memory = read_memory(&self.workspace);
         if !memory.is_empty() {
@@ -214,14 +219,15 @@ fn compact(
     model: &str,
     entries: &mut Vec<Entry>,
 ) -> Result<Vec<Message>, String> {
-    let (summary, tokens_before, retained) = session::compact(provider, model, entries)?;
+    let (summary, tokens_before, retained) =
+        session::compact_with(provider, model, entries, CONTEXT_OPTIONS)?;
     entries.push(Entry::Compaction {
         summary,
         tokens_before,
         timestamp: session::now_ms(),
         retained,
     });
-    let mut out = session::context_messages(entries);
+    let mut out = session::context_messages_with(entries, CONTEXT_OPTIONS);
     session::drop_incomplete_tool_calls(&mut out);
     Ok(out)
 }

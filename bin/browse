@@ -17,9 +17,19 @@ ARTIFACT_DIR = Path("/data/files/browse")
 TTL_DAYS = 7
 MAX_TEXT = 20000
 MAX_ELEMENTS = 150
-VIEWPORT = {"width": 1280, "height": 800}
+DEFAULT_VIEWPORT = {"width": 1920, "height": 1080}
 DEFAULT_TIMEOUT = 30000
 IDLE_WAIT = 5000
+HIGHLIGHT_JS = """(el) => {
+  const r = el.getBoundingClientRect();
+  const box = document.createElement('div');
+  box.style.cssText = `position:fixed;left:${r.left - 5}px;top:${r.top - 5}px;` +
+    `width:${r.width + 10}px;height:${r.height + 10}px;border:3px solid #ff3b30;` +
+    `border-radius:6px;pointer-events:none;z-index:2147483647;` +
+    `box-shadow:0 0 0 4px rgba(255,59,48,0.25);transition:opacity 0.3s;`;
+  document.body.appendChild(box);
+  setTimeout(() => box.remove(), 1400);
+}"""
 
 CONTROLS_JS = """() => {
   const sel = 'a[href], button, input, select, textarea, [role=button], [role=link]';
@@ -43,6 +53,16 @@ def session_name(raw):
     if not name:
         raise SystemExit("browse: invalid session name")
     return name
+
+
+def parse_size(raw):
+    match = re.fullmatch(r"(\d{2,5})x(\d{2,5})", raw.strip().lower())
+    if not match:
+        raise SystemExit(f"browse: bad --size {raw!r}, expected WxH")
+    width, height = int(match.group(1)), int(match.group(2))
+    if width % 2 or height % 2:
+        raise SystemExit("browse: --size must be even, video needs it")
+    return {"width": width, "height": height}
 
 
 def selector_for(el):
@@ -160,13 +180,30 @@ def apply_step(page, step, artifacts, results):
         page.screenshot(path=str(path), full_page=bool(step.get("full")))
         return {"path": str(path)}
 
+    if action == "highlight":
+        page.locator(selector).first.evaluate(HIGHLIGHT_JS)
+        page.wait_for_timeout(step.get("ms", 600))
+        return {"selector": selector}
+
+    if action == "scroll":
+        if selector:
+            page.locator(selector).first.evaluate(
+                "el => el.scrollIntoView({behavior: 'smooth', block: 'center'})"
+            )
+        elif step.get("by"):
+            page.evaluate(f"window.scrollBy({{top: {int(step['by'])}, behavior: 'smooth'}})")
+        else:
+            raise SystemExit("browse: scroll needs a selector or a by offset")
+        page.wait_for_timeout(step.get("ms", 700))
+        return {"scrolled": selector or step["by"]}
+
     if action == "url":
         return {"url": page.url}
 
     raise SystemExit(f"browse: unknown action {action!r}")
 
 
-def execute(steps, session, record):
+def execute(steps, session, record, viewport, slow):
     purge_old()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     artifacts = run_artifact_dir(session, stamp)
@@ -185,10 +222,10 @@ def execute(steps, session, record):
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = browser.new_context(
-            viewport=VIEWPORT,
+            viewport=viewport,
             storage_state=str(storage) if storage.exists() else None,
             record_video_dir=str(video_dir) if record else None,
-            record_video_size=VIEWPORT if record else None,
+            record_video_size=viewport if record else None,
         )
         context.set_default_timeout(DEFAULT_TIMEOUT)
         page = context.new_page()
@@ -205,6 +242,8 @@ def execute(steps, session, record):
                     )
                     failed = True
                     break
+                if slow:
+                    page.wait_for_timeout(slow)
         finally:
             url = page.url
             context.storage_state(path=str(storage))
@@ -260,20 +299,27 @@ def list_sessions():
     return {"sessions": sorted(p.name for p in STATE_DIR.iterdir() if p.is_dir())}
 
 
+def run_options(parser):
+    parser.add_argument("--session", default="default")
+    parser.add_argument("--record", action="store_true")
+    parser.add_argument(
+        "--size", default=f"{DEFAULT_VIEWPORT['width']}x{DEFAULT_VIEWPORT['height']}"
+    )
+    parser.add_argument("--slow", type=int, default=0, help="ms to pause after each step")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="browse")
     sub = parser.add_subparsers(dest="command", required=True)
 
     goto = sub.add_parser("goto")
     goto.add_argument("url")
-    goto.add_argument("--session", default="default")
-    goto.add_argument("--record", action="store_true")
     goto.add_argument("--shot", action="store_true")
+    run_options(goto)
 
     run = sub.add_parser("run")
     run.add_argument("source", nargs="?")
-    run.add_argument("--session", default="default")
-    run.add_argument("--record", action="store_true")
+    run_options(run)
 
     files = sub.add_parser("files")
     files.add_argument("--session", default="default")
@@ -302,7 +348,7 @@ def main():
         steps = read_steps(args.source)
 
     try:
-        output = execute(steps, session, args.record)
+        output = execute(steps, session, args.record, parse_size(args.size), args.slow)
     except PlaywrightError as error:
         json.dump({"session": session, "ok": False, "error": str(error).splitlines()[0]}, sys.stdout, ensure_ascii=False, indent=2)
         print()

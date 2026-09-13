@@ -352,10 +352,7 @@ fn send_markdown(tg: &Telegram, chat_id: i64, markdown: &str) {
 fn answer(messages: &[Message]) -> String {
     let mut parts = Vec::new();
     for message in messages {
-        if message.role == "assistant"
-            && !message.content.is_empty()
-            && message.tool_calls.is_empty()
-        {
+        if message.role == "assistant" && !message.content.is_empty() {
             parts.push(message.content.trim());
         }
     }
@@ -411,4 +408,44 @@ fn chunks(s: &str, max: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axe::ToolCall;
+
+    fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {
+        Message {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls,
+            tool_call_id: String::new(),
+            reasoning: String::new(),
+            images: Vec::new(),
+        }
+    }
+
+    fn call() -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }
+    }
+
+    #[test]
+    fn answer_keeps_text_that_came_with_tool_calls() {
+        let messages = vec![
+            assistant("primera parte", vec![call()]),
+            assistant("segunda parte", Vec::new()),
+        ];
+        assert_eq!(answer(&messages), "primera parte\n\nsegunda parte");
+    }
+
+    #[test]
+    fn answer_falls_back_when_there_is_only_a_tool_call() {
+        let messages = vec![assistant("", vec![call()])];
+        assert_eq!(answer(&messages), "✅ listo");
+    }
 }

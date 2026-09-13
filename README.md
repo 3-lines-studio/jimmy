@@ -51,11 +51,11 @@ prompt = "Summarize what is still pending."
 
 Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
 "HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
-Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is marked
-done in `state/schedule.state.json` after it fires; a daily task fires once per
-local date; an interval task fires once the interval has elapsed since its last
-run, so a restart catches up on a missed run. A task that fails reports the
-error to its chat, and each task is capped at 6 runs per hour.
+Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is removed
+from the file once it fires; a daily task fires once per local date; an interval
+task fires once the interval has elapsed since its last run, so a restart
+catches up on a missed run. A task that fails reports the error to its chat,
+and each task is capped at 6 runs per hour.
 
 The file is meant to be edited by the agent: ask it to schedule something and it
 appends a block. The tick picks it up without a restart.

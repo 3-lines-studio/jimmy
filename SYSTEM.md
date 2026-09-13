@@ -103,7 +103,7 @@ La hora local es UTC más `JIMMY_TZ_OFFSET` horas.
 Reglas:
 
 - Para quitar una tarea, borrá su bloque.
-- Las de una sola vez quedan marcadas como hechas en `state/schedule.state.json`; borrá el bloque cuando ya corrió.
+- Las de una sola vez se borran solas del archivo apenas corren. No las limpies a mano.
 - No inventes tareas que Don Berti no pidió.
 - Leé el archivo antes de escribir: si ya hay algo parecido, editalo en vez de duplicar.
 

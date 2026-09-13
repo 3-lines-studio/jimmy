@@ -64,7 +64,8 @@ pub fn spawn(tg: Telegram, agent: Agent, workspace: PathBuf) {
 }
 
 fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), String> {
-    let text = match std::fs::read_to_string(dir.join("schedule.toml")) {
+    let path = dir.join("schedule.toml");
+    let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(_) => return Ok(()),
     };
@@ -77,6 +78,7 @@ fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), Str
     let now = now_secs();
     let (date, time) = local_parts(now, offset);
     let mut changed = false;
+    let mut finished = Vec::new();
     for task in &file.task {
         let run = state.tasks.entry(task.name.clone()).or_default();
         if !due(task, run, now, &date, &time) {
@@ -98,6 +100,20 @@ fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), Str
         if let Err(e) = agent.run_task(tg, task.chat, &task.prompt) {
             let _ = tg.send_message(task.chat, &format!("⚠️ la tarea {} falló: {e}", task.name));
         }
+        if task.when.is_some() {
+            finished.push(task.name.clone());
+        }
+    }
+    if !finished.is_empty() {
+        let fresh = std::fs::read_to_string(&path).unwrap_or_default();
+        let cleaned = strip_tasks(&fresh, &finished);
+        if cleaned != fresh {
+            std::fs::write(&path, cleaned).map_err(|e| e.to_string())?;
+        }
+        for name in &finished {
+            state.tasks.remove(name);
+        }
+        changed = true;
     }
     if changed {
         let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
@@ -121,6 +137,32 @@ fn due(task: &Task, run: &Run, now: i64, date: &str, time: &str) -> bool {
             .is_some_and(|period| run.last_run == 0 || now - run.last_run >= period);
     }
     false
+}
+
+fn strip_tasks(text: &str, names: &[String]) -> String {
+    blocks(text)
+        .into_iter()
+        .filter(|block| match toml::from_str::<File>(block) {
+            Ok(file) => !file.task.iter().any(|task| names.contains(&task.name)),
+            Err(_) => true,
+        })
+        .collect()
+}
+
+fn blocks(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if !current.is_empty() && line.trim_start().starts_with("[[task]]") {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 fn hhmm(s: &str) -> Option<String> {
@@ -240,6 +282,16 @@ mod tests {
         };
         assert!(!due(&t, &run, 1_000 + HOUR, "2026-09-14", "00:00"));
         assert!(due(&t, &run, 1_000 + 6 * HOUR, "2026-09-14", "00:00"));
+    }
+
+    #[test]
+    fn strips_finished_one_shot_blocks() {
+        let text = "# tareas\n\n[[task]]\nname = \"a\"\nchat = 1\nwhen = \"2026-01-01T00:00\"\nprompt = \"p\"\n\n[[task]]\nname = \"b\"\nchat = 1\nat = \"09:00\"\nprompt = \"q\"\n";
+        let out = strip_tasks(text, &["a".to_string()]);
+        assert!(out.starts_with("# tareas"));
+        let file: File = toml::from_str(&out).unwrap();
+        assert_eq!(file.task.len(), 1);
+        assert_eq!(file.task[0].name, "b");
     }
 
     #[test]

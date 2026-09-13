@@ -32,6 +32,7 @@ RUN arch="$(dpkg --print-architecture)" \
 
 ENV RUSTUP_HOME=/root/.rustup
 ENV CARGO_HOME=/root/.cargo
+ENV CARGO_TARGET_DIR=/tmp/cargo-target
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly -c rustfmt -c clippy
 
 ENV MISE_DATA_DIR=/root/.local/share/mise

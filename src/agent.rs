@@ -68,9 +68,10 @@ impl Agent {
 
         let tools = axe::tui::build_tools(&self.workspace);
         let mut system = format!(
-            "{}\n\n{}Chat actual: {chat_id}\n",
+            "{}\n\n{}Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
             axe::system_prompt(&tools, &self.workspace),
-            self.context
+            self.context,
+            dir.display()
         );
         let memory = read_memory(&self.workspace);
         if !memory.is_empty() {

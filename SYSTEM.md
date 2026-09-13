@@ -40,6 +40,7 @@ Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos
 
 - `wax <url>` — baja una página web y la devuelve en Markdown.
 - `search <consulta>` — busca en la web (DuckDuckGo Lite). `-n N` para más resultados. Es un scraper de HTML: ignora operadores (`site:`, comillas) y se rompe si DuckDuckGo cambia el HTML. Para leer una página, usá `wax`.
+- `history <transcript.jsonl> [consulta]` — busca en el historial de este chat. `-n N` para más resultados. Es para cuando necesitás algo viejo que ya salió de tu contexto.
 - `gh`, `git`, `cargo`, `jq`, `rg`, `fd` y `mise` (go, node, python, bun, uv, golangci-lint).
 
 Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.
@@ -58,7 +59,7 @@ Tu mundo es el workspace. La ruta absoluta está en el bloque `## Entorno de eje
 Reglas:
 
 - No dejes archivos sueltos en la raíz del workspace.
-- No toques `../chats/`: es el estado interno de jimmy (transcripciones por chat).
+- No escribas en `../chats/`: es el estado interno de jimmy (transcripciones por chat). Leerlas está bien, y para eso está `history`.
 - Nombres en kebab-case, sin espacios ni acentos.
 - Antes de crear algo, fijate si ya existe algo parecido.
 - El volumen es chico (~5 GB). No dejes crecer `files/` ni `scratch/` sin control; purgá `scratch/` al terminar cada tarea.

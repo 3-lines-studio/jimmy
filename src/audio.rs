@@ -53,22 +53,37 @@ pub fn transcribe(api_key: &str, path: &Path, duration: u64) -> Result<String, S
 fn error_message(error: ureq::Error) -> String {
     match error {
         ureq::Error::Status(code, response) => {
+            let retry_after = response
+                .header("retry-after")
+                .and_then(|value| value.parse::<u64>().ok());
             let body = response.into_string().unwrap_or_default();
-            let detail = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|json| {
-                    json.pointer("/error/message")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| body.trim().to_string());
-            if detail.is_empty() {
-                format!("groq http {code}")
-            } else {
-                format!("groq http {code}: {detail}")
-            }
+            status_message(code, retry_after, &body)
         }
         other => format!("groq: {other}"),
+    }
+}
+
+fn status_message(code: u16, retry_after: Option<u64>, body: &str) -> String {
+    if code == 429 {
+        return match retry_after {
+            Some(seconds) => format!("me pasé del límite de Groq, esperá {seconds}s"),
+            None => "me pasé del límite de Groq, esperá un rato".into(),
+        };
+    }
+
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.trim().to_string());
+
+    if detail.is_empty() {
+        format!("groq http {code}")
+    } else {
+        format!("groq http {code}: {detail}")
     }
 }
 
@@ -136,5 +151,26 @@ mod tests {
         let error = transcribe("key", &path, MAX_SECONDS + 1).unwrap_err();
         assert!(error.contains("máximo es 300s"));
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn rate_limit_message_tells_how_long_to_wait() {
+        assert_eq!(
+            status_message(429, Some(42), ""),
+            "me pasé del límite de Groq, esperá 42s"
+        );
+        assert_eq!(
+            status_message(429, None, ""),
+            "me pasé del límite de Groq, esperá un rato"
+        );
+    }
+
+    #[test]
+    fn other_errors_keep_the_groq_detail() {
+        let body = r#"{"error":{"message":"file must be one of the following types"}}"#;
+        assert_eq!(
+            status_message(400, None, body),
+            "groq http 400: file must be one of the following types"
+        );
     }
 }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
 const OUTPUT_RESERVE: usize = 64 * 1024;
+const MEMORY_CHARS: usize = 8_000;
 
 #[derive(Clone)]
 pub struct Agent {
@@ -62,11 +63,17 @@ impl Agent {
         entries.push(Entry::Message { message: user });
 
         let tools = axe::tui::build_tools(&self.workspace);
-        let system = format!(
+        let mut system = format!(
             "{}\n\n{}Chat actual: {chat_id}\n",
             axe::system_prompt(&tools, &self.workspace),
             self.context
         );
+        let memory = read_memory(&self.workspace);
+        if !memory.is_empty() {
+            system.push_str("\n## Memoria\n");
+            system.push_str(&memory);
+            system.push('\n');
+        }
         let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
         let opts = RunOptions {
             model: &self.model,
@@ -185,6 +192,21 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str) -> Str
 
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+fn read_memory(workspace: &str) -> String {
+    let path = Path::new(workspace).join("notes/memory.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return String::new();
+    };
+    let text = text.trim();
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= MEMORY_CHARS {
+        return text.to_string();
+    }
+    let tail: String = chars[chars.len() - MEMORY_CHARS..].iter().collect();
+    let tail = tail.split_once('\n').map(|(_, rest)| rest).unwrap_or(&tail);
+    format!("[truncada: entradas más recientes]\n{tail}")
 }
 
 fn compact(

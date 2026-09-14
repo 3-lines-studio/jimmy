@@ -147,13 +147,13 @@ impl Agent {
             }
             match end.outcome {
                 Outcome::Done | Outcome::MaxTurns => {
-                    save(&dir, &entries)?;
+                    save(&dir, &mut entries)?;
                     let reply = answer(&end.messages[history.len()..]);
                     finalize_markdown(tg, chat_id, status, &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {
-                    save(&dir, &entries)?;
+                    save(&dir, &mut entries)?;
                     finalize(tg, chat_id, status, "⚠️ interrumpido");
                     return Err("interrumpido".into());
                 }
@@ -161,7 +161,7 @@ impl Agent {
                     history = match compact(&provider, &self.model, &mut entries) {
                         Ok(history) => history,
                         Err(e) => {
-                            save(&dir, &entries)?;
+                            save(&dir, &mut entries)?;
                             finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                             return Err(e);
                         }
@@ -173,14 +173,14 @@ impl Agent {
                         history = match compact(&provider, &self.model, &mut entries) {
                             Ok(history) => history,
                             Err(e) => {
-                                save(&dir, &entries)?;
+                                save(&dir, &mut entries)?;
                                 finalize(tg, chat_id, status, &format!("⚠️ {e}"));
                                 return Err(e);
                             }
                         };
                         continue;
                     }
-                    save(&dir, &entries)?;
+                    save(&dir, &mut entries)?;
                     finalize(tg, chat_id, status, &format!("⚠️ error: {e}"));
                     return Err(e);
                 }
@@ -368,10 +368,26 @@ fn answer(messages: &[Message]) -> String {
     }
 }
 
-fn save(dir: &Option<PathBuf>, entries: &[Entry]) -> Result<(), String> {
+fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
     match dir {
         Some(dir) => save_entries(dir, entries),
         None => Ok(()),
+    }
+}
+
+fn drop_superseded_images(entries: &mut [Entry]) {
+    let Some(last) = entries
+        .iter()
+        .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
+    else {
+        return;
+    };
+    for entry in &mut entries[..last] {
+        if let Entry::Message { message } = entry {
+            for image in &mut message.images {
+                image.url.clear();
+            }
+        }
     }
 }
 
@@ -395,7 +411,8 @@ fn load_entries(dir: &Path) -> Vec<Entry> {
         .collect()
 }
 
-fn save_entries(dir: &Path, entries: &[Entry]) -> Result<(), String> {
+fn save_entries(dir: &Path, entries: &mut [Entry]) -> Result<(), String> {
+    drop_superseded_images(entries);
     let mut out = String::new();
     for entry in entries {
         out.push_str(&serde_json::to_string(entry).map_err(|e| e.to_string())?);
@@ -462,6 +479,67 @@ mod tests {
             [0x1f, 0x8b]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn image(url: &str) -> Image {
+        Image {
+            path: "/data/files/a.png".into(),
+            url: url.into(),
+        }
+    }
+
+    fn photo(url: &str) -> Entry {
+        let mut message = assistant("mirá", Vec::new());
+        message.images = vec![image(url)];
+        Entry::Message { message }
+    }
+
+    fn compaction(retained: Vec<Message>) -> Entry {
+        Entry::Compaction {
+            summary: "resumen".into(),
+            tokens_before: 0,
+            timestamp: 0,
+            retained,
+        }
+    }
+
+    fn urls(entries: &[Entry]) -> Vec<String> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Message { message } => Some(message),
+                _ => None,
+            })
+            .flat_map(|message| message.images.iter())
+            .map(|image| image.url.clone())
+            .collect()
+    }
+
+    #[test]
+    fn images_before_a_compaction_lose_their_bytes() {
+        let mut retained = assistant("quedate", Vec::new());
+        retained.images = vec![image("data:image/png;base64,QUJD")];
+        let mut entries = vec![
+            photo("data:image/png;base64,QUJD"),
+            compaction(vec![retained]),
+            photo("data:image/png;base64,REVG"),
+        ];
+        drop_superseded_images(&mut entries);
+        assert_eq!(urls(&entries), ["", "data:image/png;base64,REVG"]);
+        assert_eq!(entries[0].clone(), photo("").clone());
+        match &entries[1] {
+            Entry::Compaction { retained, .. } => {
+                assert_eq!(retained[0].images[0].url, "data:image/png;base64,QUJD");
+            }
+            _ => panic!("esperaba una compactación"),
+        }
+    }
+
+    #[test]
+    fn images_survive_without_a_compaction() {
+        let mut entries = vec![photo("data:image/png;base64,QUJD")];
+        drop_superseded_images(&mut entries);
+        assert_eq!(urls(&entries), ["data:image/png;base64,QUJD"]);
     }
 
     #[test]

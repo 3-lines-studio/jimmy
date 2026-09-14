@@ -12,7 +12,7 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates libcurl4 bash git curl less unzip xz-utils bzip2 \
+        ca-certificates libcurl4 bash git curl less unzip xz-utils bzip2 gzip \
         build-essential chromium \
     && rm -rf /var/lib/apt/lists/*
 

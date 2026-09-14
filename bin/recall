@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
+import glob
+import gzip
 import json
+import os
 import sys
 
 
+def sources(path):
+    if not os.path.isdir(path):
+        return [path]
+    found = glob.glob(os.path.join(path, "transcript*.jsonl"))
+    found += glob.glob(os.path.join(path, "transcript*.jsonl.gz"))
+    return sorted(found, key=os.path.getmtime)
+
+
+def open_text(path):
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, encoding="utf-8", errors="replace")
+
+
 def read_entries(path):
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open_text(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -37,9 +54,10 @@ def main():
         limit = int(args[1])
         args = args[2:]
     if not args:
-        sys.exit("uso: recall [-n N] <transcript.jsonl> [consulta]")
+        sys.exit("uso: recall [-n N] <dir|transcript.jsonl> [consulta]")
     path, query = args[0], " ".join(args[1:]).lower()
-    found = [t for t in turns(path) if not query or query in t[1].lower()]
+    history = [t for source in sources(path) for t in turns(source)]
+    found = [t for t in history if not query or query in t[1].lower()]
     for role, content in found[-limit:]:
         print(f"[{role}] {content}\n")
 

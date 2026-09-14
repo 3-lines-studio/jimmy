@@ -227,9 +227,13 @@ impl Agent {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        match std::fs::rename(&path, dir.join(format!("transcript.{stamp}.jsonl"))) {
+        let archive = dir.join(format!("transcript.{stamp}.jsonl"));
+        if let Err(e) = std::fs::rename(&path, &archive) {
+            return format!("⚠️ no pude borrar: {e}");
+        }
+        match gzip(&archive) {
             Ok(()) => "🧹 contexto borrado".into(),
-            Err(e) => format!("⚠️ no pude borrar: {e}"),
+            Err(e) => format!("🧹 contexto borrado, pero no comprimí: {e}"),
         }
     }
 }
@@ -371,6 +375,17 @@ fn save(dir: &Option<PathBuf>, entries: &[Entry]) -> Result<(), String> {
     }
 }
 
+fn gzip(path: &Path) -> Result<(), String> {
+    let out = std::process::Command::new("gzip")
+        .arg(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+}
+
 fn load_entries(dir: &Path) -> Vec<Entry> {
     let Ok(text) = std::fs::read_to_string(dir.join("transcript.jsonl")) else {
         return Vec::new();
@@ -432,6 +447,21 @@ mod tests {
             name: "bash".into(),
             arguments: "{}".into(),
         }
+    }
+
+    #[test]
+    fn gzip_compresses_and_removes_the_original() {
+        let dir = std::env::temp_dir().join(format!("jimmy-gzip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jsonl");
+        std::fs::write(&path, "hola\n").unwrap();
+        gzip(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(dir.join("a.jsonl.gz")).unwrap()[..2],
+            [0x1f, 0x8b]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

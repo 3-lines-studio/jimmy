@@ -30,23 +30,20 @@ pub fn to_telegram_html(markdown: &str) -> String {
                     break;
                 }
             }
-            out.push_str("<pre>");
-            let mut first = true;
-            for row in rows {
-                if row
-                    .trim()
-                    .chars()
-                    .all(|c| matches!(c, '|' | '-' | ':' | ' '))
-                {
-                    continue;
-                }
-                if !first {
-                    out.push('\n');
-                }
-                out.push_str(&escape(row));
-                first = false;
+            let mut cells: Vec<Vec<String>> = rows
+                .iter()
+                .map(|row| split_cells(row))
+                .filter(|row| !is_rule(row))
+                .collect();
+            let header = if cells.len() > 1 {
+                cells.remove(0)
+            } else {
+                Vec::new()
+            };
+            for row in &cells {
+                out.push_str(&inline(&table_row(&header, row)));
+                out.push('\n');
             }
-            out.push_str("</pre>\n");
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("> ") {
@@ -117,6 +114,37 @@ pub fn split(markdown: &str, max: usize) -> Vec<String> {
         chunks.push(String::new());
     }
     chunks
+}
+
+fn split_cells(row: &str) -> Vec<String> {
+    row.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+fn is_rule(row: &[String]) -> bool {
+    row.iter()
+        .all(|cell| cell.chars().all(|c| matches!(c, '-' | ':')))
+}
+
+fn table_row(header: &[String], row: &[String]) -> String {
+    let Some(first) = row.first() else {
+        return String::new();
+    };
+    if row.len() == 1 {
+        return format!("• {first}");
+    }
+    let mut rest = Vec::new();
+    for (i, cell) in row.iter().enumerate().skip(1) {
+        match header.get(i) {
+            Some(label) if !label.is_empty() => rest.push(format!("{label}: {cell}")),
+            _ => rest.push(cell.clone()),
+        }
+    }
+    format!("• **{first}** — {}", rest.join(" · "))
 }
 
 fn heading(line: &str) -> Option<&str> {
@@ -309,6 +337,26 @@ mod tests {
             to_telegram_html("> one\n> two"),
             "<blockquote>one\ntwo</blockquote>"
         );
+    }
+
+    #[test]
+    fn table_becomes_a_list() {
+        let md = "| Opción | Precio |\n| --- | --- |\n| Pro | $20 |\n| Ultra | $40 |";
+        assert_eq!(
+            to_telegram_html(md),
+            "• <b>Pro</b> — Precio: $20\n• <b>Ultra</b> — Precio: $40"
+        );
+    }
+
+    #[test]
+    fn table_without_separator_keeps_its_rows() {
+        assert_eq!(to_telegram_html("| a | b |"), "• <b>a</b> — b");
+    }
+
+    #[test]
+    fn table_cells_get_inline_styles() {
+        let md = "| a | b |\n| - | - |\n| x | `y` |";
+        assert_eq!(to_telegram_html(md), "• <b>x</b> — b: <code>y</code>");
     }
 
     #[test]

@@ -37,9 +37,9 @@ the image goes on its own. Non-image documents are ignored.
 
 Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
 a plain Markdown file, written by the agent with `read` and `edit`, injected
-whole into the prompt on every message with a 16 KiB cap. Level 2 is
-`notes/memory.jsonl`: append-only, holding every state a level-1 entry ever had,
-searched with `rg`.
+whole into the prompt on every message under `## Memoria en contexto`, with a
+16 KiB cap. Level 2 is `notes/memory.jsonl`: append-only, holding every state a
+level-1 entry ever had, searched with `rg`.
 
 Each level-1 entry starts with `## key · kind · YYYY-MM-DD`, and the key is what
 makes an updated fact replace the old one instead of duplicating it. `jimmy memo

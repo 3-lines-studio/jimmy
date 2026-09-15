@@ -74,7 +74,7 @@ Reglas:
 
 ## Memoria
 
-La memoria tiene dos niveles. El **nivel 1** es `notes/memory.md`: es tu archivo de trabajo, lo escribís con `read` y `edit`, y se inyecta entero en tu contexto en cada mensaje, bajo `## Memoria`. El **nivel 2** es `notes/memory.jsonl`: append-only, guarda todo lo que alguna vez estuvo en el nivel 1, y se consulta con `rg`.
+La memoria tiene dos niveles. El **nivel 1** es `notes/memory.md`: es tu archivo de trabajo, lo escribís con `read` y `edit`, y se inyecta entero en tu contexto en cada mensaje, bajo `## Memoria en contexto`. El **nivel 2** es `notes/memory.jsonl`: append-only, guarda todo lo que alguna vez estuvo en el nivel 1, y se consulta con `rg`.
 
 - Cada entrada del nivel 1 arranca con `## clave · tipo · YYYY-MM-DD`. La clave es estable (kebab-case, `familia/tema` para lo de un proyecto) y es lo que hace que un hecho actualizado reemplace al viejo en vez de duplicarlo. El tipo es libre: `decision`, `bugfix`, `herramienta`, `estado`, `medicion`. La fecha es la del último toque: moverla **reafirma** la entrada y la defiende de la bajada.
 - Un tema, una entrada. Si el hecho cambia, editá el cuerpo de esa entrada; no agregues otra. Si el tema es nuevo, agregá la entrada al final.

@@ -1,10 +1,12 @@
 use crate::telegram::Telegram;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
-use axe::{Image, Message, OpenAI};
+use axe::{Image, Message, OpenAI, ToolCall, ToolOutput};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
@@ -126,11 +128,30 @@ impl Agent {
         let cancel = Arc::new(AtomicBool::new(false));
 
         let status = tg.send_message(chat_id, "⚙️ pensando…").ok();
-        let mut sink = TgSink { threshold };
+        let mut sink = TgSink {
+            threshold,
+            events: dir.clone(),
+        };
 
         let mut overflow_retried = false;
         loop {
+            let started = Instant::now();
             let end = run::run_stream(&provider, &opts, &history, &cancel, &mut sink);
+            if let Some(dir) = &dir {
+                record(
+                    dir,
+                    serde_json::json!({
+                        "ts": now(),
+                        "kind": "run",
+                        "ms": started.elapsed().as_millis(),
+                        "outcome": outcome_name(&end.outcome),
+                        "input": end.usage.input,
+                        "output": end.usage.output,
+                        "cached_input": end.usage.cached_input,
+                        "context_input": end.context.input,
+                    }),
+                );
+            }
             for message in &end.messages[history.len()..] {
                 entries.push(Entry::Message {
                     message: message.clone(),
@@ -240,12 +261,30 @@ impl Agent {
 
 struct TgSink {
     threshold: Option<usize>,
+    events: Option<PathBuf>,
 }
 
 impl Sink for TgSink {
     fn should_compact(&mut self, input: usize, output: usize) -> bool {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
+    }
+
+    fn tool_result(&mut self, call: &ToolCall, output: &ToolOutput, elapsed: Duration) {
+        let Some(dir) = &self.events else {
+            return;
+        };
+        record(
+            dir,
+            serde_json::json!({
+                "ts": now(),
+                "kind": "tool",
+                "name": call.name,
+                "ms": elapsed.as_millis(),
+                "bytes": output.text.len(),
+                "failed": output.text.starts_with("error:"),
+            }),
+        );
     }
 }
 
@@ -419,6 +458,34 @@ fn save_entries(dir: &Path, entries: &mut [Entry]) -> Result<(), String> {
         out.push('\n');
     }
     axe::atomic_write(&dir.join("transcript.jsonl"), out.as_bytes()).map_err(|e| e.to_string())
+}
+
+fn record(dir: &Path, event: serde_json::Value) {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("events.jsonl"))
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{event}");
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn outcome_name(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Done => "done",
+        Outcome::MaxTurns => "max_turns",
+        Outcome::Cancelled => "cancelled",
+        Outcome::Compact => "compact",
+        Outcome::Failed(_) => "failed",
+    }
 }
 
 fn chunks(s: &str, max: usize) -> Vec<String> {

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "2bf9ee9c577f2e7528b875b79a40db77d24bef39" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "db89e9a722d289728d9b7bc953207388daae7fc9" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"

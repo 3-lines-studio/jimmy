@@ -33,6 +33,24 @@ file is downloaded from Telegram and passed to the agent as an inline image, so
 the model can look at it. A caption becomes the prompt text; without a caption
 the image goes on its own. Non-image documents are ignored.
 
+## Memory
+
+Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
+a plain Markdown file, written by the agent with `read` and `edit`, injected
+whole into the prompt on every message with a 16 KiB cap. Level 2 is
+`notes/memory.jsonl`: append-only, holding every state a level-1 entry ever had,
+searched with `rg`.
+
+Each level-1 entry starts with `## key · kind · YYYY-MM-DD`, and the key is what
+makes an updated fact replace the old one instead of duplicating it. `jimmy memo
+sync` diffs level 1 against level 2, appends the changes and reports what it saw;
+`jimmy memo demote` moves the oldest entries down when level 1 outgrows the 16 KiB
+budget; `jimmy memo miss "..."` records a memory that failed to surface. Nothing
+is ever deleted: what goes down is still in the JSONL.
+
+Both commands write one JSON event per run to
+`$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
+
 ## Scheduled tasks
 
 `$JIMMY_WORKSPACE/state/schedule.toml` holds tasks the agent runs on a clock. A

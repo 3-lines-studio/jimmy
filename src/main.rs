@@ -1,6 +1,7 @@
 mod agent;
 mod audio;
 mod markdown;
+mod memo;
 mod schedule;
 mod telegram;
 
@@ -27,13 +28,8 @@ impl Config {
     fn from_env() -> Result<Self, String> {
         let token = env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado")?;
         let api_key = env("OPENAI_API_KEY").ok_or("OPENAI_API_KEY no está configurado")?;
-        let root = PathBuf::from(
-            env("JIMMY_ROOT")
-                .or_else(|| env("RAILWAY_VOLUME_MOUNT_PATH"))
-                .unwrap_or_else(|| "/data".into()),
-        );
-        let workspace =
-            env("JIMMY_WORKSPACE").unwrap_or_else(|| root.join("workspace").display().to_string());
+        let root = root_from_env();
+        let workspace = workspace_from_env().display().to_string();
         let allowed = env("TELEGRAM_ALLOWED_USER_IDS")
             .map(|v| {
                 v.split(',')
@@ -63,7 +59,26 @@ fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+fn root_from_env() -> PathBuf {
+    PathBuf::from(
+        env("JIMMY_ROOT")
+            .or_else(|| env("RAILWAY_VOLUME_MOUNT_PATH"))
+            .unwrap_or_else(|| "/data".into()),
+    )
+}
+
+fn workspace_from_env() -> PathBuf {
+    let root = root_from_env();
+    PathBuf::from(
+        env("JIMMY_WORKSPACE").unwrap_or_else(|| root.join("workspace").display().to_string()),
+    )
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("memo") {
+        std::process::exit(memo_command(&args[1..]));
+    }
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(e) => {
@@ -199,6 +214,29 @@ fn main() {
                     eprintln!("jimmy: chat {chat_id} falló: {e}");
                 }
             });
+        }
+    }
+}
+
+fn memo_command(args: &[String]) -> i32 {
+    let workspace = workspace_from_env();
+    let result = match args.first().map(String::as_str) {
+        Some("sync") => memo::sync(&workspace),
+        Some("demote") => memo::demote(&workspace),
+        Some("miss") => match args[1..].join(" ").trim() {
+            "" => Err("memo miss: falta el texto".into()),
+            text => memo::miss(&workspace, text),
+        },
+        _ => Err("uso: jimmy memo <sync|demote|miss texto>".into()),
+    };
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            0
+        }
+        Err(e) => {
+            eprintln!("jimmy memo: {e}");
+            1
         }
     }
 }

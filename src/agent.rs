@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
 const OUTPUT_RESERVE: usize = 64 * 1024;
-const MEMORY_CHARS: usize = 8_000;
 const HELP: &str = "Comandos:\n/status — contexto usado y versión\n/clear — borrar el contexto de este chat\n/help — esto";
 const CONTEXT_OPTIONS: ContextOptions = ContextOptions {
     original_task: false,
@@ -109,7 +108,7 @@ impl Agent {
             self.context,
             self.chat_dir(chat_id).display()
         );
-        let memory = read_memory(&self.workspace);
+        let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
             system.push_str("\n## Memoria\n");
             system.push_str(&memory);
@@ -313,21 +312,6 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str) -> Str
 
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
-}
-
-fn read_memory(workspace: &str) -> String {
-    let path = Path::new(workspace).join("notes/memory.md");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return String::new();
-    };
-    let text = text.trim();
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= MEMORY_CHARS {
-        return text.to_string();
-    }
-    let tail: String = chars[chars.len() - MEMORY_CHARS..].iter().collect();
-    let tail = tail.split_once('\n').map(|(_, rest)| rest).unwrap_or(&tail);
-    format!("[truncada: entradas más recientes]\n{tail}")
 }
 
 fn compact(

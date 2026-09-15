@@ -13,14 +13,26 @@ def sources(path):
     return sorted(found)
 
 
+def read_jsonl(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
 def events(path):
     for source in sources(path):
-        with open(source, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        yield from read_jsonl(source)
+
+
+def memory_events():
+    workspace = os.environ.get("JIMMY_WORKSPACE") or "/data/workspace"
+    path = os.path.join(workspace, "state", "memory-events.jsonl")
+    if not os.path.isfile(path):
+        return []
+    return list(read_jsonl(path))
 
 
 def median(values):
@@ -28,17 +40,60 @@ def median(values):
     return ordered[len(ordered) // 2]
 
 
+def report_memory(events):
+    def of(op):
+        return [event for event in events if event.get("op") == op]
+
+    def total(rows, field):
+        return sum(row.get(field, 0) for row in rows)
+
+    syncs = of("sync")
+    demotes = of("demote")
+    renders = of("render")
+    misses = of("miss")
+
+    if syncs:
+        last = syncs[-1]
+        line = f"memoria — nivel 1: {last['entries']} entradas · {last['bytes']} bytes"
+        if demotes:
+            line += f" · tope {demotes[-1]['budget']}"
+        print(line)
+        print(
+            f"sync — {len(syncs)} corridas"
+            f" · {total(syncs, 'created')} nuevas"
+            f" · {total(syncs, 'updated')} actualizadas"
+            f" · {total(syncs, 'reasserted')} reafirmadas"
+            f" · {total(syncs, 'promoted')} vueltas"
+            f" · {total(syncs, 'dropped')} sacadas a mano"
+        )
+    if demotes:
+        moved = sum(len(demote.get("moved", [])) for demote in demotes)
+        line = f"demote — {len(demotes)} corridas · {moved} bajaron"
+        stale = demotes[-1].get("stale") or []
+        if stale:
+            line += f" · vencidas: {', '.join(stale)}"
+        print(line)
+    if renders:
+        print(f"render — {len(renders)} cortes · último {renders[-1]['bytes']} bytes")
+    if misses:
+        text = misses[-1]["text"]
+        if len(text) > 60:
+            text = text[:59] + "…"
+        print(f"miss — {len(misses)} · última: {text}")
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "/data/chats"
     runs = []
     tools = {}
+    memory = memory_events()
     for event in events(path):
         if event.get("kind") == "run":
             runs.append(event)
         elif event.get("kind") == "tool":
             tools.setdefault(event.get("name", "?"), []).append(event)
 
-    if not runs and not tools:
+    if not runs and not tools and not memory:
         sys.exit(f"stats: no hay eventos en {path}")
 
     if runs:
@@ -77,6 +132,10 @@ def main():
         if failed:
             line += f" · {failed} failed"
         print(line)
+
+    if memory:
+        print()
+        report_memory(memory)
 
 
 if __name__ == "__main__":

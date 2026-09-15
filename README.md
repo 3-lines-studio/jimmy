@@ -50,6 +50,8 @@ is ever deleted: what goes down is still in the JSONL.
 
 Both commands write one JSON event per run to
 `$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
+`stats` reads it and appends the memory state to its report: level-1 size,
+syncs, demotions, truncated renders and misses.
 
 ## Scheduled tasks
 

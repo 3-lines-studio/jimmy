@@ -110,7 +110,7 @@ impl Agent {
         );
         let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
-            system.push_str("\n## Memoria\n");
+            system.push_str("\n## Memoria en contexto\n");
             system.push_str(&memory);
             system.push('\n');
         }

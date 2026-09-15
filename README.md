@@ -37,16 +37,17 @@ the image goes on its own. Non-image documents are ignored.
 
 Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
 a plain Markdown file, written by the agent with `read` and `edit`, injected
-whole into the prompt on every message with a 16 KiB cap. Level 2 is
-`notes/memory.jsonl`: append-only, holding every state a level-1 entry ever had,
-searched with `rg`.
+whole into the prompt on every message under `## Memoria en contexto`, with a
+16 KiB cap. Level 2 is `notes/memory.jsonl`: append-only, holding every state a
+level-1 entry ever had, searched with `rg`.
 
-Each level-1 entry starts with `## key · kind · YYYY-MM-DD`, and the key is what
-makes an updated fact replace the old one instead of duplicating it. `jimmy memo
-sync` diffs level 1 against level 2, appends the changes and reports what it saw;
-`jimmy memo demote` moves the oldest entries down when level 1 outgrows the 16 KiB
-budget; `jimmy memo miss "..."` records a memory that failed to surface. Nothing
-is ever deleted: what goes down is still in the JSONL.
+Each level-1 entry starts with `## key · kind · YYYY-MM-DD`. The key is what
+makes an updated fact replace the old one instead of duplicating it, so an
+entry is a topic, not a line in a log. `jimmy memo sync` diffs level 1 against
+level 2, appends the changes and reports what it saw; `jimmy memo demote` moves
+the oldest entries down when level 1 outgrows the budget; `jimmy memo miss`
+records a memory that failed to surface (`jimmy memo miss "..."`). Nothing is
+ever deleted.
 
 Both commands write one JSON event per run to
 `$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
@@ -116,8 +117,8 @@ Jimmy's own state and the agent is told to leave it alone.
 
 ## Model, base URL, and system prompt
 
-Model and base URL are environment variables: `AXE_MODEL` and `AXE_BASE`. To
-point at any OpenAI-compatible endpoint, set both.
+Model and base URL are `AXE_MODEL` and `AXE_BASE`; set both to point at any
+OpenAI-compatible endpoint.
 
 ```sh
 AXE_BASE=https://api.deepseek.com AXE_MODEL=deepseek-chat
@@ -163,26 +164,16 @@ Tools added at runtime with `mise use -g` land in the image filesystem, not on
 Jimmy can read and change its own source. The repo is private, so
 `GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
 fetches it without credentials. Repos live in `projects/<name>/` and changes go
-through a pull request:
-
-1. Reuse the clone, or `git clone` into `projects/<name>`.
-2. Reset it to the latest `main`: `git fetch origin`, `git checkout main`,
-   `git reset --hard origin/main`, `git clean -fd`.
-3. Branch from `origin/main`: `git checkout -b <topic> origin/main`.
-4. Edit, then run `make fmt lint test` (`cargo +nightly fmt`, `clippy -- -D warnings`, `test`).
-5. `git push -u origin <topic>` — git authenticates through `gh`, which reads
-   `GITHUB_TOKEN` — then `gh pr create`.
-6. You review and merge. Railway redeploys `main`.
-
-The workflow is spelled out for the agent in `## Proyectos y git` in `SYSTEM.md`.
+through a pull request; the workflow — reuse the clone, reset to `main`, branch,
+`make fmt lint test`, push, `gh pr create` — is written for the agent in
+`## Proyectos y git` of `SYSTEM.md`. You review and merge, and Railway redeploys
+`main`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
-**Pull requests: RW**. Without it, Jimmy cannot clone or push.
+**Pull requests: RW**.
 
 Guardrails:
 
-- The runtime image ships Rust nightly, `cargo`, and `gh` so the agent can
-  build, test, and open PRs in place.
 - `git config --system` sets a `Jimmy` commit identity and the credential
   helper; `GIT_TERMINAL_PROMPT=0` makes git fail instead of hanging.
 - Enable branch protection on `main` (require a pull request) so the flow is
@@ -236,11 +227,15 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ## Layout
 
 ```
-src/main.rs       config, long-poll loop, per-chat locking
+src/main.rs       config, long-poll loop, per-chat locking, memo CLI
 src/telegram.rs   Bot API client (ureq)
 src/agent.rs      axe turn loop, runtime context, session persistence
+src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/markdown.rs   Markdown to Telegram HTML, message splitting
+src/memo.rs       the two-level memory: sync, demote, miss
+bin/              the CLIs the agent gets: search, recall, browse,
+                  send-media, stats
 mise.toml         global mise tool set baked into the image
 SYSTEM.md         the assistant's system prompt, baked into the image
 ```

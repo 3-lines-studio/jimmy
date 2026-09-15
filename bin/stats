@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+import glob
+import json
+import os
+import sys
+
+
+def sources(path):
+    if os.path.isfile(path):
+        return [path]
+    found = glob.glob(os.path.join(path, "events.jsonl"))
+    found += glob.glob(os.path.join(path, "*/events.jsonl"))
+    return sorted(found)
+
+
+def events(path):
+    for source in sources(path):
+        with open(source, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+
+def median(values):
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else "/data/chats"
+    runs = []
+    tools = {}
+    for event in events(path):
+        if event.get("kind") == "run":
+            runs.append(event)
+        elif event.get("kind") == "tool":
+            tools.setdefault(event.get("name", "?"), []).append(event)
+
+    if not runs and not tools:
+        sys.exit(f"stats: no hay eventos en {path}")
+
+    if runs:
+        outcomes = {}
+        for run in runs:
+            outcomes[run["outcome"]] = outcomes.get(run["outcome"], 0) + 1
+        counted = " · ".join(f"{count} {name}" for name, count in sorted(outcomes.items()))
+        print(f"{len(runs)} runs — {counted}")
+
+        total_in = sum(run["input"] for run in runs)
+        total_cached = sum(run["cached_input"] for run in runs)
+        total_out = sum(run["output"] for run in runs)
+        share = total_cached * 100 // total_in if total_in else 0
+        print(f"tokens — in {total_in} · cached {total_cached} ({share}%) · out {total_out}")
+
+        durations = [run["ms"] for run in runs]
+        print(f"run ms — mediana {median(durations)} · max {max(durations)}")
+
+        window = os.environ.get("AXE_CONTEXT_WINDOW")
+        context = [run["context_input"] for run in runs if run.get("context_input")]
+        if context:
+            of_window = f" de {window}" if window else ""
+            print(f"contexto — último {context[-1]}{of_window}")
+
+    if tools and runs:
+        print()
+
+    for name, calls in sorted(tools.items(), key=lambda item: -sum(c["ms"] for c in item[1])):
+        durations = [call["ms"] for call in calls]
+        total_bytes = sum(call["bytes"] for call in calls)
+        line = (
+            f"• {name} — {len(calls)} calls · {sum(durations)} ms"
+            f" · mediana {median(durations)} ms · {total_bytes} bytes"
+        )
+        failed = sum(1 for call in calls if call["failed"])
+        if failed:
+            line += f" · {failed} failed"
+        print(line)
+
+
+if __name__ == "__main__":
+    main()

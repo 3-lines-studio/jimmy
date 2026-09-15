@@ -41,7 +41,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "axe"
 version = "0.1.0"
-source = "git+https://github.com/3-lines-studio/axe?rev=db89e9a722d289728d9b7bc953207388daae7fc9#db89e9a722d289728d9b7bc953207388daae7fc9"
+source = "git+https://github.com/3-lines-studio/axe?rev=c1d27497c54fd7ad371a8b7f14366b9371191d47#c1d27497c54fd7ad371a8b7f14366b9371191d47"
 dependencies = [
  "crossterm",
  "libc",

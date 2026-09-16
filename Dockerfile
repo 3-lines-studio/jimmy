@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates libcurl4 bash git curl less unzip xz-utils bzip2 gzip \
-        build-essential chromium \
+        build-essential chromium tini \
     && rm -rf /var/lib/apt/lists/*
 
 ARG WAX_VERSION=v0.3.2
@@ -66,4 +66,5 @@ COPY --chmod=0755 bin/stats /usr/local/bin/stats
 ENV WAX_NO_SANDBOX=1
 
 WORKDIR /data
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["jimmy"]

@@ -1,4 +1,4 @@
-use crate::telegram::Telegram;
+use crate::transport::{Session, Transport};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput};
@@ -8,8 +8,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const MESSAGE_CHARS: usize = 4000;
-const MARKDOWN_CHARS: usize = 3500;
 const OUTPUT_RESERVE: usize = 64 * 1024;
 const HELP: &str = "Comandos:\n/status — contexto usado y versión\n/clear — borrar el contexto de este chat\n/help — esto";
 const CONTEXT_OPTIONS: ContextOptions = ContextOptions {
@@ -54,12 +52,12 @@ impl Agent {
 
     pub fn respond(
         &self,
-        tg: &Telegram,
-        chat_id: i64,
+        transport: &dyn Transport,
+        session: &Session,
         text: &str,
         images: Vec<Image>,
     ) -> Result<(), String> {
-        let dir = self.chat_dir(chat_id);
+        let dir = self.chat_dir(session);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut entries = load_entries(&dir);
@@ -77,10 +75,15 @@ impl Agent {
         history.push(user.clone());
         entries.push(Entry::Message { message: user });
 
-        self.execute(tg, chat_id, history, entries, Some(dir))
+        self.execute(transport, session, history, entries, Some(dir))
     }
 
-    pub fn run_task(&self, tg: &Telegram, chat_id: i64, prompt: &str) -> Result<(), String> {
+    pub fn run_task(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        prompt: &str,
+    ) -> Result<(), String> {
         let user = Message {
             role: "user".into(),
             content: prompt.to_string(),
@@ -89,17 +92,17 @@ impl Agent {
             reasoning: String::new(),
             images: Vec::new(),
         };
-        self.execute(tg, chat_id, vec![user], Vec::new(), None)
+        self.execute(transport, session, vec![user], Vec::new(), None)
     }
 
-    fn chat_dir(&self, chat_id: i64) -> PathBuf {
-        self.root.join("chats").join(chat_id.to_string())
+    fn chat_dir(&self, session: &Session) -> PathBuf {
+        self.root.join("chats").join(session.key())
     }
 
     fn execute(
         &self,
-        tg: &Telegram,
-        chat_id: i64,
+        transport: &dyn Transport,
+        session: &Session,
         mut history: Vec<Message>,
         mut entries: Vec<Entry>,
         dir: Option<PathBuf>,
@@ -113,8 +116,9 @@ impl Agent {
         system.push('\n');
         system.push_str(&self.context);
         system.push_str(&format!(
-            "Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
-            self.chat_dir(chat_id).display()
+            "Chat actual: {}\nTranscript: {}/transcript.jsonl\n",
+            session.channel,
+            self.chat_dir(session).display()
         ));
         let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
@@ -134,8 +138,8 @@ impl Agent {
             .map(|w| w.saturating_sub(OUTPUT_RESERVE));
         let cancel = Arc::new(AtomicBool::new(false));
 
-        let status = tg.send_message(chat_id, "⚙️ pensando…").ok();
-        let mut sink = TgSink {
+        let status = transport.progress(session);
+        let mut sink = EventSink {
             threshold,
             events: dir.clone(),
         };
@@ -177,12 +181,12 @@ impl Agent {
                 Outcome::Done | Outcome::MaxTurns => {
                     save(&dir, &mut entries)?;
                     let reply = answer(&end.messages[history.len()..]);
-                    finalize_markdown(tg, chat_id, status, &reply);
+                    transport.answer(session, status, &reply);
                     return Ok(());
                 }
                 Outcome::Cancelled => {
                     save(&dir, &mut entries)?;
-                    finalize(tg, chat_id, status, "⚠️ interrumpido");
+                    transport.fail(session, status, "⚠️ interrumpido");
                     return Err("interrumpido".into());
                 }
                 Outcome::Compact => {
@@ -190,7 +194,7 @@ impl Agent {
                         Ok(history) => history,
                         Err(e) => {
                             save(&dir, &mut entries)?;
-                            finalize(tg, chat_id, status, &format!("⚠️ {e}"));
+                            transport.fail(session, status, &format!("⚠️ {e}"));
                             return Err(e);
                         }
                     };
@@ -202,30 +206,30 @@ impl Agent {
                             Ok(history) => history,
                             Err(e) => {
                                 save(&dir, &mut entries)?;
-                                finalize(tg, chat_id, status, &format!("⚠️ {e}"));
+                                transport.fail(session, status, &format!("⚠️ {e}"));
                                 return Err(e);
                             }
                         };
                         continue;
                     }
                     save(&dir, &mut entries)?;
-                    finalize(tg, chat_id, status, &format!("⚠️ error: {e}"));
+                    transport.fail(session, status, &format!("⚠️ error: {e}"));
                     return Err(e);
                 }
             }
         }
     }
-    pub fn command(&self, chat_id: i64, text: &str) -> Option<String> {
+    pub fn command(&self, session: &Session, text: &str) -> Option<String> {
         match text.split_whitespace().next()? {
             "/start" | "/help" => Some(HELP.into()),
-            "/status" => Some(self.status(chat_id)),
-            "/clear" => Some(self.clear(chat_id)),
+            "/status" => Some(self.status(session)),
+            "/clear" => Some(self.clear(session)),
             _ => None,
         }
     }
 
-    fn status(&self, chat_id: i64) -> String {
-        let dir = self.root.join("chats").join(chat_id.to_string());
+    fn status(&self, session: &Session) -> String {
+        let dir = self.chat_dir(session);
         let entries = load_entries(&dir);
         let used = session::latest_context_tokens(&entries).unwrap_or(0);
         let window = self.context_window.unwrap_or(0);
@@ -245,8 +249,8 @@ impl Agent {
         )
     }
 
-    fn clear(&self, chat_id: i64) -> String {
-        let dir = self.root.join("chats").join(chat_id.to_string());
+    fn clear(&self, session: &Session) -> String {
+        let dir = self.chat_dir(session);
         let path = dir.join("transcript.jsonl");
         if !path.exists() {
             return "🧹 no había nada que borrar".into();
@@ -266,12 +270,12 @@ impl Agent {
     }
 }
 
-struct TgSink {
+struct EventSink {
     threshold: Option<usize>,
     events: Option<PathBuf>,
 }
 
-impl Sink for TgSink {
+impl Sink for EventSink {
     fn should_compact(&mut self, input: usize, output: usize) -> bool {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
@@ -338,50 +342,6 @@ fn compact(
     let mut out = session::context_messages_with(entries, CONTEXT_OPTIONS);
     session::drop_incomplete_tool_calls(&mut out);
     Ok(out)
-}
-
-fn finalize(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
-    let mut parts = chunks(text, MESSAGE_CHARS).into_iter();
-    if let Some(id) = status {
-        match parts.next() {
-            Some(first) => {
-                if tg.edit_message(chat_id, id, &first).is_err() {
-                    tg.delete_message(chat_id, id);
-                    let _ = tg.send_message(chat_id, &first);
-                }
-            }
-            None => tg.delete_message(chat_id, id),
-        }
-    }
-    for part in parts {
-        let _ = tg.send_message(chat_id, &part);
-    }
-}
-
-fn finalize_markdown(tg: &Telegram, chat_id: i64, status: Option<i64>, text: &str) {
-    let mut parts = crate::markdown::split(text, MARKDOWN_CHARS).into_iter();
-    if let Some(id) = status {
-        match parts.next() {
-            Some(first) => {
-                let html = crate::markdown::to_telegram_html(&first);
-                if tg.edit_html(chat_id, id, &html).is_err() {
-                    tg.delete_message(chat_id, id);
-                    send_markdown(tg, chat_id, &first);
-                }
-            }
-            None => tg.delete_message(chat_id, id),
-        }
-    }
-    for part in parts {
-        send_markdown(tg, chat_id, &part);
-    }
-}
-
-fn send_markdown(tg: &Telegram, chat_id: i64, markdown: &str) {
-    let html = crate::markdown::to_telegram_html(markdown);
-    if tg.send_html(chat_id, &html).is_err() {
-        let _ = tg.send_message(chat_id, markdown);
-    }
 }
 
 fn answer(messages: &[Message]) -> String {
@@ -478,27 +438,6 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Compact => "compact",
         Outcome::Failed(_) => "failed",
     }
-}
-
-fn chunks(s: &str, max: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut count = 0;
-    for ch in s.chars() {
-        if count == max {
-            out.push(std::mem::take(&mut current));
-            count = 0;
-        }
-        current.push(ch);
-        count += 1;
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
 }
 
 #[cfg(test)]

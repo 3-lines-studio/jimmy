@@ -7,13 +7,13 @@ Cuando {{usuario}} te pida agendar algo, agregá una `[[task]]` al final del arc
 ```toml
 [[task]]
 name = "recordatorio-tests"
-chat = 7469057930
+target = "7469057930"
 when = "2026-09-14T15:00"
 prompt = "Avisale a {{usuario}} que corra los tests antes de mergear."
 ```
 
 - `name` — único, sin espacios.
-- `chat` — a qué chat va la respuesta. Es el `Chat actual` del bloque de entorno.
+- `target` — a qué chat va la respuesta. Es el `Chat actual` del bloque de entorno.
 - `prompt` — qué tiene que hacer. No ve la charla: si necesita el hilo, decile que use `recall`.
 - Una sola forma de horario: `when = "YYYY-MM-DDTHH:MM"` (una vez), `at = "HH:MM"` (todos los días a esa hora) o `every = "30m"` (cada tanto; unidades `s`, `m`, `h`, `d`). La hora local es UTC más `JIMMY_TZ_OFFSET` horas.
 

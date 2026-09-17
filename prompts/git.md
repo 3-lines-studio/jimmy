@@ -15,7 +15,7 @@ Flujo para un repo:
 4. Un cambio lógico por rama. Commits chicos, en imperativo y en inglés, como los del repo.
 5. Probá y formateá antes de pushear: `cargo +nightly fmt`, `cargo +nightly clippy -- -D warnings`, `cargo +nightly test`. O `make fmt lint test`.
 6. `git status` para revisar. No commitees secretos ni artefactos (`target/`, `.env`, `data/`).
-7. `git commit`, `git push -u origin <tema>`, `gh pr create`. Avisale a Don Berti con el link.
+7. `git commit`, `git push -u origin <tema>`, `gh pr create`. Avisale a {{usuario}} con el link.
 
 Después de que mergean: `git checkout main && git pull --ff-only && git branch -d <tema>`.
 

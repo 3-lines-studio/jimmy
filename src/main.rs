@@ -23,6 +23,7 @@ struct Config {
     root: PathBuf,
     workspace: String,
     prompt: String,
+    vars: String,
     allowed: Vec<i64>,
 }
 
@@ -53,6 +54,7 @@ impl Config {
             root,
             workspace,
             prompt: env("JIMMY_PROMPT").unwrap_or_else(|| prompt::DEFAULT.into()),
+            vars: env("JIMMY_VARS").unwrap_or_default(),
             allowed,
         })
     }
@@ -97,7 +99,11 @@ fn main() {
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
-    let fragments = match prompt::assemble(&config.prompt, &prompt::dirs(&config.root)) {
+    let fragments = match prompt::assemble(
+        &config.prompt,
+        &prompt::dirs(&config.root),
+        &prompt::parse_vars(&config.vars),
+    ) {
         Ok(fragments) => fragments,
         Err(e) => {
             eprintln!("jimmy: {e}");

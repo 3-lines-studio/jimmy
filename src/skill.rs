@@ -1,4 +1,6 @@
+use std::iter::Peekable;
 use std::path::Path;
+use std::str::Lines;
 
 pub fn list(dir: &Path) -> String {
     let mut skills = scan(dir);
@@ -50,20 +52,42 @@ fn scan(dir: &Path) -> Vec<(String, String)> {
 }
 
 fn frontmatter(text: &str) -> Vec<(String, String)> {
-    let mut lines = text.lines();
+    let mut lines = text.lines().peekable();
     if lines.next().map(str::trim) != Some("---") {
         return Vec::new();
     }
     let mut fields = Vec::new();
-    for line in lines {
+    while let Some(line) = lines.next() {
         if line.trim() == "---" {
             break;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            fields.push((key.trim().to_string(), unquote(value.trim())));
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.starts_with('>') || value.starts_with('|') {
+            fields.push((key.trim().to_string(), block(&mut lines)));
+            continue;
         }
+        fields.push((key.trim().to_string(), unquote(value)));
     }
     fields
+}
+
+fn block(lines: &mut Peekable<Lines>) -> String {
+    let mut parts = Vec::new();
+    while let Some(next) = lines.peek().copied() {
+        if next.trim().is_empty() {
+            lines.next();
+            continue;
+        }
+        if !next.starts_with(' ') && !next.starts_with('\t') {
+            break;
+        }
+        parts.push(next.trim().to_string());
+        lines.next();
+    }
+    parts.join(" ")
 }
 
 fn unquote(value: &str) -> String {
@@ -123,6 +147,18 @@ mod tests {
         let dir = setup("bad");
         assert!(load(&dir, "../secrets").is_err());
         assert!(load(&dir, "nope").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folded_description_joins_its_lines() {
+        let dir = setup("folded");
+        std::fs::write(
+            dir.join("empty/SKILL.md"),
+            "---\nname: multi\ndescription: >\n  Una cosa\n  y la otra.\n---\n\n# Multi\n",
+        )
+        .unwrap();
+        assert!(list(&dir).contains("empty — Una cosa y la otra."));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

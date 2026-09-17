@@ -1,8 +1,9 @@
 use crate::agent::Agent;
-use crate::telegram::Telegram;
+use crate::transport::Transport;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TICK: Duration = Duration::from_secs(60);
@@ -19,7 +20,10 @@ struct File {
 #[derive(Deserialize)]
 struct Task {
     name: String,
-    chat: i64,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    chat: Option<i64>,
     prompt: String,
     #[serde(default)]
     when: Option<String>,
@@ -27,6 +31,18 @@ struct Task {
     at: Option<String>,
     #[serde(default)]
     every: Option<String>,
+}
+
+impl Task {
+    fn target(&self) -> Result<String, String> {
+        if let Some(target) = &self.target {
+            return Ok(target.clone());
+        }
+        if let Some(chat) = self.chat {
+            return Ok(chat.to_string());
+        }
+        Err(format!("la tarea {} no tiene destino", self.name))
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -47,7 +63,7 @@ struct Run {
     recent: Vec<i64>,
 }
 
-pub fn spawn(tg: Telegram, agent: Agent, workspace: PathBuf) {
+pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) {
     std::thread::spawn(move || {
         let dir = workspace.join("state");
         let offset = std::env::var("JIMMY_TZ_OFFSET")
@@ -55,7 +71,7 @@ pub fn spawn(tg: Telegram, agent: Agent, workspace: PathBuf) {
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0);
         loop {
-            if let Err(e) = tick(&tg, &agent, &dir, offset) {
+            if let Err(e) = tick(transport.as_ref(), &agent, &dir, offset) {
                 eprintln!("jimmy: agenda: {e}");
             }
             std::thread::sleep(TICK);
@@ -63,7 +79,7 @@ pub fn spawn(tg: Telegram, agent: Agent, workspace: PathBuf) {
     });
 }
 
-fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), String> {
+fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Result<(), String> {
     let path = dir.join("schedule.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -84,6 +100,16 @@ fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), Str
         if !due(task, run, now, &date, &time) {
             continue;
         }
+        let session = match task
+            .target()
+            .and_then(|target| transport.parse_target(&target))
+        {
+            Ok(session) => session,
+            Err(e) => {
+                eprintln!("jimmy: agenda: {}: {e}", task.name);
+                continue;
+            }
+        };
         run.recent.retain(|stamp| now - stamp < HOUR);
         if run.recent.len() >= MAX_RUNS_PER_HOUR {
             eprintln!("jimmy: agenda: {} superó el tope por hora", task.name);
@@ -95,10 +121,10 @@ fn tick(tg: &Telegram, agent: &Agent, dir: &Path, offset: i64) -> Result<(), Str
         run.last_date = date.clone();
         run.done = task.when.is_some();
         eprintln!("jimmy: agenda: corriendo {}", task.name);
-        let lock = crate::chat_lock(task.chat);
+        let lock = crate::chat_lock(&session.key());
         let _guard = lock.lock().unwrap();
-        if let Err(e) = agent.run_task(tg, task.chat, &task.prompt) {
-            let _ = tg.send_message(task.chat, &format!("⚠️ la tarea {} falló: {e}", task.name));
+        if let Err(e) = agent.run_task(transport, &session, &task.prompt) {
+            transport.note(&session, &format!("⚠️ la tarea {} falló: {e}", task.name));
         }
         if task.when.is_some() {
             finished.push(task.name.clone());
@@ -227,12 +253,21 @@ mod tests {
     fn task(when: Option<&str>, at: Option<&str>, every: Option<&str>) -> Task {
         Task {
             name: "t".into(),
-            chat: 1,
+            target: None,
+            chat: Some(1),
             prompt: "p".into(),
             when: when.map(String::from),
             at: at.map(String::from),
             every: every.map(String::from),
         }
+    }
+
+    #[test]
+    fn task_target_falls_back_to_chat() {
+        let mut t = task(None, Some("09:00"), None);
+        assert_eq!(t.target().unwrap(), "1");
+        t.target = Some("C1/1.2".into());
+        assert_eq!(t.target().unwrap(), "C1/1.2");
     }
 
     #[test]

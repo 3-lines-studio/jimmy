@@ -218,6 +218,18 @@ cargo +nightly build --release        # refreshes Cargo.lock
 Deploy as a worker (no exposed port). Railway builds from the `Dockerfile` and
 fetches axe from GitHub.
 
+The `Dockerfile` bakes the dev toolchain (Rust, mise, git, gh, build tools) so
+the agent can change Jimmy's own source. For an instance that only needs chat,
+web and files, build `Dockerfile.personal` instead: ca-certificates, bash, curl,
+python3, chromium and tini, no dev tooling. Point the service at it from its
+settings or with a `railway.toml`:
+
+```toml
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.personal"
+```
+
 For persistence, attach a Railway volume to the service and choose a mount
 path. Railway passes the path as `RAILWAY_VOLUME_MOUNT_PATH`, and Jimmy uses it
 as `JIMMY_ROOT`, so the sessions and the workspace land on the volume. Set

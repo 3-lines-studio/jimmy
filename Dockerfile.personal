@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+FROM rust:1.98-bookworm AS builder
+RUN rustup toolchain install nightly --profile minimal && rustup default nightly
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock /build/jimmy/
+COPY src /build/jimmy/src
+WORKDIR /build/jimmy
+RUN cargo build --release --locked
+
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates bash curl python3 python3-venv chromium tini \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG WAX_VERSION=v0.3.2
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) asset=wax-linux-x86_64 ;; \
+         arm64) asset=wax-linux-aarch64 ;; \
+         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+       esac \
+    && base="https://github.com/3-lines-studio/wax/releases/download/${WAX_VERSION}" \
+    && curl -fsSL -o "/tmp/$asset" "$base/$asset" \
+    && curl -fsSL -o /tmp/SHA256SUMS "$base/SHA256SUMS" \
+    && (cd /tmp && grep " $asset$" SHA256SUMS | sha256sum -c -) \
+    && install -m 0755 "/tmp/$asset" /usr/local/bin/wax \
+    && rm -f "/tmp/$asset" /tmp/SHA256SUMS
+
+RUN python3 -m venv /opt/browse-venv \
+    && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 /opt/browse-venv/bin/pip install --no-cache-dir playwright \
+    && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 /opt/browse-venv/bin/playwright install ffmpeg
+
+COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
+
+COPY prompts /usr/local/share/jimmy/prompts
+COPY --chmod=0755 bin/search /usr/local/bin/search
+COPY --chmod=0755 bin/recall /usr/local/bin/recall
+COPY --chmod=0755 bin/browse /usr/local/bin/browse
+COPY --chmod=0755 bin/send-media /usr/local/bin/send-media
+COPY --chmod=0755 bin/stats /usr/local/bin/stats
+ENV WAX_NO_SANDBOX=1
+
+WORKDIR /data
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["jimmy"]

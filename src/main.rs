@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use transport::slack;
 use transport::telegram;
 use transport::{Event, EventSource, Session, Transport};
 
@@ -32,7 +33,8 @@ impl Config {
         let api_key = env("OPENAI_API_KEY").ok_or("OPENAI_API_KEY no está configurado")?;
         let root = root_from_env();
         let workspace = workspace_from_env().display().to_string();
-        let allowed = env("TELEGRAM_ALLOWED_USER_IDS")
+        let allowed = env("JIMMY_ALLOWED_USER_IDS")
+            .or_else(|| env("TELEGRAM_ALLOWED_USER_IDS"))
             .map(|v| {
                 v.split(',')
                     .map(|id| id.trim().to_string())
@@ -225,6 +227,10 @@ fn main() {
 fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
     match transport_name().as_str() {
         "telegram" => Ok(Arc::new(telegram::Telegram::new(telegram_token()?))),
+        "slack" => Ok(Arc::new(slack::Slack::new(
+            slack_bot_token()?,
+            slack_app_token()?,
+        ))),
         other => Err(format!("transporte desconocido: {other}")),
     }
 }
@@ -233,6 +239,10 @@ fn source_from_env() -> Result<Box<dyn EventSource>, String> {
     match transport_name().as_str() {
         "telegram" => Ok(Box::new(telegram::Updates::new(telegram::Telegram::new(
             telegram_token()?,
+        )))),
+        "slack" => Ok(Box::new(slack::Events::new(slack::Slack::new(
+            slack_bot_token()?,
+            slack_app_token()?,
         )))),
         other => Err(format!("transporte desconocido: {other}")),
     }
@@ -244,6 +254,14 @@ fn transport_name() -> String {
 
 fn telegram_token() -> Result<String, String> {
     env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado".into())
+}
+
+fn slack_bot_token() -> Result<String, String> {
+    env("SLACK_BOT_TOKEN").ok_or("SLACK_BOT_TOKEN no está configurado".into())
+}
+
+fn slack_app_token() -> Result<String, String> {
+    env("SLACK_APP_TOKEN").ok_or("SLACK_APP_TOKEN no está configurado".into())
 }
 
 fn send_command(args: &[String]) -> i32 {

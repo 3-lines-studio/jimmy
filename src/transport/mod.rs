@@ -1,3 +1,4 @@
+pub mod slack;
 pub mod telegram;
 
 use std::path::Path;

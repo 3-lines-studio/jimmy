@@ -90,7 +90,10 @@ appends a block. The tick picks it up without a restart.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | — | required |
+| `JIMMY_TRANSPORT` | `telegram` | `telegram` or `slack` |
+| `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
+| `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
+| `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |
 | `OPENAI_API_KEY` | — | required; DeepSeek (or any OpenAI-compatible) key |
 | `TRANSCRIBE_API_KEY` | empty | Groq key for voice transcription; empty rejects voice notes |
 | `GEMINI_API_KEY` | empty | Google AI Studio key for the `gen-image` tool; empty disables it |
@@ -99,7 +102,7 @@ appends a block. The tick picks it up without a restart.
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
-| `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
+| `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
@@ -109,10 +112,24 @@ appends a block. The tick picks it up without a restart.
 | `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
 | `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
 
-Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
-Telegram user who finds the bot gets shell access to the machine. To find your
-own id, put any placeholder in the list, send the bot a message and read the
+Set `JIMMY_ALLOWED_USER_IDS` before exposing the bot. Empty means any user who
+finds the bot gets shell access to the machine. To find your own id, put any
+placeholder in the list, send the bot a message and read the
 `jimmy: ignoré un mensaje de <id>` line it logs.
+
+### Slack app
+
+The `slack` transport uses Socket Mode, so no public URL is needed. In the app:
+
+- Enable Socket Mode and create an app-level token with the `connections:write`
+  scope (`SLACK_APP_TOKEN`).
+- Bot scopes: `app_mentions:read`, `im:history`, `chat:write`, `files:read`,
+  `files:write`.
+- Event subscriptions: `app_mention` and `message.im`.
+- The bot token goes in `SLACK_BOT_TOKEN`. The allowlist holds Slack user ids.
+
+A channel mention opens a thread and jimny answers there: one thread is one
+session. A direct message is a single continuous session.
 
 ## Workspace
 

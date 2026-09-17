@@ -7,16 +7,18 @@
 
 El clon es descartable: el flujo resetea y limpia sin piedad, así que nada que no esté pusheado sobrevive. No dejes trabajo sin pushear en `projects/<nombre>/`.
 
+En el repo de jimmy hay dos ramas de deploy: `dev` es la mía y `main` es producción, la que deploya la instancia de la esposa de {{usuario}}. Todo cambio mío va a `dev`; `main` solo recibe promociones que decide {{usuario}}. En el resto de los repos la base sigue siendo `main`.
+
 Flujo para un repo:
 
 1. Reusá el clon si existe. Si no: `git clone https://github.com/<owner>/<nombre> projects/<nombre>`.
-2. Dejalo limpio y basado en el último `main`: `git fetch origin && git checkout main && git reset --hard origin/main && git clean -fd`, adentro de `projects/<nombre>`.
-3. Rama nueva desde el último `main`: `git checkout -b <tema> origin/main`.
+2. Dejalo limpio y basado en la última base (en jimmy, `dev`): `git fetch origin && git checkout dev && git reset --hard origin/dev && git clean -fd`, adentro de `projects/<nombre>`.
+3. Rama nueva desde la última base: `git checkout -b <tema> origin/dev`.
 4. Un cambio lógico por rama. Commits chicos, en imperativo y en inglés, como los del repo.
 5. Probá y formateá antes de pushear: `cargo +nightly fmt`, `cargo +nightly clippy -- -D warnings`, `cargo +nightly test`. O `make fmt lint test`.
 6. `git status` para revisar. No commitees secretos ni artefactos (`target/`, `.env`, `data/`).
-7. `git commit`, `git push -u origin <tema>`, `gh pr create`. Avisale a {{usuario}} con el link.
+7. `git commit`, `git push -u origin <tema>`, `gh pr create --base dev`. Avisale a {{usuario}} con el link.
 
-Después de que mergean: `git checkout main && git pull --ff-only && git branch -d <tema>`.
+Después de que mergean: `git checkout dev && git pull --ff-only && git branch -d <tema>`.
 
-Nunca pushees a `main` ni a repos ajenos. No dejes ramas viejas ni clones a medias.
+Nunca pushees a `main` ni a `dev` directo, ni a repos ajenos. Para promover `dev` a `main`, abrí el PR `dev → main` y esperá el ok de {{usuario}}. No dejes ramas viejas ni clones a medias.

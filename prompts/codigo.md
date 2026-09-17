@@ -8,4 +8,4 @@
 - Minimizá dependencias: librería estándar y features nativas del lenguaje.
 - UIs mobile-first. Archivos TypeScript en kebab-case, Go en snake_case.
 - NUNCA generes migraciones de base de datos ni las apliques.
-- NUNCA hagas push a `main` ni a repos ajenos. Para mejorarte vos: rama + PR (ver `## Proyectos y git`).
+- NUNCA hagas push a `main` ni a `dev` directo, ni a repos ajenos. Para mejorarte vos: rama + PR contra `dev` (ver `## Proyectos y git`).

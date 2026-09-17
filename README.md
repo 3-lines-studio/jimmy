@@ -204,10 +204,16 @@ packages; `node_modules` inside the workspace also lives on the volume.
 Jimmy can read and change its own source. The repo is private, so
 `GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
 fetches it without credentials. Repos live in `projects/<name>/` and changes go
-through a pull request; the workflow — reuse the clone, reset to `main`, branch,
-`make fmt lint test`, push, `gh pr create` — is written for the agent in
-`## Proyectos y git` of `prompts/git.md`. You review and merge, and Railway
-redeploys `main`.
+through a pull request; the workflow — reuse the clone, reset to `dev`, branch,
+`make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
+in `## Proyectos y git` of `prompts/git.md`.
+
+Deploy branches: `dev` is the development line and backs the owner's instance,
+`main` is production and backs the personal instance. Every agent change lands
+on `dev`; promoting to `main` is a `dev → main` pull request the owner approves.
+So point each Railway service at the branch it should track — the personal
+service at `main`, the owner's at `dev` — and Railway redeploys that branch on
+push.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -216,8 +222,8 @@ Guardrails:
 
 - `git config --system` sets a `Jimmy` commit identity and the credential
   helper; `GIT_TERMINAL_PROMPT=0` makes git fail instead of hanging.
-- Enable branch protection on `main` (require a pull request) so the flow is
-  enforced, not just requested by the prompt.
+- Protect `main` and `dev` (require a pull request) so the flow is enforced,
+  not just requested by the prompt.
 - The agent runs with unsandboxed bash, so a leaked `GITHUB_TOKEN` is the blast
   radius; scope it to this repo only.
 

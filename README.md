@@ -33,6 +33,11 @@ file is downloaded from Telegram and passed to the agent as an inline image, so
 the model can look at it. A caption becomes the prompt text; without a caption
 the image goes on its own. Non-image documents are ignored.
 
+Voice notes are transcribed with Groq (`whisper-large-v3`) when
+`TRANSCRIBE_API_KEY` is set, up to 300 seconds. The transcript is echoed back
+and used as the prompt. Without the key, voice notes are rejected. Only
+Telegram voice notes are handled; audio sent as a document is ignored.
+
 ## Memory
 
 Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
@@ -87,6 +92,7 @@ appends a block. The tick picks it up without a restart.
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | — | required |
 | `OPENAI_API_KEY` | — | required; DeepSeek (or any OpenAI-compatible) key |
+| `TRANSCRIBE_API_KEY` | empty | Groq key for voice transcription; empty rejects voice notes |
 | `AXE_BASE` | `https://api.deepseek.com` | API base URL |
 | `AXE_MODEL` | `deepseek-flash` | model name |
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
@@ -96,10 +102,16 @@ appends a block. The tick picks it up without a restart.
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
+| `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
+| `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |
+| `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
+| `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
 
 Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
-Telegram user who finds the bot gets shell access to the machine.
+Telegram user who finds the bot gets shell access to the machine. To find your
+own id, put any placeholder in the list, send the bot a message and read the
+`jimmy: ignoré un mensaje de <id>` line it logs.
 
 ## Workspace
 
@@ -215,6 +227,8 @@ cp .env.example .env   # fill in the token, key, and your user id
 make build
 make run
 ```
+
+Requires Docker: the `Makefile` targets wrap `docker build` and `docker run`.
 
 `make build` runs `docker build -t jimmy .`. axe is a pinned git dependency, so
 the build fetches it from GitHub. The build must use nightly Rust because axe's

@@ -16,6 +16,7 @@ MIME_TYPES = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
 }
+OUTPUT_SUFFIXES = (".jpg", ".jpeg")
 
 
 def read_image(path):
@@ -72,6 +73,10 @@ def main():
     if not key:
         raise SystemExit("gen-image: GEMINI_API_KEY is not set")
 
+    out = Path(args.out)
+    if out.suffix.lower() not in OUTPUT_SUFFIXES:
+        raise SystemExit("gen-image: the output must end in .jpg or .jpeg")
+
     inputs = [{"type": "text", "text": args.prompt}]
     inputs += [read_image(path) for path in args.ref]
 
@@ -80,7 +85,7 @@ def main():
         "input": inputs,
         "response_format": {
             "type": "image",
-            "mime_type": "image/png",
+            "mime_type": "image/jpeg",
             "aspect_ratio": args.aspect,
             "image_size": args.size,
         },
@@ -90,7 +95,6 @@ def main():
     if not image:
         raise SystemExit("gen-image: no image in response")
 
-    out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(base64.b64decode(image["data"]))
     print(json.dumps({"ok": True, "path": str(out), "bytes": out.stat().st_size}))

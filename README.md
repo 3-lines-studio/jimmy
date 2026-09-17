@@ -95,6 +95,7 @@ appends a block. The tick picks it up without a restart.
 | `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
+| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 
 Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
@@ -145,8 +146,19 @@ same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
 JIMMY_PROMPT=identidad,estilo,herramientas,workspace,memoria,agenda
 ```
 
-The list is read once at startup and the assembled prompt does not change while
-the process lives, so the model's prefix cache stays warm.
+A fragment may carry `{{clave}}` placeholders. `JIMMY_VARS` supplies them as
+comma-separated `clave=valor` pairs. The default fragments use `{{usuario}}` and
+`{{asistente}}`:
+
+```sh
+JIMMY_VARS="usuario=Don Berti,asistente=Jimmy"
+```
+
+A placeholder with no value is a startup error. Single braces are left alone, so
+a fragment can carry JSON like `{"action":"goto"}`.
+
+The list and the vars are read once at startup and the assembled prompt does not
+change while the process lives, so the model's prefix cache stays warm.
 
 ## Tools
 

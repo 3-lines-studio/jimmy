@@ -93,6 +93,7 @@ appends a block. The tick picks it up without a restart.
 | `TELEGRAM_BOT_TOKEN` | — | required |
 | `OPENAI_API_KEY` | — | required; DeepSeek (or any OpenAI-compatible) key |
 | `TRANSCRIBE_API_KEY` | empty | Groq key for voice transcription; empty rejects voice notes |
+| `GEMINI_API_KEY` | empty | Google AI Studio key for the `gen-image` tool; empty disables it |
 | `AXE_BASE` | `https://api.deepseek.com` | API base URL |
 | `AXE_MODEL` | `deepseek-flash` | model name |
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |

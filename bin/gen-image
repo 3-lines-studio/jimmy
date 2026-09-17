@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+import argparse
+import base64
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
+MODEL = "gemini-3.1-flash-image"
+SIZES = ("0.5K", "1K", "2K", "4K")
+MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def read_image(path):
+    if not path.is_file():
+        raise SystemExit(f"gen-image: no such file: {path}")
+    mime_type = MIME_TYPES.get(path.suffix.lower())
+    if not mime_type:
+        raise SystemExit(f"gen-image: unsupported image type: {path}")
+    data = base64.b64encode(path.read_bytes()).decode()
+    return {"type": "image", "data": data, "mime_type": mime_type}
+
+
+def find_image(node):
+    if isinstance(node, dict):
+        if node.get("type") == "image" and node.get("data"):
+            return node
+        for value in node.values():
+            image = find_image(value)
+            if image:
+                return image
+    if isinstance(node, list):
+        for value in node:
+            image = find_image(value)
+            if image:
+                return image
+    return None
+
+
+def create_interaction(key, body):
+    request = urllib.request.Request(
+        ENDPOINT,
+        data=json.dumps(body).encode(),
+        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace").strip()
+        raise SystemExit(f"gen-image: HTTP {error.code}: {detail[:500]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="gen-image")
+    parser.add_argument("prompt")
+    parser.add_argument("-o", "--out", required=True)
+    parser.add_argument("--aspect", default="1:1")
+    parser.add_argument("--size", default="1K", choices=SIZES)
+    parser.add_argument("--ref", action="append", default=[], type=Path)
+    args = parser.parse_args()
+
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        raise SystemExit("gen-image: GEMINI_API_KEY is not set")
+
+    inputs = [{"type": "text", "text": args.prompt}]
+    inputs += [read_image(path) for path in args.ref]
+
+    body = {
+        "model": MODEL,
+        "input": inputs,
+        "response_format": {
+            "type": "image",
+            "mime_type": "image/png",
+            "aspect_ratio": args.aspect,
+            "image_size": args.size,
+        },
+    }
+
+    image = find_image(create_interaction(key, body))
+    if not image:
+        raise SystemExit("gen-image: no image in response")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(base64.b64decode(image["data"]))
+    print(json.dumps({"ok": True, "path": str(out), "bytes": out.stat().st_size}))
+
+
+if __name__ == "__main__":
+    main()

@@ -67,6 +67,7 @@ COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/send-media /usr/local/bin/send-media
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
+COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
 ENV WAX_NO_SANDBOX=1
 
 WORKDIR /data

@@ -166,6 +166,16 @@ credentials: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` for
 `bqx`, `DATABASE_URL` for `pgx`. Versions are pinned in the `Dockerfile`
 (`BQX_VERSION`, `PGX_VERSION`).
 
+## Content
+
+The `contenido` prompt fragment, opt-in via `JIMMY_PROMPT`, expects a content
+operation under `projects/contenido/`: `marca/` (tone, product, audience,
+references), `assets/`, `templates/` (HTML publication layouts) and `semanas/`
+(one markdown per week). It tells the agent to read the brand, propose angles,
+fill a template, render it with `browse --shot` and preview it with
+`jimmy send`. The image ships no brand and no templates: each instance provides
+its own, usually by cloning a private repo there.
+
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.

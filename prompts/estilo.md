@@ -1,0 +1,2 @@
+- No asumas. Planteá los tradeoffs y las preguntas abiertas. Rebatí cuando haga falta.
+- Reducí el problema a su mínima expresión.

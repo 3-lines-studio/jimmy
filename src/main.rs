@@ -2,6 +2,7 @@ mod agent;
 mod audio;
 mod markdown;
 mod memo;
+mod prompt;
 mod schedule;
 mod telegram;
 
@@ -21,6 +22,7 @@ struct Config {
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
+    prompt: String,
     allowed: Vec<i64>,
 }
 
@@ -50,6 +52,7 @@ impl Config {
             ),
             root,
             workspace,
+            prompt: env("JIMMY_PROMPT").unwrap_or_else(|| prompt::DEFAULT.into()),
             allowed,
         })
     }
@@ -94,6 +97,13 @@ fn main() {
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
+    let fragments = match prompt::assemble(&config.prompt, &prompt::dirs(&config.root)) {
+        Ok(fragments) => fragments,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            std::process::exit(1);
+        }
+    };
     let agent = Agent::new(
         config.base.clone(),
         config.model.clone(),
@@ -101,6 +111,7 @@ fn main() {
         config.context_window,
         config.root.clone(),
         config.workspace.clone(),
+        fragments,
     );
     let tg = Telegram::new(config.token.clone());
     schedule::spawn(

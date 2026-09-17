@@ -117,7 +117,7 @@ impl Agent {
         system.push_str(&self.context);
         system.push_str(&format!(
             "Chat actual: {}\nTranscript: {}/transcript.jsonl\n",
-            session.channel,
+            session.key(),
             self.chat_dir(session).display()
         ));
         let memory = crate::memo::render(Path::new(&self.workspace));

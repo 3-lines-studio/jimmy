@@ -178,9 +178,13 @@ The image ships:
 
 Edit `mise.toml` or bump `WAX_VERSION` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
-`/data`, so they do not survive a Railway redeploy. Python and Node packages
-installed at runtime (`pip`, `npm`) land there too; the agent is told to keep
-persistent Python packages in a venv under `/data/venv`.
+`/data`, so they do not survive a Railway redeploy.
+
+`uv` is pointed at the volume — `UV_PYTHON_INSTALL_DIR=/data/uv/python`,
+`UV_CACHE_DIR=/data/uv/cache`, `UV_PYTHON_PREFERENCE=only-managed` — so
+`uv venv /data/venv` uses an interpreter uv keeps on `/data` and the venv
+survives redeploys. That is what the agent is told to use for persistent Python
+packages; `node_modules` inside the workspace also lives on the volume.
 
 ## Self-improvement
 

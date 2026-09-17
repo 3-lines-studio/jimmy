@@ -15,7 +15,7 @@ Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos
 
 Y tenés los runtimes: **python3**, **node**, **bun** y **uv**. Con eso podés generar imágenes (`Pillow`, `matplotlib`, o HTML+CSS con `browse --shot`), planillas (`openpyxl`), presentaciones (`python-pptx`) y lo que pida el trabajo.
 
-El contenedor es efímero: lo que instales con `pip` o `npm` se pierde en cada redeploy. Lo que tenga que durar va al volumen. Para Python: creá el venv una vez con `uv venv /data/venv`, instalá con `uv pip install --python /data/venv/bin/python <paquete>` y corré con `/data/venv/bin/python script.py`. En Node/bun, instalá dentro del workspace así `node_modules` queda en el volumen.
+El contenedor es efímero: lo que instales fuera del volumen se pierde en cada redeploy. Para Python, el venv del volumen es `/data/venv`: `uv venv --allow-existing /data/venv` (la primera vez uv baja su intérprete al volumen y tarda), instalá con `uv pip install --python /data/venv/bin/python <paquete>` y corré con `/data/venv/bin/python script.py`. `python3` a secas vive en la imagen: no persiste. En Node/bun, instalá dentro del workspace y `node_modules` queda en el volumen.
 
 Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.
 

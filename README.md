@@ -148,6 +148,24 @@ path jimmy knows; each instance populates its own volume, typically by cloning a
 private skills repo there. The agent lists skills with `jimmy skill list` and
 loads one with `jimmy skill load <name>`.
 
+## Data tools
+
+The image ships `bqx` (read-only BigQuery) and `pgx` (read-only PostgreSQL), the
+same CLI tools the AX ecosystem uses:
+
+```sh
+printf '{"sql":"SELECT 1"}' | bqx run bigquery_query
+printf '{"sql":"SELECT 1"}' | pgx run postgres_query
+```
+
+Both stop at 1,000 rows; `bqx` dry-runs and only executes what BigQuery
+classifies as `SELECT`, `pgx` runs in a read-only transaction. `bqx gcs-copy
+BUCKET OBJECT FILE` downloads a private GCS object. They are inert until an
+instance adds the `data` prompt fragment (`JIMMY_PROMPT=...,data,...`) and its
+credentials: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` for
+`bqx`, `DATABASE_URL` for `pgx`. Versions are pinned in the `Dockerfile`
+(`BQX_VERSION`, `PGX_VERSION`).
+
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.

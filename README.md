@@ -94,6 +94,7 @@ appends a block. The tick picks it up without a restart.
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
+| `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 
 Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
@@ -102,8 +103,8 @@ Telegram user who finds the bot gets shell access to the machine.
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.
-Jimmy creates it at startup with a fixed layout and `SYSTEM.md` tells the agent
-to keep to it:
+Jimmy creates it at startup with a fixed layout and `prompts/workspace.md` tells
+the agent to keep to it:
 
 - `notes/` — long-lived notes and memory
 - `projects/` — one directory per piece of work; code or not (a repo, a document,
@@ -126,18 +127,26 @@ AXE_BASE=https://openrouter.ai/api/v1 AXE_MODEL=x-ai/grok-4.6
 AXE_BASE=https://api.z.ai/api/coding/paas/v4 AXE_MODEL=glm-5.3-flash
 ```
 
-The system prompt is axe's, not a Jimmy-specific one. Jimmy calls
-`axe::system_prompt`, the same function the `axe` binary uses: axe's built-in
-prompt plus the `SYSTEM.md` that axe reads from its config directory.
+The system prompt is assembled from fragments. Axe contributes the tool list;
+Jimmy appends the fragments it is told to, in order, separated by a blank line,
+then the runtime context and the memory.
 
-This repo ships `SYSTEM.md`. The Dockerfile copies it to
-`/root/.config/axe/SYSTEM.md` and sets `XDG_CONFIG_HOME=/root/.config`, so the
-image uses it. Edit the file and rebuild to change it, or mount over it at
-runtime:
+`JIMMY_PROMPT` is a comma-separated list of fragment names. The default is
+`identidad,estilo,codigo,jimmy,herramientas,workspace,memoria,agenda,git`. Each
+name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then under
+the image's `/usr/local/share/jimmy/prompts`. A name with no file is a startup
+error, so a typo fails loudly instead of dropping a fragment in silence.
+
+The image ships the default fragments. Override one by dropping a file with the
+same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
+`JIMMY_PROMPT`:
 
 ```sh
-docker run ... -v $(PWD)/SYSTEM.md:/root/.config/axe/SYSTEM.md jimmy
+JIMMY_PROMPT=identidad,estilo,herramientas,workspace,memoria,agenda
 ```
+
+The list is read once at startup and the assembled prompt does not change while
+the process lives, so the model's prefix cache stays warm.
 
 ## Tools
 
@@ -166,8 +175,8 @@ Jimmy can read and change its own source. The repo is private, so
 fetches it without credentials. Repos live in `projects/<name>/` and changes go
 through a pull request; the workflow — reuse the clone, reset to `main`, branch,
 `make fmt lint test`, push, `gh pr create` — is written for the agent in
-`## Proyectos y git` of `SYSTEM.md`. You review and merge, and Railway redeploys
-`main`.
+`## Proyectos y git` of `prompts/git.md`. You review and merge, and Railway
+redeploys `main`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -234,8 +243,9 @@ src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the two-level memory: sync, demote, miss
+src/prompt.rs     assemble the system prompt from fragments
 bin/              the CLIs the agent gets: search, recall, browse,
                   send-media, stats
 mise.toml         global mise tool set baked into the image
-SYSTEM.md         the assistant's system prompt, baked into the image
+prompts/          system prompt fragments, baked into the image
 ```

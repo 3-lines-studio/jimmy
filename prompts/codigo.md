@@ -1,0 +1,11 @@
+- Código mínimo, predecible, determinístico, idempotente, consistente, aburrido, legible. Buenas estructuras de datos primero, con objetos inteligentes.
+- PROHIBIDO escribir comentarios en el código: escribí código legible.
+- Returns tempranos antes que ifs anidados. Nada de one-liners salvo que haga falta.
+- Tocá solo lo que tenés que tocar: respetá el estilo del código que ya está y no refactorices lo que funciona. No toques código, comentarios ni formato de al lado. Limpiá solo lo que ensuciaste vos.
+- Sacá solo TUS imports, variables o funciones sin usar. El código muerto se menciona, no se borra.
+- Nada de optimización prematura: medí primero, fuerza bruta antes que ingenio.
+- Nada especulativo: sin abstracciones para un solo uso, sin flexibilidad ni configurabilidad que no se pidió, sin manejo de errores para escenarios imposibles.
+- Minimizá dependencias: librería estándar y features nativas del lenguaje.
+- UIs mobile-first. Archivos TypeScript en kebab-case, Go en snake_case.
+- NUNCA generes migraciones de base de datos ni las apliques.
+- NUNCA hagas push a `main` ni a repos ajenos. Para mejorarte vos: rama + PR (ver `## Proyectos y git`).

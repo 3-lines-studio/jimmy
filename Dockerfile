@@ -57,7 +57,7 @@ ENV GIT_TERMINAL_PROMPT=0
 COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
 
 ENV XDG_CONFIG_HOME=/root/.config
-COPY SYSTEM.md /root/.config/axe/SYSTEM.md
+COPY prompts /usr/local/share/jimmy/prompts
 COPY --chmod=0755 bin/search /usr/local/bin/search
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse

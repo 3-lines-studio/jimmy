@@ -25,6 +25,7 @@ pub struct Agent {
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
+    fragments: String,
     context: String,
 }
 
@@ -36,6 +37,7 @@ impl Agent {
         context_window: Option<usize>,
         root: PathBuf,
         workspace: String,
+        fragments: String,
     ) -> Self {
         let context = runtime_context(&model, &base, &root, &workspace);
         Self {
@@ -45,6 +47,7 @@ impl Agent {
             context_window,
             root,
             workspace,
+            fragments,
             context,
         }
     }
@@ -102,12 +105,17 @@ impl Agent {
         dir: Option<PathBuf>,
     ) -> Result<(), String> {
         let tools = axe::tui::build_tools(&self.workspace);
-        let mut system = format!(
-            "{}\n\n{}Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
-            axe::system_prompt(&tools, &self.workspace),
-            self.context,
+        let mut system = axe::system_prompt(&tools);
+        if !self.fragments.is_empty() {
+            system.push_str("\n\n");
+            system.push_str(&self.fragments);
+        }
+        system.push('\n');
+        system.push_str(&self.context);
+        system.push_str(&format!(
+            "Chat actual: {chat_id}\nTranscript: {}/transcript.jsonl\n",
             self.chat_dir(chat_id).display()
-        );
+        ));
         let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
             system.push_str("\n## Memoria en contexto\n");

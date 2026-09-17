@@ -102,6 +102,7 @@ appends a block. The tick picks it up without a restart.
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
+| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | directory with Agent Skills (see below) |
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
@@ -130,6 +131,22 @@ The `slack` transport uses Socket Mode, so no public URL is needed. In the app:
 
 A channel mention opens a thread and jimny answers there: one thread is one
 session. A direct message is a single continuous session.
+
+## Skills
+
+A skill is a folder of instructions and bundled files the agent loads on
+demand, so they stay out of the context until a task matches. Each skill is
+`<dir>/<name>/SKILL.md`, with `name` and `description` in its frontmatter:
+
+```
+skills/charts/SKILL.md
+skills/charts/render_chart.py
+```
+
+The image ships none. `JIMMY_SKILLS` (default `$JIMMY_ROOT/skills`) is the only
+path jimmy knows; each instance populates its own volume, typically by cloning a
+private skills repo there. The agent lists skills with `jimmy skill list` and
+loads one with `jimmy skill load <name>`.
 
 ## Workspace
 
@@ -292,11 +309,12 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ## Layout
 
 ```
-src/main.rs       config, event loop, per-session locking, memo and send CLIs
+src/main.rs       config, event loop, per-session locking, memo/send/skill CLIs
 src/transport/    the transport seam, with the Telegram adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
 src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
+src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the two-level memory: sync, demote, miss
 src/prompt.rs     assemble the system prompt from fragments

@@ -4,6 +4,7 @@ mod markdown;
 mod memo;
 mod prompt;
 mod schedule;
+mod skill;
 mod transport;
 
 use agent::Agent;
@@ -87,6 +88,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("skill") {
+        std::process::exit(skill_command(&args[1..]));
     }
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -310,6 +314,43 @@ fn send_command(args: &[String]) -> i32 {
         Err(e) => {
             eprintln!("jimmy send: {e}");
             1
+        }
+    }
+}
+
+fn skills_dir() -> PathBuf {
+    match env("JIMMY_SKILLS") {
+        Some(path) => PathBuf::from(path),
+        None => root_from_env().join("skills"),
+    }
+}
+
+fn skill_command(args: &[String]) -> i32 {
+    let dir = skills_dir();
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            println!("{}", skill::list(&dir));
+            0
+        }
+        Some("load") => match args.get(1) {
+            Some(name) => match skill::load(&dir, name) {
+                Ok(text) => {
+                    println!("{text}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("jimmy skill: {e}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("uso: jimmy skill load <nombre>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("uso: jimmy skill <list|load nombre>");
+            2
         }
     }
 }

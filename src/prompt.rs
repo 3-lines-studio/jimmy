@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT: &str =
-    "identidad,estilo,codigo,jimmy,herramientas,dev,workspace,memoria,agenda,git";
+    "identidad,estilo,codigo,jimmy,herramientas,skills,dev,workspace,memoria,agenda,git";
 const BUILTIN: &str = "/usr/local/share/jimmy/prompts";
 
 pub fn dirs(root: &Path) -> Vec<PathBuf> {

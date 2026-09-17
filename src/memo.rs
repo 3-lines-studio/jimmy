@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub const BUDGET: usize = 16 * 1024;
 const STALE_DAYS: i64 = 30;
 const STALE_SHIFT: u32 = 6;
-const KEEP: [&str; 4] = ["don-berti", "proyectos", "entorno", "decisiones-vigentes"];
+const KEEP: [&str; 4] = ["usuario", "proyectos", "entorno", "decisiones-vigentes"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -568,7 +568,7 @@ mod tests {
         let first = date(3);
         let second = date(9);
         let text = format!(
-            "contexto suelto\n\n## jimmy/telemetria · decision · {first}\nuna linea\notra\n\n## don-berti · identidad · {second}\nvive en caba\n"
+            "contexto suelto\n\n## jimmy/telemetria · decision · {first}\nuna linea\notra\n\n## usuario · identidad · {second}\nvive en caba\n"
         );
         let level1 = parse(&text);
         assert_eq!(level1.entries.len(), 2);
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(level1.entries[0].key, "jimmy/telemetria");
         assert_eq!(level1.entries[0].kind, "decision");
         assert_eq!(level1.entries[0].body, "una linea\notra");
-        assert_eq!(level1.entries[1].key, "don-berti");
+        assert_eq!(level1.entries[1].key, "usuario");
         assert_eq!(level1.entries[1].body, "vive en caba");
     }
 
@@ -651,7 +651,7 @@ mod tests {
         let filler = "f".repeat(BUDGET + 1_000);
         let kept = date(1);
         let text = format!(
-            "## don-berti · identidad · {kept}\n{filler}\n\n{}",
+            "## usuario · identidad · {kept}\n{filler}\n\n{}",
             entry("a", 40, "cuerpo a")
         );
         write_level1(&workspace, &text);
@@ -676,13 +676,13 @@ mod tests {
         let day = date(400);
         write_level1(
             &workspace,
-            &format!("## don-berti · identidad · {day}\n{body}\n"),
+            &format!("## usuario · identidad · {day}\n{body}\n"),
         );
         sync(&workspace).unwrap();
         let report = demote(&workspace).unwrap();
         assert!(report.contains("0 bajaron"));
         assert!(report.contains("sigue por encima del tope"));
-        assert!(read_level1(&workspace).contains("don-berti"));
+        assert!(read_level1(&workspace).contains("usuario"));
     }
 
     #[test]
@@ -736,13 +736,13 @@ mod tests {
         let body = "z".repeat(6_000);
         let first = date(1);
         let text = format!(
-            "## don-berti · identidad · {first}\n{body}\n\n{}{}",
+            "## usuario · identidad · {first}\n{body}\n\n{}{}",
             entry("media", 2, &body),
             entry("nueva", 1, &body)
         );
         write_level1(&workspace, &text);
         let out = render(&workspace);
-        assert!(out.contains("don-berti"));
+        assert!(out.contains("usuario"));
         assert!(out.contains("nueva"));
         assert!(!out.contains("media"));
         assert!(out.len() <= BUDGET + 120);

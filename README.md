@@ -275,16 +275,15 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ## Layout
 
 ```
-src/main.rs       config, long-poll loop, per-chat locking, memo CLI
-src/telegram.rs   Bot API client (ureq)
+src/main.rs       config, event loop, per-session locking, memo and send CLIs
+src/transport/    the transport seam, with the Telegram adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
 src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the two-level memory: sync, demote, miss
 src/prompt.rs     assemble the system prompt from fragments
-bin/              the CLIs the agent gets: search, recall, browse,
-                  send-media, stats
+bin/              the CLIs the agent gets: search, recall, browse, stats
 mise.toml         global mise tool set baked into the image
 prompts/          system prompt fragments, baked into the image
 ```

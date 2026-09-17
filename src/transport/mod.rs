@@ -1,5 +1,7 @@
 pub mod telegram;
 
+use std::path::Path;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Session {
     pub channel: String,
@@ -41,6 +43,12 @@ pub trait Transport: Send + Sync {
     fn note(&self, session: &Session, text: &str);
     fn fail(&self, session: &Session, placeholder: Option<Msg>, text: &str);
     fn download(&self, id: &str) -> Result<(String, Vec<u8>), String>;
+    fn send_media(
+        &self,
+        session: &Session,
+        path: &Path,
+        caption: Option<&str>,
+    ) -> Result<Msg, String>;
 }
 
 pub trait EventSource: Send {

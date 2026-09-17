@@ -15,7 +15,6 @@ use transport::telegram;
 use transport::{Event, EventSource, Session, Transport};
 
 struct Config {
-    token: String,
     api_key: String,
     transcribe_key: Option<String>,
     base: String,
@@ -26,12 +25,10 @@ struct Config {
     prompt: String,
     vars: String,
     allowed: Vec<String>,
-    transport: String,
 }
 
 impl Config {
     fn from_env() -> Result<Self, String> {
-        let token = env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado")?;
         let api_key = env("OPENAI_API_KEY").ok_or("OPENAI_API_KEY no está configurado")?;
         let root = root_from_env();
         let workspace = workspace_from_env().display().to_string();
@@ -44,7 +41,6 @@ impl Config {
             })
             .unwrap_or_default();
         Ok(Self {
-            token,
             api_key,
             transcribe_key: env("TRANSCRIBE_API_KEY"),
             base: env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
@@ -59,7 +55,6 @@ impl Config {
             prompt: env("JIMMY_PROMPT").unwrap_or_else(|| prompt::DEFAULT.into()),
             vars: env("JIMMY_VARS").unwrap_or_default(),
             allowed,
-            transport: env("JIMMY_TRANSPORT").unwrap_or_else(|| "telegram".into()),
         })
     }
 }
@@ -87,6 +82,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("memo") {
         std::process::exit(memo_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("send") {
+        std::process::exit(send_command(&args[1..]));
     }
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -123,8 +121,15 @@ fn main() {
         config.workspace.clone(),
         fragments,
     );
-    let (transport, mut source) = match build(&config) {
-        Ok(pair) => pair,
+    let transport = match transport_from_env() {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut source = match source_from_env() {
+        Ok(source) => source,
         Err(e) => {
             eprintln!("jimmy: {e}");
             std::process::exit(1);
@@ -137,7 +142,7 @@ fn main() {
     );
     eprintln!(
         "jimmy: iniciado (transport={} model={} base={} root={} workspace={})",
-        config.transport,
+        transport_name(),
         config.model,
         config.base,
         config.root.display(),
@@ -217,18 +222,77 @@ fn main() {
     }
 }
 
-type Bot = (Arc<dyn Transport>, Box<dyn EventSource>);
-
-fn build(config: &Config) -> Result<Bot, String> {
-    match config.transport.as_str() {
-        "telegram" => {
-            let telegram = telegram::Telegram::new(config.token.clone());
-            Ok((
-                Arc::new(telegram.clone()),
-                Box::new(telegram::Updates::new(telegram)),
-            ))
-        }
+fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
+    match transport_name().as_str() {
+        "telegram" => Ok(Arc::new(telegram::Telegram::new(telegram_token()?))),
         other => Err(format!("transporte desconocido: {other}")),
+    }
+}
+
+fn source_from_env() -> Result<Box<dyn EventSource>, String> {
+    match transport_name().as_str() {
+        "telegram" => Ok(Box::new(telegram::Updates::new(telegram::Telegram::new(
+            telegram_token()?,
+        )))),
+        other => Err(format!("transporte desconocido: {other}")),
+    }
+}
+
+fn transport_name() -> String {
+    env("JIMMY_TRANSPORT").unwrap_or_else(|| "telegram".into())
+}
+
+fn telegram_token() -> Result<String, String> {
+    env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado".into())
+}
+
+fn send_command(args: &[String]) -> i32 {
+    let mut path = None;
+    let mut target = None;
+    let mut caption = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--target" => target = it.next().cloned(),
+            "--caption" => caption = it.next().cloned(),
+            other if path.is_none() => path = Some(other.to_string()),
+            other => {
+                eprintln!("jimmy send: argumento inesperado: {other}");
+                return 2;
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("uso: jimmy send <archivo> --target TARGET [--caption TEXTO]");
+        return 2;
+    };
+    let Some(target) = target.or_else(|| env("JIMMY_TARGET")) else {
+        eprintln!("jimmy send: falta --target");
+        return 2;
+    };
+    let transport = match transport_from_env() {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            return 1;
+        }
+    };
+    let session = match transport.parse_target(&target) {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            return 1;
+        }
+    };
+    match transport.send_media(&session, Path::new(&path), caption.as_deref()) {
+        Ok(msg) => {
+            println!("{}", msg.0);
+            0
+        }
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            1
+        }
     }
 }
 

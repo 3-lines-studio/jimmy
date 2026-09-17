@@ -48,6 +48,10 @@ RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
     && uv pip install --python "$VENV/bin/python" playwright \
     && "$VENV/bin/playwright" install ffmpeg
 
+ENV UV_PYTHON_INSTALL_DIR=/data/uv/python
+ENV UV_CACHE_DIR=/data/uv/cache
+ENV UV_PYTHON_PREFERENCE=only-managed
+
 RUN git config --system user.name "Jimmy" \
     && git config --system user.email "jimmy@3lines.studio" \
     && git config --system credential."https://github.com".helper '!gh auth git-credential' \

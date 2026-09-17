@@ -133,10 +133,10 @@ Jimmy appends the fragments it is told to, in order, separated by a blank line,
 then the runtime context and the memory.
 
 `JIMMY_PROMPT` is a comma-separated list of fragment names. The default is
-`identidad,estilo,codigo,jimmy,herramientas,workspace,memoria,agenda,git`. Each
-name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then under
-the image's `/usr/local/share/jimmy/prompts`. A name with no file is a startup
-error, so a typo fails loudly instead of dropping a fragment in silence.
+`identidad,estilo,codigo,jimmy,herramientas,dev,workspace,memoria,agenda,git`.
+Each name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then
+under the image's `/usr/local/share/jimmy/prompts`. A name with no file is a
+startup error, so a typo fails loudly instead of dropping a fragment in silence.
 
 The image ships the default fragments. Override one by dropping a file with the
 same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
@@ -178,7 +178,9 @@ The image ships:
 
 Edit `mise.toml` or bump `WAX_VERSION` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
-`/data`, so they do not survive a Railway redeploy.
+`/data`, so they do not survive a Railway redeploy. Python and Node packages
+installed at runtime (`pip`, `npm`) land there too; the agent is told to keep
+persistent Python packages in a venv under `/data/venv`.
 
 ## Self-improvement
 

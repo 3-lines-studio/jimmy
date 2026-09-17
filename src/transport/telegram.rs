@@ -3,6 +3,7 @@ use crate::markdown;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 const MESSAGE_CHARS: usize = 4000;
@@ -272,6 +273,64 @@ impl Transport for Telegram {
         let data = self.download_file(&path)?;
         Ok((path, data))
     }
+
+    fn send_media(
+        &self,
+        session: &Session,
+        path: &Path,
+        caption: Option<&str>,
+    ) -> Result<Msg, String> {
+        let (method, field) = media_method(path);
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let limit = media_limit(method);
+        if data.len() > limit {
+            return Err(format!(
+                "{} bytes supera el límite de {limit} para {method}",
+                data.len()
+            ));
+        }
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file");
+        let boundary = format!("jimmy{:x}", axe::session::now_ms());
+        let mut body = Vec::new();
+        push_field(
+            &mut body,
+            &boundary,
+            "chat_id",
+            &self.chat_id(session)?.to_string(),
+        );
+        if let Some(caption) = caption {
+            push_field(&mut body, &boundary, "caption", caption);
+        }
+        push_file(&mut body, &boundary, field, filename, &data);
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let response = self
+            .http
+            .post(&self.url(method))
+            .set(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send_bytes(&body)
+            .map_err(|e| format!("telegram {method}: {e}"))?;
+        let text = response.into_string().map_err(|e| e.to_string())?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| format!("telegram {method}: {e}: {text}"))?;
+        if value.get("ok").and_then(Value::as_bool) != Some(true) {
+            let description = value
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("error");
+            return Err(format!("telegram {method}: {description}"));
+        }
+        Ok(Msg(value
+            .pointer("/result/message_id")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .to_string()))
+    }
 }
 
 pub struct Updates {
@@ -353,4 +412,71 @@ fn chunks(s: &str, max: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+fn media_method(path: &Path) -> (&'static str, &'static str) {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png" | "jpg" | "jpeg" | "webp" | "gif") => ("sendPhoto", "photo"),
+        Some("mp4" | "webm" | "mov" | "mkv") => ("sendVideo", "video"),
+        _ => ("sendDocument", "document"),
+    }
+}
+
+fn media_limit(method: &str) -> usize {
+    match method {
+        "sendPhoto" => 10 * 1024 * 1024,
+        _ => 50 * 1024 * 1024,
+    }
+}
+
+fn push_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
+    );
+}
+
+fn push_file(body: &mut Vec<u8>, boundary: &str, name: &str, filename: &str, data: &[u8]) {
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(b"\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_method_picks_by_extension() {
+        assert_eq!(media_method(Path::new("a.PNG")), ("sendPhoto", "photo"));
+        assert_eq!(media_method(Path::new("a.webp")), ("sendPhoto", "photo"));
+        assert_eq!(media_method(Path::new("a.mp4")), ("sendVideo", "video"));
+        assert_eq!(
+            media_method(Path::new("a.pdf")),
+            ("sendDocument", "document")
+        );
+        assert_eq!(
+            media_method(Path::new("noext")),
+            ("sendDocument", "document")
+        );
+    }
+
+    #[test]
+    fn photo_limit_is_ten_megabytes() {
+        assert_eq!(media_limit("sendPhoto"), 10 * 1024 * 1024);
+        assert_eq!(media_limit("sendVideo"), 50 * 1024 * 1024);
+        assert_eq!(media_limit("sendDocument"), 50 * 1024 * 1024);
+    }
 }

@@ -82,6 +82,7 @@ fn workspace_from_env() -> PathBuf {
 }
 
 fn main() {
+    axe::set_non_dumpable();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("memo") {
         std::process::exit(memo_command(&args[1..]));
@@ -99,6 +100,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    axe::sentinel::seed(&config.api_key);
     if config.allowed.is_empty() {
         eprintln!(
             "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"

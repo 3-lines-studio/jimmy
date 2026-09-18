@@ -90,7 +90,10 @@ appends a block. The tick picks it up without a restart.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | — | required |
+| `JIMMY_TRANSPORT` | `telegram` | `telegram` or `slack` |
+| `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
+| `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
+| `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |
 | `OPENAI_API_KEY` | — | required; DeepSeek (or any OpenAI-compatible) key |
 | `TRANSCRIBE_API_KEY` | empty | Groq key for voice transcription; empty rejects voice notes |
 | `GEMINI_API_KEY` | empty | Google AI Studio key for the `gen-image` tool; empty disables it |
@@ -99,7 +102,8 @@ appends a block. The tick picks it up without a restart.
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
-| `TELEGRAM_ALLOWED_USER_IDS` | empty | comma-separated allowlist; empty means anyone |
+| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | directory with Agent Skills (see below) |
+| `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
@@ -109,10 +113,68 @@ appends a block. The tick picks it up without a restart.
 | `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
 | `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
 
-Set `TELEGRAM_ALLOWED_USER_IDS` before exposing the bot. Empty means any
-Telegram user who finds the bot gets shell access to the machine. To find your
-own id, put any placeholder in the list, send the bot a message and read the
+Set `JIMMY_ALLOWED_USER_IDS` before exposing the bot. Empty means any user who
+finds the bot gets shell access to the machine. To find your own id, put any
+placeholder in the list, send the bot a message and read the
 `jimmy: ignoré un mensaje de <id>` line it logs.
+
+### Slack app
+
+The `slack` transport uses Socket Mode, so no public URL is needed. In the app:
+
+- Enable Socket Mode and create an app-level token with the `connections:write`
+  scope (`SLACK_APP_TOKEN`).
+- Bot scopes: `app_mentions:read`, `im:history`, `chat:write`, `files:read`,
+  `files:write`.
+- Event subscriptions: `app_mention` and `message.im`.
+- The bot token goes in `SLACK_BOT_TOKEN`. The allowlist holds Slack user ids.
+
+A channel mention opens a thread and jimny answers there: one thread is one
+session. A direct message is a single continuous session.
+
+## Skills
+
+A skill is a folder of instructions and bundled files the agent loads on
+demand, so they stay out of the context until a task matches. Each skill is
+`<dir>/<name>/SKILL.md`, with `name` and `description` in its frontmatter:
+
+```
+skills/charts/SKILL.md
+skills/charts/render_chart.py
+```
+
+The image ships none. `JIMMY_SKILLS` (default `$JIMMY_ROOT/skills`) is the only
+path jimmy knows; each instance populates its own volume, typically by cloning a
+private skills repo there. The agent lists skills with `jimmy skill list` and
+loads one with `jimmy skill load <name>`.
+
+## Data tools
+
+The image ships `bqx` (read-only BigQuery) and `pgx` (read-only PostgreSQL), the
+same CLI tools the AX ecosystem uses:
+
+```sh
+printf '{"sql":"SELECT 1"}' | bqx run bigquery_query
+printf '{"sql":"SELECT 1"}' | pgx run postgres_query
+```
+
+Both stop at 1,000 rows; `bqx` dry-runs and only executes what BigQuery
+classifies as `SELECT`, `pgx` runs in a read-only transaction. `bqx gcs-copy
+BUCKET OBJECT FILE` downloads a private GCS object. They are inert until an
+instance adds the `data` prompt fragment (`JIMMY_PROMPT=...,data,...`) and its
+credentials: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` for
+`bqx`, `DATABASE_URL` for `pgx`. Versions are pinned in the `Dockerfile`
+(`BQX_VERSION`, `PGX_VERSION`).
+
+## Content
+
+The `contenido` prompt fragment, opt-in via `JIMMY_PROMPT`, expects a content
+operation under `projects/contenido/`: `marca/` (tone, product, audience,
+references), `assets/`, `templates/` (HTML publication layouts) and `semanas/`
+(one markdown per week). It tells the agent to read the brand, propose angles,
+fill a template, render it with `browse --shot` and preview it with
+`jimmy send`. The image ships no brand and no templates: each instance provides
+its own, usually by cloning a private repo there.
 
 ## Workspace
 
@@ -204,10 +266,16 @@ packages; `node_modules` inside the workspace also lives on the volume.
 Jimmy can read and change its own source. The repo is private, so
 `GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
 fetches it without credentials. Repos live in `projects/<name>/` and changes go
-through a pull request; the workflow — reuse the clone, reset to `main`, branch,
-`make fmt lint test`, push, `gh pr create` — is written for the agent in
-`## Proyectos y git` of `prompts/git.md`. You review and merge, and Railway
-redeploys `main`.
+through a pull request; the workflow — reuse the clone, reset to `dev`, branch,
+`make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
+in `## Proyectos y git` of `prompts/git.md`.
+
+Deploy branches: `dev` is the development line and backs the owner's instance,
+`main` is production and backs the personal instance. Every agent change lands
+on `dev`; promoting to `main` is a `dev → main` pull request the owner approves.
+So point each Railway service at the branch it should track — the personal
+service at `main`, the owner's at `dev` — and Railway redeploys that branch on
+push.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -216,8 +284,8 @@ Guardrails:
 
 - `git config --system` sets a `Jimmy` commit identity and the credential
   helper; `GIT_TERMINAL_PROMPT=0` makes git fail instead of hanging.
-- Enable branch protection on `main` (require a pull request) so the flow is
-  enforced, not just requested by the prompt.
+- Protect `main` and `dev` (require a pull request) so the flow is enforced,
+  not just requested by the prompt.
 - The agent runs with unsandboxed bash, so a leaked `GITHUB_TOKEN` is the blast
   radius; scope it to this repo only.
 
@@ -269,16 +337,16 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ## Layout
 
 ```
-src/main.rs       config, long-poll loop, per-chat locking, memo CLI
-src/telegram.rs   Bot API client (ureq)
+src/main.rs       config, event loop, per-session locking, memo/send/skill CLIs
+src/transport/    the transport seam, with the Telegram adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
 src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
+src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the two-level memory: sync, demote, miss
 src/prompt.rs     assemble the system prompt from fragments
-bin/              the CLIs the agent gets: search, recall, browse,
-                  send-media, stats
+bin/              the CLIs the agent gets: search, recall, browse, stats
 mise.toml         global mise tool set baked into the image
 prompts/          system prompt fragments, baked into the image
 ```

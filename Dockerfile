@@ -30,6 +30,13 @@ RUN arch="$(dpkg --print-architecture)" \
     && install -m 0755 "/tmp/$asset" /usr/local/bin/wax \
     && rm -f "/tmp/$asset" /tmp/SHA256SUMS
 
+ARG BQX_VERSION=v0.3.2
+ARG PGX_VERSION=v0.2.1
+RUN curl -fsSL https://ax.3lines.studio/install.sh -o /tmp/ax-install.sh \
+    && AX_PREFIX=/usr/local VERSION="$BQX_VERSION" sh /tmp/ax-install.sh bqx \
+    && AX_PREFIX=/usr/local VERSION="$PGX_VERSION" sh /tmp/ax-install.sh pgx \
+    && rm /tmp/ax-install.sh
+
 ENV RUSTUP_HOME=/root/.rustup
 ENV CARGO_HOME=/root/.cargo
 ENV CARGO_TARGET_DIR=/tmp/cargo-target
@@ -65,7 +72,6 @@ COPY prompts /usr/local/share/jimmy/prompts
 COPY --chmod=0755 bin/search /usr/local/bin/search
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
-COPY --chmod=0755 bin/send-media /usr/local/bin/send-media
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
 ENV WAX_NO_SANDBOX=1

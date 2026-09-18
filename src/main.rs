@@ -4,17 +4,19 @@ mod markdown;
 mod memo;
 mod prompt;
 mod schedule;
-mod telegram;
+mod skill;
+mod transport;
 
 use agent::Agent;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use telegram::Telegram;
+use transport::slack;
+use transport::telegram;
+use transport::{Event, EventSource, Session, Transport};
 
 struct Config {
-    token: String,
     api_key: String,
     transcribe_key: Option<String>,
     base: String,
@@ -24,24 +26,24 @@ struct Config {
     workspace: String,
     prompt: String,
     vars: String,
-    allowed: Vec<i64>,
+    allowed: Vec<String>,
 }
 
 impl Config {
     fn from_env() -> Result<Self, String> {
-        let token = env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado")?;
         let api_key = env("OPENAI_API_KEY").ok_or("OPENAI_API_KEY no está configurado")?;
         let root = root_from_env();
         let workspace = workspace_from_env().display().to_string();
-        let allowed = env("TELEGRAM_ALLOWED_USER_IDS")
+        let allowed = env("JIMMY_ALLOWED_USER_IDS")
+            .or_else(|| env("TELEGRAM_ALLOWED_USER_IDS"))
             .map(|v| {
                 v.split(',')
-                    .filter_map(|id| id.trim().parse::<i64>().ok())
+                    .map(|id| id.trim().to_string())
+                    .filter(|id| !id.is_empty())
                     .collect()
             })
             .unwrap_or_default();
         Ok(Self {
-            token,
             api_key,
             transcribe_key: env("TRANSCRIBE_API_KEY"),
             base: env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
@@ -84,6 +86,12 @@ fn main() {
     if args.first().map(String::as_str) == Some("memo") {
         std::process::exit(memo_command(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("send") {
+        std::process::exit(send_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("skill") {
+        std::process::exit(skill_command(&args[1..]));
+    }
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(e) => {
@@ -119,118 +127,230 @@ fn main() {
         config.workspace.clone(),
         fragments,
     );
-    let tg = Telegram::new(config.token.clone());
+    let transport = match transport_from_env() {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut source = match source_from_env() {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            std::process::exit(1);
+        }
+    };
     schedule::spawn(
-        tg.clone(),
+        transport.clone(),
         agent.clone(),
         PathBuf::from(config.workspace.clone()),
     );
     eprintln!(
-        "jimmy: iniciado (model={} base={} root={} workspace={})",
+        "jimmy: iniciado (transport={} model={} base={} root={} workspace={})",
+        transport_name(),
         config.model,
         config.base,
         config.root.display(),
         config.workspace
     );
 
-    let mut offset = 0i64;
     loop {
-        let updates = match tg.get_updates(offset) {
-            Ok(updates) => updates,
+        let events = match source.recv() {
+            Ok(events) => events,
             Err(e) => {
-                eprintln!("jimmy: getUpdates: {e}");
+                eprintln!("jimmy: {e}");
                 std::thread::sleep(Duration::from_secs(3));
                 continue;
             }
         };
-        for update in updates {
-            offset = update.update_id + 1;
-            let Some(message) = update.message else {
-                continue;
-            };
-            if message.from.as_ref().is_some_and(|from| from.is_bot) {
+        for event in events {
+            if event.is_bot {
                 continue;
             }
-            if !config.allowed.is_empty()
-                && !message
-                    .from
-                    .as_ref()
-                    .is_some_and(|from| config.allowed.contains(&from.id))
-            {
-                eprintln!(
-                    "jimmy: ignoré un mensaje de {}",
-                    message.from.map(|f| f.id).unwrap_or(0)
-                );
-                continue;
-            }
-            let chat_id = message.chat.id;
-            let text = message
-                .text
-                .clone()
-                .or_else(|| message.caption.clone())
-                .unwrap_or_default();
-            let file_id = message
-                .photo
-                .last()
-                .map(|photo| photo.file_id.clone())
-                .or_else(|| {
-                    message
-                        .document
-                        .as_ref()
-                        .filter(|document| document.mime_type.starts_with("image/"))
-                        .map(|document| document.file_id.clone())
-                });
-            let voice = message
-                .voice
-                .as_ref()
-                .map(|voice| (voice.file_id.clone(), voice.duration));
-            if text.is_empty() && file_id.is_none() && voice.is_none() {
+            if !config.allowed.is_empty() && !config.allowed.contains(&event.sender) {
+                eprintln!("jimmy: ignoré un mensaje de {}", event.sender);
                 continue;
             }
             let agent = agent.clone();
-            let tg = tg.clone();
+            let transport = transport.clone();
             let transcribe_key = config.transcribe_key.clone();
             std::thread::spawn(move || {
-                let lock = chat_lock(chat_id);
+                let Event {
+                    session,
+                    text,
+                    image,
+                    voice,
+                    ..
+                } = event;
+                let lock = chat_lock(&session.key());
                 let _guard = lock.lock().unwrap();
                 let mut text = text;
                 if let Some((file_id, duration)) = voice {
-                    match transcribe_voice(&tg, chat_id, &file_id, duration, transcribe_key) {
+                    match transcribe_voice(
+                        transport.as_ref(),
+                        &session,
+                        &file_id,
+                        duration,
+                        transcribe_key,
+                    ) {
                         Ok(transcript) => {
-                            let _ = tg.send_message(chat_id, &format!("🎤 {transcript}"));
+                            transport.note(&session, &format!("🎤 {transcript}"));
                             text = transcript;
                         }
                         Err(e) => {
-                            let _ = tg.send_message(
-                                chat_id,
-                                &format!("⚠️ no pude transcribir el audio: {e}"),
-                            );
+                            transport
+                                .note(&session, &format!("⚠️ no pude transcribir el audio: {e}"));
                             return;
                         }
                     }
                 }
-                eprintln!("jimmy: chat {chat_id} -> {}", clamp(&text, 80));
-                if let Some(reply) = agent.command(chat_id, &text) {
-                    if let Err(e) = tg.send_message(chat_id, &reply) {
-                        eprintln!("jimmy: chat {chat_id} falló: {e}");
-                    }
+                eprintln!("jimmy: {} -> {}", session.channel, clamp(&text, 80));
+                if let Some(reply) = agent.command(&session, &text) {
+                    transport.note(&session, &reply);
                     return;
                 }
-                let images = match file_id {
-                    Some(file_id) => match fetch_image(&tg, chat_id, &file_id) {
+                let images = match image {
+                    Some(file_id) => match fetch_image(transport.as_ref(), &session, &file_id) {
                         Ok(image) => vec![image],
                         Err(e) => {
-                            let _ = tg
-                                .send_message(chat_id, &format!("⚠️ no pude bajar la imagen: {e}"));
+                            transport.note(&session, &format!("⚠️ no pude bajar la imagen: {e}"));
                             return;
                         }
                     },
                     None => Vec::new(),
                 };
-                if let Err(e) = agent.respond(&tg, chat_id, &text, images) {
-                    eprintln!("jimmy: chat {chat_id} falló: {e}");
+                if let Err(e) = agent.respond(transport.as_ref(), &session, &text, images) {
+                    eprintln!("jimmy: {} falló: {e}", session.channel);
                 }
             });
+        }
+    }
+}
+
+fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
+    match transport_name().as_str() {
+        "telegram" => Ok(Arc::new(telegram::Telegram::new(telegram_token()?))),
+        "slack" => Ok(Arc::new(slack::Slack::new(
+            slack_bot_token()?,
+            slack_app_token()?,
+        ))),
+        other => Err(format!("transporte desconocido: {other}")),
+    }
+}
+
+fn source_from_env() -> Result<Box<dyn EventSource>, String> {
+    match transport_name().as_str() {
+        "telegram" => Ok(Box::new(telegram::Updates::new(telegram::Telegram::new(
+            telegram_token()?,
+        )))),
+        "slack" => Ok(Box::new(slack::Events::new(slack::Slack::new(
+            slack_bot_token()?,
+            slack_app_token()?,
+        )))),
+        other => Err(format!("transporte desconocido: {other}")),
+    }
+}
+
+fn transport_name() -> String {
+    env("JIMMY_TRANSPORT").unwrap_or_else(|| "telegram".into())
+}
+
+fn telegram_token() -> Result<String, String> {
+    env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado".into())
+}
+
+fn slack_bot_token() -> Result<String, String> {
+    env("SLACK_BOT_TOKEN").ok_or("SLACK_BOT_TOKEN no está configurado".into())
+}
+
+fn slack_app_token() -> Result<String, String> {
+    env("SLACK_APP_TOKEN").ok_or("SLACK_APP_TOKEN no está configurado".into())
+}
+
+fn send_command(args: &[String]) -> i32 {
+    let mut path = None;
+    let mut target = None;
+    let mut caption = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--target" => target = it.next().cloned(),
+            "--caption" => caption = it.next().cloned(),
+            other if path.is_none() => path = Some(other.to_string()),
+            other => {
+                eprintln!("jimmy send: argumento inesperado: {other}");
+                return 2;
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("uso: jimmy send <archivo> --target TARGET [--caption TEXTO]");
+        return 2;
+    };
+    let Some(target) = target.or_else(|| env("JIMMY_TARGET")) else {
+        eprintln!("jimmy send: falta --target");
+        return 2;
+    };
+    let transport = match transport_from_env() {
+        Ok(transport) => transport,
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            return 1;
+        }
+    };
+    let session = match transport.parse_target(&target) {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            return 1;
+        }
+    };
+    match transport.send_media(&session, Path::new(&path), caption.as_deref()) {
+        Ok(msg) => {
+            println!("{}", msg.0);
+            0
+        }
+        Err(e) => {
+            eprintln!("jimmy send: {e}");
+            1
+        }
+    }
+}
+
+fn skills_dir() -> PathBuf {
+    match env("JIMMY_SKILLS") {
+        Some(path) => PathBuf::from(path),
+        None => root_from_env().join("skills"),
+    }
+}
+
+fn skill_command(args: &[String]) -> i32 {
+    let dir = skills_dir();
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            println!("{}", skill::list(&dir));
+            0
+        }
+        Some("load") => match args.get(1) {
+            Some(name) => match skill::load(&dir, name) {
+                Ok(text) => {
+                    println!("{text}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("jimmy skill: {e}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("uso: jimmy skill load <nombre>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("uso: jimmy skill <list|load nombre>");
+            2
         }
     }
 }
@@ -259,8 +379,8 @@ fn memo_command(args: &[String]) -> i32 {
 }
 
 fn transcribe_voice(
-    tg: &Telegram,
-    chat_id: i64,
+    transport: &dyn Transport,
+    session: &Session,
     file_id: &str,
     duration: u64,
     api_key: Option<String>,
@@ -268,10 +388,13 @@ fn transcribe_voice(
     let Some(api_key) = api_key else {
         return Err("falta TRANSCRIBE_API_KEY".into());
     };
-    let file_path = tg.get_file(file_id)?;
-    let data = tg.download(&file_path)?;
+    let (file_path, data) = transport.download(file_id)?;
     let ext = audio_extension(&file_path);
-    let name = format!("jimmy-voice-{chat_id}-{}.{ext}", axe::session::now_ms());
+    let name = format!(
+        "jimmy-voice-{}-{}.{ext}",
+        session.channel,
+        axe::session::now_ms()
+    );
     let path = std::env::temp_dir().join(name);
     std::fs::write(&path, &data).map_err(|e| e.to_string())?;
     let result = audio::transcribe(&api_key, &path, duration);
@@ -287,24 +410,31 @@ fn audio_extension(file_path: &str) -> &str {
         .unwrap_or("ogg")
 }
 
-fn fetch_image(tg: &Telegram, chat_id: i64, file_id: &str) -> Result<axe::Image, String> {
-    let file_path = tg.get_file(file_id)?;
-    let data = tg.download(&file_path)?;
+fn fetch_image(
+    transport: &dyn Transport,
+    session: &Session,
+    file_id: &str,
+) -> Result<axe::Image, String> {
+    let (file_path, data) = transport.download(file_id)?;
     let ext = Path::new(&file_path)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("jpg");
-    let name = format!("jimmy-image-{chat_id}-{}.{ext}", axe::session::now_ms());
+    let name = format!(
+        "jimmy-image-{}-{}.{ext}",
+        session.channel,
+        axe::session::now_ms()
+    );
     let path = std::env::temp_dir().join(name);
     std::fs::write(&path, &data).map_err(|e| e.to_string())?;
     axe::image::attach(&path.display().to_string())
 }
 
-fn chat_lock(chat_id: i64) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<i64, Arc<Mutex<()>>>>> = OnceLock::new();
+fn chat_lock(key: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = locks.lock().unwrap();
-    map.entry(chat_id)
+    map.entry(key.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }

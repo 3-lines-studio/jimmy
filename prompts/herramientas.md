@@ -11,13 +11,13 @@ Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos
 - `browse` graba y captura a `--size WxH` (default 1920x1080). Para una demo: todos los pasos en un solo `run`, `--record --slow 600` y un `highlight` antes de cada click. El video sale a 25 fps y arranca con alrededor de un segundo en blanco.
 - `browse files --session NOMBRE` — lista las capturas y videos de la sesión. `browse sessions` lista las sesiones. Los artefactos quedan en `/data/files/browse/<sesión>/` y se borran solos a los 7 días.
 - `gen-image "prompt" -o salida.jpg` — genera o edita una imagen con Gemini. La salida es JPEG (`.jpg`/`.jpeg`). `--aspect 9:16` (historias) o `1:1` (posts), `--size 1K` o `2K`. Con `--ref foto.png` (repetible) toma esa imagen como referencia o la edita. Requiere `GEMINI_API_KEY`; si no está, avisá y no insistas.
-- `send-media <archivo> --chat ID [--caption TEXTO]` — manda el archivo al chat: foto si es `.png`/`.jpg`/`.webp`/`.gif`, video si es `.mp4`/`.webm`/`.mov`, si no va como documento. El `--chat` es el `Chat actual` del bloque de entorno. Límites de Telegram: 10 MB las fotos, 50 MB los videos. Mandá capturas o videos solo si {{usuario}} los pide; si no, describí lo que ves.
+- `jimmy send <archivo> --target TARGET [--caption TEXTO]` — manda el archivo al chat: foto si es `.png`/`.jpg`/`.webp`/`.gif`, video si es `.mp4`/`.webm`/`.mov`, si no va como documento. El `--target` es el `Chat actual` del bloque de entorno. Límites: 10 MB las fotos, 50 MB los videos. Mandá capturas o videos solo si {{usuario}} los pide; si no, describí lo que ves.
 - `jq`, `rg` y `fd` — para manipular JSON, buscar y listar archivos.
 
 Y tenés los runtimes: **python3**, **node**, **bun** y **uv**. Con eso podés generar imágenes (`Pillow`, `matplotlib`, o HTML+CSS con `browse --shot`), planillas (`openpyxl`), presentaciones (`python-pptx`) y lo que pida el trabajo.
 
 El contenedor es efímero: lo que instales fuera del volumen se pierde en cada redeploy. Para Python, el venv del volumen es `/data/venv`: `uv venv --allow-existing /data/venv` (la primera vez uv baja su intérprete al volumen y tarda), instalá con `uv pip install --python /data/venv/bin/python <paquete>` y corré con `/data/venv/bin/python script.py`. `python3` a secas vive en la imagen: no persiste. En Node/bun, instalá dentro del workspace y `node_modules` queda en el volumen.
 
-Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `main`.
+Un CLI nuevo solo existe después de un redeploy, o sea después de mergear el PR a `dev`.
 
 Las tools truncan lo que te muestran a 16 KB, pero no pierden el resto: cuando un comando larga mucho, `bash` guarda el output completo en un archivo y te da la ruta, y `read` acepta un `offset` para seguir. Leé esa ruta en vez de repetir el comando; no asumas que perdiste el principio.

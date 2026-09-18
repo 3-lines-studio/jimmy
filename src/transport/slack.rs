@@ -44,25 +44,17 @@ impl Slack {
                 .send_string(&body.to_string()),
             None => request.send_string(""),
         };
-        let value: Value = match response {
-            Ok(response) => {
-                let text = response.into_string().map_err(|e| e.to_string())?;
-                serde_json::from_str(&text).map_err(|e| format!("slack {method}: {e}: {text}"))?
-            }
-            Err(ureq::Error::Status(code, response)) => {
-                let response = response.into_string().unwrap_or_default();
-                return Err(format!("slack {method} http {code}: {response}"));
-            }
-            Err(e) => return Err(format!("slack {method}: {e}")),
-        };
-        if value.get("ok").and_then(Value::as_bool) != Some(true) {
-            let error = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("error");
-            return Err(format!("slack {method}: {error}"));
-        }
-        Ok(value)
+        decode(method, response)
+    }
+
+    fn api_form(&self, token: &str, method: &str, body: &[(&str, &str)]) -> Result<Value, String> {
+        let url = format!("https://slack.com/api/{method}");
+        let response = self
+            .http
+            .post(&url)
+            .set("Authorization", &format!("Bearer {token}"))
+            .send_form(body);
+        decode(method, response)
     }
 
     fn bot_api(&self, method: &str, body: Value) -> Result<Value, String> {
@@ -96,6 +88,28 @@ impl Slack {
             json!({ "channel": session.channel, "ts": ts }),
         );
     }
+}
+
+fn decode(method: &str, response: Result<ureq::Response, ureq::Error>) -> Result<Value, String> {
+    let value: Value = match response {
+        Ok(response) => {
+            let text = response.into_string().map_err(|e| e.to_string())?;
+            serde_json::from_str(&text).map_err(|e| format!("slack {method}: {e}: {text}"))?
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let response = response.into_string().unwrap_or_default();
+            return Err(format!("slack {method} http {code}: {response}"));
+        }
+        Err(e) => return Err(format!("slack {method}: {e}")),
+    };
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        let error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("error");
+        return Err(format!("slack {method}: {error}"));
+    }
+    Ok(value)
 }
 
 impl Transport for Slack {
@@ -192,9 +206,11 @@ impl Transport for Slack {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("file");
-        let open = self.bot_api(
+        let length = data.len().to_string();
+        let open = self.api_form(
+            &self.bot_token,
             "files.getUploadURLExternal",
-            json!({ "filename": filename, "length": data.len() }),
+            &[("filename", filename), ("length", &length)],
         )?;
         let upload_url = open
             .get("upload_url")

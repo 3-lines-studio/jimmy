@@ -5,6 +5,7 @@ Si te toca armar contenido para redes, vive en `projects/contenido/`:
 - `marca/` — el contexto de la marca: tono, producto, audiencia, referencias. **Leelo antes de escribir copy.**
 - `assets/` — logo, fuentes, fotos.
 - `templates/` — plantillas HTML de publicación.
+- `shorts/` — un JSON por short: la escalera de escenas que alimenta `templates/short.html`.
 - `semanas/` — el calendario: un markdown por semana (`2026-W38.md`).
 
 Flujo:
@@ -15,7 +16,8 @@ Flujo:
 4. Para la imagen, preferí las plantillas HTML: copiá una a un archivo de trabajo **dentro de `projects/contenido/`** (por ejemplo `projects/contenido/build/`, para que resuelvan las rutas relativas a `assets/`), reemplazá el texto y renderizá con
    `browse goto "file://$PWD/projects/contenido/build/<archivo>.html" --shot --size 1080x1080`
    (story: `1080x1920`). Para lo fotográfico, `gen-image --ref` con un asset de marca.
-5. Mostrá la preview con `jimmy send` y esperá el ok antes de dar algo por final.
-6. Asentá lo aprobado en `semanas/<año>-W<semana>.md`.
+6. Para un short, el método completo está en `projects/contenido/shorts/README.md`. En resumen: escribí el spec en `shorts/<slug>.json` y corré `projects/contenido/bin/render-short.sh projects/contenido/shorts/<slug>.json`. Sale un MP4 1080x1920 sin audio en `build/<slug>.mp4`.
+7. Mostrá la preview con `jimmy send` y esperá el ok antes de dar algo por final.
+8. Asentá lo aprobado en `semanas/<año>-W<semana>.md`.
 
 El contenido de `marca/`, `assets/` y `templates/` lo provee cada instancia.

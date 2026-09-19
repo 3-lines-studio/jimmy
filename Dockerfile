@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates libcurl4 bash git curl less unzip xz-utils bzip2 gzip \
-        build-essential chromium tini \
+        build-essential chromium tini ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 ARG WAX_VERSION=v0.3.2

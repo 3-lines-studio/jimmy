@@ -3,6 +3,7 @@ mod audio;
 mod markdown;
 mod memo;
 mod prompt;
+mod reap;
 mod schedule;
 mod skill;
 mod transport;
@@ -148,6 +149,11 @@ fn main() {
         agent.clone(),
         PathBuf::from(config.workspace.clone()),
     );
+    let mut reaper = reap::Reaper::default();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        reaper.reap(std::time::Instant::now());
+    });
     eprintln!(
         "jimmy: iniciado (transport={} model={} base={} root={} workspace={})",
         transport_name(),

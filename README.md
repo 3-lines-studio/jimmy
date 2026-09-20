@@ -1,12 +1,14 @@
 # Jimmy
 
-A Telegram personal assistant. It embeds axe as a library and gives it a
-machine of its own: every message it replies to is an axe agent run with the
-full `read`, `write`, `edit`, and `bash` toolset on the container filesystem.
+A Telegram and Slack personal assistant. It embeds axe as a library and gives
+it a machine of its own: every message it replies to is an axe agent run with
+the full `read`, `write`, `edit`, and `bash` toolset on the container
+filesystem.
 
-One session per Telegram chat, stored as append-only JSONL under
-`$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Long polling, so there is no
-public URL and no webhook to configure. Sending a message shows one `pensando`
+One session per chat — a Telegram chat, or a Slack thread — stored as
+append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
+listens by long polling and Slack over Socket Mode, so there is no public URL
+and no webhook to configure. Sending a message shows one `pensando`
 placeholder, which is replaced by the reply when the agent finishes. There is no
 per-token streaming, so the chat does not flicker.
 
@@ -338,7 +340,7 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 
 ```
 src/main.rs       config, event loop, per-session locking, memo/send/skill CLIs
-src/transport/    the transport seam, with the Telegram adapter
+src/transport/    the transport seam, with the Telegram and Slack adapters
 src/agent.rs      axe turn loop, runtime context, session persistence
 src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs

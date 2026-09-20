@@ -420,7 +420,9 @@ fn record(dir: &Path, event: serde_json::Value) {
     else {
         return;
     };
-    let _ = writeln!(file, "{event}");
+    let mut line = event.to_string();
+    line.push('\n');
+    let _ = file.write_all(line.as_bytes());
 }
 
 fn now() -> u64 {
@@ -476,6 +478,36 @@ mod tests {
             std::fs::read(dir.join("a.jsonl.gz")).unwrap()[..2],
             [0x1f, 0x8b]
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_records_keep_one_json_per_line() {
+        let dir = std::env::temp_dir().join(format!("jimmy-events-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        record(
+                            &dir,
+                            serde_json::json!({"n": n, "i": i, "text": "x".repeat(200)}),
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let text = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 400);
+        for line in lines {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

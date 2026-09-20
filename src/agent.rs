@@ -1,7 +1,7 @@
 use crate::transport::{Session, Transport};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
-use axe::{Image, Message, OpenAI, ToolCall, ToolOutput};
+use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -73,9 +73,38 @@ impl Agent {
             images,
         };
         history.push(user.clone());
-        entries.push(Entry::Message { message: user });
+        let entry = Entry::Message { message: user };
+        append_entry(&dir, &entry)?;
+        entries.push(entry);
 
         self.execute(transport, session, history, entries, Some(dir))
+    }
+
+    pub fn resume(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let entries = load_entries(dir);
+        let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
+        session::drop_incomplete_tool_calls(&mut history);
+        if let Some(reply) = final_answer(&history) {
+            transport.answer(session, None, reply);
+            let _ = std::fs::remove_file(dir.join("inflight"));
+            return Ok(());
+        }
+        if history.is_empty() {
+            let _ = std::fs::remove_file(dir.join("inflight"));
+            return Ok(());
+        }
+        self.execute(
+            transport,
+            session,
+            history,
+            entries,
+            Some(dir.to_path_buf()),
+        )
     }
 
     pub fn run_task(
@@ -107,6 +136,7 @@ impl Agent {
         mut entries: Vec<Entry>,
         dir: Option<PathBuf>,
     ) -> Result<(), String> {
+        let _inflight = dir.as_ref().map(|d| Inflight::new(d));
         let tools = axe::tui::build_tools(&self.workspace);
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
@@ -142,6 +172,7 @@ impl Agent {
         let mut sink = EventSink {
             threshold,
             events: dir.clone(),
+            transcript: dir.as_ref().map(|d| d.join("transcript.jsonl")),
         };
 
         let mut overflow_retried = false;
@@ -273,6 +304,23 @@ impl Agent {
 struct EventSink {
     threshold: Option<usize>,
     events: Option<PathBuf>,
+    transcript: Option<PathBuf>,
+}
+
+struct Inflight(PathBuf);
+
+impl Inflight {
+    fn new(dir: &Path) -> Self {
+        let path = dir.join("inflight");
+        let _ = std::fs::write(&path, b"");
+        Self(path)
+    }
+}
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 impl Sink for EventSink {
@@ -296,6 +344,14 @@ impl Sink for EventSink {
                 "failed": output.text.starts_with("error:"),
             }),
         );
+    }
+
+    fn assistant(&mut self, _turn: usize, message: &Message, _usage: Usage) {
+        append_message(&self.transcript, message);
+    }
+
+    fn tool(&mut self, _turn: usize, message: &Message) {
+        append_message(&self.transcript, message);
     }
 }
 
@@ -342,6 +398,11 @@ fn compact(
     let mut out = session::context_messages_with(entries, CONTEXT_OPTIONS);
     session::drop_incomplete_tool_calls(&mut out);
     Ok(out)
+}
+
+fn final_answer(history: &[Message]) -> Option<&str> {
+    let last = history.last()?;
+    (last.role == "assistant" && last.tool_calls.is_empty()).then_some(last.content.as_str())
 }
 
 fn answer(messages: &[Message]) -> String {
@@ -412,6 +473,32 @@ fn save_entries(dir: &Path, entries: &mut [Entry]) -> Result<(), String> {
     axe::atomic_write(&dir.join("transcript.jsonl"), out.as_bytes()).map_err(|e| e.to_string())
 }
 
+fn append_entry(dir: &Path, entry: &Entry) -> Result<(), String> {
+    append_line(&dir.join("transcript.jsonl"), entry)
+}
+
+fn append_message(path: &Option<PathBuf>, message: &Message) {
+    if let Some(path) = path {
+        let _ = append_line(
+            path,
+            &Entry::Message {
+                message: message.clone(),
+            },
+        );
+    }
+}
+
+fn append_line(path: &Path, entry: &Entry) -> Result<(), String> {
+    let mut line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
 fn record(dir: &Path, event: serde_json::Value) {
     let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
@@ -445,7 +532,9 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::Msg;
     use axe::ToolCall;
+    use std::sync::Mutex;
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {
         Message {
@@ -585,5 +674,135 @@ mod tests {
     fn answer_falls_back_when_there_is_only_a_tool_call() {
         let messages = vec![assistant("", vec![call()])];
         assert_eq!(answer(&messages), "✅ listo");
+    }
+
+    struct Fake {
+        answers: Mutex<Vec<String>>,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Self {
+                answers: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Transport for Fake {
+        fn parse_target(&self, _: &str) -> Result<Session, String> {
+            Ok(Session::channel("x"))
+        }
+        fn progress(&self, _: &Session) -> Option<Msg> {
+            None
+        }
+        fn answer(&self, _: &Session, _: Option<Msg>, markdown: &str) {
+            self.answers.lock().unwrap().push(markdown.to_string());
+        }
+        fn note(&self, _: &Session, _: &str) {}
+        fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+        fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+            Err("no".into())
+        }
+        fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+            Err("no".into())
+        }
+    }
+
+    fn resume_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jimmy-resume-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn message(role: &str, content: &str) -> Message {
+        let mut message = assistant(content, Vec::new());
+        message.role = role.into();
+        message
+    }
+
+    fn write_transcript(dir: &Path, entries: &[Entry]) {
+        let mut text = String::new();
+        for entry in entries {
+            text.push_str(&serde_json::to_string(entry).unwrap());
+            text.push('\n');
+        }
+        std::fs::write(dir.join("transcript.jsonl"), text).unwrap();
+    }
+
+    fn agent() -> Agent {
+        Agent::new(
+            "http://localhost".into(),
+            "model".into(),
+            "key".into(),
+            Some(1_000_000),
+            std::env::temp_dir(),
+            "/tmp".into(),
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn final_answer_is_the_last_assistant_without_tool_calls() {
+        let history = vec![message("user", "hola"), message("assistant", "listo")];
+        assert_eq!(final_answer(&history), Some("listo"));
+
+        let mut calling = message("assistant", "pensando");
+        calling.tool_calls = vec![call()];
+        assert_eq!(final_answer(&[message("user", "x"), calling]), None);
+        assert_eq!(final_answer(&[message("user", "x")]), None);
+        assert_eq!(final_answer(&[]), None);
+    }
+
+    #[test]
+    fn resume_delivers_a_finished_but_unsent_answer() {
+        let dir = resume_dir("deliver");
+        write_transcript(
+            &dir,
+            &[
+                Entry::Message {
+                    message: message("user", "hola"),
+                },
+                Entry::Message {
+                    message: message("assistant", "listo"),
+                },
+            ],
+        );
+        std::fs::write(dir.join("inflight"), b"").unwrap();
+        let fake = Fake::default();
+        agent().resume(&fake, &Session::channel("x"), &dir).unwrap();
+        assert_eq!(fake.answers.lock().unwrap().as_slice(), ["listo"]);
+        assert!(!dir.join("inflight").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resume_clears_the_marker_when_there_is_nothing_to_do() {
+        let dir = resume_dir("empty");
+        std::fs::write(dir.join("inflight"), b"").unwrap();
+        let fake = Fake::default();
+        agent().resume(&fake, &Session::channel("x"), &dir).unwrap();
+        assert!(fake.answers.lock().unwrap().is_empty());
+        assert!(!dir.join("inflight").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_sink_appends_each_message_to_the_transcript() {
+        let dir = resume_dir("sink");
+        let mut sink = EventSink {
+            threshold: None,
+            events: None,
+            transcript: Some(dir.join("transcript.jsonl")),
+        };
+        sink.assistant(0, &assistant("uno", vec![call()]), axe::Usage::default());
+        sink.tool(0, &message("tool", "dos"));
+        let text = std::fs::read_to_string(dir.join("transcript.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            serde_json::from_str::<Entry>(line).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

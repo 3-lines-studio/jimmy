@@ -154,6 +154,8 @@ fn main() {
         std::thread::sleep(Duration::from_secs(60));
         reaper.reap(std::time::Instant::now());
     });
+    install_sigterm();
+    recover(&agent, transport.clone(), &config.root);
     eprintln!(
         "jimmy: iniciado (transport={} model={} base={} root={} workspace={})",
         transport_name(),
@@ -438,6 +440,56 @@ fn fetch_image(
     axe::image::attach(&path.display().to_string())
 }
 
+fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
+    let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
+        return;
+    };
+    for chat in chats.flatten() {
+        let dir = chat.path();
+        if !dir.join("inflight").exists() {
+            continue;
+        }
+        let Some(key) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let Some(session) = session_from_key(&key) else {
+            continue;
+        };
+        eprintln!("jimmy: reanudando el turno de {key}");
+        let agent = agent.clone();
+        let transport = transport.clone();
+        std::thread::spawn(move || {
+            let lock = chat_lock(&session.key());
+            let _guard = lock.lock().unwrap();
+            if let Err(e) = agent.resume(transport.as_ref(), &session, &dir) {
+                eprintln!("jimmy: no pude reanudar {key}: {e}");
+            }
+        });
+    }
+}
+
+fn session_from_key(key: &str) -> Option<Session> {
+    match key.split_once('/') {
+        Some((channel, thread)) => Some(Session {
+            channel: channel.into(),
+            thread: Some(thread.into()),
+        }),
+        None => Some(Session {
+            channel: key.into(),
+            thread: None,
+        }),
+    }
+}
+
+fn install_sigterm() {
+    unsafe { libc::signal(libc::SIGTERM, handle_sigterm as *const () as usize) };
+}
+
+extern "C" fn handle_sigterm(_: libc::c_int) {
+    axe::tools::kill_children();
+    unsafe { libc::_exit(0) };
+}
+
 fn chat_lock(key: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -459,6 +511,39 @@ fn clamp(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::Msg;
+
+    struct Fake {
+        answers: Mutex<Vec<String>>,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Self {
+                answers: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Transport for Fake {
+        fn parse_target(&self, _: &str) -> Result<Session, String> {
+            Ok(Session::channel("x"))
+        }
+        fn progress(&self, _: &Session) -> Option<Msg> {
+            None
+        }
+        fn answer(&self, _: &Session, _: Option<Msg>, markdown: &str) {
+            self.answers.lock().unwrap().push(markdown.to_string());
+        }
+        fn note(&self, _: &Session, _: &str) {}
+        fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+        fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+            Err("no".into())
+        }
+        fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+            Err("no".into())
+        }
+    }
 
     #[test]
     fn telegram_voice_extension_is_ogg_not_oga() {
@@ -469,5 +554,56 @@ mod tests {
     fn other_audio_extensions_pass_through() {
         assert_eq!(audio_extension("audio/song.mp3"), "mp3");
         assert_eq!(audio_extension("audio/no-extension"), "ogg");
+    }
+
+    #[test]
+    fn session_key_round_trips() {
+        assert_eq!(
+            session_from_key("7469057930").unwrap(),
+            Session::channel("7469057930")
+        );
+        assert_eq!(
+            session_from_key("C1/1699.1").unwrap(),
+            Session {
+                channel: "C1".into(),
+                thread: Some("1699.1".into())
+            }
+        );
+    }
+
+    #[test]
+    fn recover_resumes_a_marked_chat() {
+        let root = std::env::temp_dir().join(format!("jimmy-recover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("chats/123");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("transcript.jsonl"),
+            "{\"type\":\"message\",\"message\":{\"Role\":\"user\",\"Content\":\"hola\"}}\n{\"type\":\"message\",\"message\":{\"Role\":\"assistant\",\"Content\":\"listo\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("inflight"), b"").unwrap();
+        let agent = Agent::new(
+            "http://localhost".into(),
+            "model".into(),
+            "key".into(),
+            Some(1_000_000),
+            root.clone(),
+            "/tmp".into(),
+            String::new(),
+        );
+        let fake = Arc::new(Fake::default());
+        recover(&agent, fake.clone(), &root);
+        let mut cleared = false;
+        for _ in 0..200 {
+            if !dir.join("inflight").exists() {
+                cleared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(cleared, "recover debería borrar el marcador");
+        assert_eq!(fake.answers.lock().unwrap().as_slice(), ["listo"]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

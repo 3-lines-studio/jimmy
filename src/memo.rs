@@ -457,7 +457,9 @@ fn emit(workspace: &Path, event: serde_json::Value) {
     else {
         return;
     };
-    let _ = writeln!(file, "{event}");
+    let mut line = event.to_string();
+    line.push('\n');
+    let _ = file.write_all(line.as_bytes());
 }
 
 fn now() -> i64 {
@@ -746,5 +748,32 @@ mod tests {
         assert!(out.contains("nueva"));
         assert!(!out.contains("media"));
         assert!(out.len() <= BUDGET + 120);
+    }
+
+    #[test]
+    fn concurrent_events_keep_one_json_per_line() {
+        let workspace = workspace("events");
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let workspace = workspace.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        emit(
+                            &workspace,
+                            json!({"op": "render", "n": n, "i": i, "text": "x".repeat(200)}),
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let text = std::fs::read_to_string(events_path(&workspace)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 400);
+        for line in lines {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
     }
 }

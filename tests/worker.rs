@@ -16,9 +16,10 @@ struct Worker {
 }
 
 impl Worker {
-    fn start(root: &Path, base: &str) -> Worker {
+    fn start(root: &Path, base: &str, cwd: &Path) -> Worker {
         let mut child = Command::new(env!("CARGO_BIN_EXE_jimmy"))
             .args(["worker", "--chat", "test"])
+            .args(["--cwd".as_ref(), cwd.as_os_str()])
             .env("OPENAI_API_KEY", "test")
             .env("JIMMY_ROOT", root)
             .env("JIMMY_WORKSPACE", root.join("workspace"))
@@ -93,12 +94,13 @@ fn answer_chunk(text: &str) -> String {
     )
 }
 
-fn tool_chunk() -> String {
-    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\
-     \"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"echo hola\\\"}\"}}]}}]}\n\n\
-     data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
-     data: [DONE]\n\n"
-        .to_string()
+fn tool_chunk(command: &str) -> String {
+    format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_1\",\
+         \"function\":{{\"name\":\"bash\",\"arguments\":\"{{\\\"command\\\":\\\"{command}\\\"}}\"}}}}]}}}}]}}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
 }
 
 /// An OpenAI-compatible endpoint that answers with one body per request, in
@@ -145,7 +147,7 @@ fn resumes_a_turn_that_was_cut_short() {
     .unwrap();
     std::fs::write(chat.join("inflight"), b"").unwrap();
 
-    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1");
+    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));
     worker.send("{\"cmd\":\"resume\"}");
     let answer = worker.next();
     assert!(answer.contains("\"done\""), "{answer}");
@@ -164,7 +166,7 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     let chat = root.join("chats/test");
     let (base, served) = model_server(vec![answer_chunk("hola desde el fake")]);
 
-    let mut worker = Worker::start(&root, &base);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
     worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\"}");
     let events = worker.until_done();
     assert_eq!(served.load(Ordering::SeqCst), 1);
@@ -185,9 +187,9 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
 #[test]
 fn a_tool_call_shows_up_as_events() {
     let root = scratch("tool");
-    let (base, served) = model_server(vec![tool_chunk(), answer_chunk("listo")]);
+    let (base, served) = model_server(vec![tool_chunk("echo hola"), answer_chunk("listo")]);
 
-    let mut worker = Worker::start(&root, &base);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
     worker.send("{\"cmd\":\"prompt\",\"text\":\"corré echo hola\"}");
     let events = worker.until_done();
     assert_eq!(
@@ -205,5 +207,24 @@ fn a_tool_call_shows_up_as_events() {
     let done = events.last().unwrap();
     assert!(done.contains("\"done\""), "{done}");
     assert!(done.contains("listo"), "{done}");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_tools_run_in_the_project_the_conversation_belongs_to() {
+    let root = scratch("cwd");
+    let project = root.join("workspace/projects/ken");
+    std::fs::create_dir_all(&project).unwrap();
+    let (base, _) = model_server(vec![tool_chunk("pwd"), answer_chunk("listo")]);
+
+    let mut worker = Worker::start(&root, &base, &project);
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"dónde estoy\"}");
+    let events = worker.until_done();
+
+    let result = events.iter().find(|e| e.contains("tool_result")).unwrap();
+    assert!(
+        result.contains(project.to_str().unwrap()),
+        "esperaba el directorio del proyecto en {result}"
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }

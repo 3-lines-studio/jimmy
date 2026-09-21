@@ -1,3 +1,4 @@
+use crate::conversations;
 use crate::log::Log;
 use crate::pool::{Pool, Turn};
 use crate::protocol::{self, Event};
@@ -27,6 +28,7 @@ pub struct Agent {
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
+    cwd: String,
     fragments: String,
     context: String,
     pool: Arc<Pool>,
@@ -43,7 +45,8 @@ impl Agent {
         workspace: String,
         fragments: String,
     ) -> Self {
-        let context = runtime_context(&model, &base, &root, &workspace);
+        let cwd = workspace.clone();
+        let context = runtime_context(&model, &base, &root, &workspace, &cwd);
         let pool = Pool::new(
             worker_env(&base, &model, &api_key, context_window, &root, &workspace),
             None,
@@ -54,12 +57,20 @@ impl Agent {
             api_key,
             context_window,
             root,
+            cwd: workspace.clone(),
             workspace,
             fragments,
             context,
             pool,
             pipe: None,
         }
+    }
+
+    /// Where the tools run. It is the workspace unless the conversation belongs
+    /// to a project, and the runtime context says so, so it is rebuilt here.
+    pub(crate) fn set_cwd(&mut self, cwd: &str) {
+        self.cwd = cwd.to_string();
+        self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
     /// Tell the parent what the turn is doing, event by event. Only the worker
@@ -113,16 +124,17 @@ impl Agent {
         command: protocol::Command,
     ) -> Result<(), String> {
         let status = transport.progress(session);
-        let dir = self.chat_dir(session);
-        let _ = std::fs::create_dir_all(&dir);
-        let log = Log::in_dir(&dir);
+        let conversation = self.conversation(session);
+        let _ = std::fs::create_dir_all(&conversation.dir);
+        let log = Log::in_dir(&conversation.dir);
         if let protocol::Command::Prompt { text, .. } = &command {
             log.append(&Event::User { text: text.clone() });
         }
         match self
             .pool
-            .turn(session, command, &mut |event| log.append(event))
-        {
+            .turn(session, &conversation, command, &mut |event| {
+                log.append(event)
+            }) {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, status, &text);
                 Ok(())
@@ -146,7 +158,7 @@ impl Agent {
         text: &str,
         images: Vec<Image>,
     ) -> Result<(), String> {
-        let dir = self.chat_dir(session);
+        let dir = self.conversation(session).dir;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut entries = load_entries(&dir);
@@ -213,8 +225,8 @@ impl Agent {
         self.execute(transport, session, vec![user], Vec::new(), None)
     }
 
-    pub(crate) fn chat_dir(&self, session: &Session) -> PathBuf {
-        self.root.join("chats").join(session.key())
+    pub(crate) fn conversation(&self, session: &Session) -> conversations::Conversation {
+        conversations::get(&self.root, Path::new(&self.workspace), &session.key())
     }
 
     fn execute(
@@ -226,7 +238,7 @@ impl Agent {
         dir: Option<PathBuf>,
     ) -> Result<(), String> {
         let _inflight = dir.as_ref().map(|d| Inflight::new(d));
-        let mut tools = axe::tui::build_tools(&self.workspace);
+        let mut tools = axe::tui::build_tools(&self.cwd);
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
@@ -238,7 +250,7 @@ impl Agent {
         system.push_str(&format!(
             "Chat actual: {}\nTranscript: {}/transcript.jsonl\n",
             session.key(),
-            self.chat_dir(session).display()
+            self.conversation(session).dir.display()
         ));
         let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
@@ -351,7 +363,7 @@ impl Agent {
     }
 
     fn status(&self, session: &Session) -> String {
-        let dir = self.chat_dir(session);
+        let dir = self.conversation(session).dir;
         let entries = load_entries(&dir);
         let used = session::latest_context_tokens(&entries).unwrap_or(0);
         let window = self.context_window.unwrap_or(0);
@@ -372,7 +384,7 @@ impl Agent {
     }
 
     fn clear(&self, session: &Session) -> String {
-        let dir = self.chat_dir(session);
+        let dir = self.conversation(session).dir;
         let path = dir.join("transcript.jsonl");
         if !path.exists() {
             return "🧹 no había nada que borrar".into();
@@ -499,11 +511,14 @@ fn worker_env(
     ]
 }
 
-fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str) -> String {
+fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &str) -> String {
     let mut out = String::from("## Entorno de ejecución\n");
     out.push_str(&format!("- Modelo: {model} vía {base}\n"));
     out.push_str(&format!("- Raíz persistente: {}\n", root.display()));
     out.push_str(&format!("- Workspace: {workspace}\n"));
+    if cwd != workspace {
+        out.push_str(&format!("- Directorio de trabajo: {cwd}\n"));
+    }
     out.push_str(&format!(
         "- Plataforma: {}/{}\n",
         std::env::consts::OS,

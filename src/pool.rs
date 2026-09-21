@@ -5,6 +5,7 @@
 //! events out until one of them is terminal. A worker that dies is forgotten,
 //! so the next turn spawns a fresh one.
 
+use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
 use crate::transport::Session;
 use std::collections::HashMap;
@@ -52,10 +53,11 @@ impl Pool {
     pub fn turn(
         self: &Arc<Self>,
         session: &Session,
+        conversation: &Conversation,
         command: Command,
         on_event: OnEvent,
     ) -> Result<Turn, String> {
-        let worker = self.ensure(session)?;
+        let worker = self.ensure(session, conversation)?;
         worker.send(&command)?;
         loop {
             let event = worker.receive()?;
@@ -71,7 +73,11 @@ impl Pool {
         }
     }
 
-    fn ensure(self: &Arc<Self>, session: &Session) -> Result<Arc<Worker>, String> {
+    fn ensure(
+        self: &Arc<Self>,
+        session: &Session,
+        conversation: &Conversation,
+    ) -> Result<Arc<Worker>, String> {
         let key = session.key();
         let mut workers = self.workers.lock().unwrap();
         if let Some(worker) = workers.get(&key) {
@@ -83,7 +89,12 @@ impl Pool {
             None => std::env::current_exe().map_err(|e| e.to_string())?,
         };
         let mut process = Process::new(exe);
-        process.arg("worker").arg("--chat").arg(&key);
+        process
+            .arg("worker")
+            .arg("--chat")
+            .arg(&key)
+            .arg("--cwd")
+            .arg(&conversation.cwd);
         process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -212,6 +223,17 @@ mod tests {
         path
     }
 
+    fn conversation(cwd: &str) -> Conversation {
+        Conversation {
+            key: "test".into(),
+            dir: PathBuf::from("."),
+            cwd: PathBuf::from(cwd),
+            project: "general".into(),
+            title: None,
+            read_only: true,
+        }
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jimmy-pool-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -228,15 +250,22 @@ mod tests {
             "echo '{\"event\":\"ready\"}'
 while read -r line; do
   case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"done\",\"text\":\"eco\"}'
+  printf '{\"event\":\"done\",\"text\":\"%s\"}\n' \"$*\"
 done
 ",
         );
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
+        let conversation = conversation("../workspace");
         for _ in 0..2 {
-            match pool.turn(&session, Command::Resume, &mut |_| {}).unwrap() {
-                Turn::Answer(text) => assert_eq!(text, "eco"),
+            match pool
+                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .unwrap()
+            {
+                Turn::Answer(text) => {
+                    assert!(text.contains("--chat test"), "{text}");
+                    assert!(text.contains("--cwd ../workspace"), "{text}");
+                }
                 Turn::Failed(message) => panic!("esperaba respuesta, no {message}"),
             }
         }
@@ -251,9 +280,14 @@ done
         let exe = script(&dir, "worker.sh", "exit 0\n");
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
-        assert!(pool.turn(&session, Command::Resume, &mut |_| {}).is_err());
+        let conversation = conversation("../workspace");
+        assert!(pool
+            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
-        assert!(pool.turn(&session, Command::Resume, &mut |_| {}).is_err());
+        assert!(pool
+            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

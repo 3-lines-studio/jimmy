@@ -1,5 +1,6 @@
 mod agent;
 mod audio;
+mod conversations;
 mod log;
 mod markdown;
 mod memo;
@@ -95,6 +96,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("conversations") {
+        std::process::exit(conversations_command(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
@@ -238,6 +242,56 @@ fn main() {
             });
         }
     }
+}
+
+fn conversations_command(args: &[String]) -> i32 {
+    let root = root_from_env();
+    let workspace = workspace_from_env();
+    let result = match args.first().map(String::as_str) {
+        Some("new") => match args.get(1) {
+            Some(project) => {
+                let title = args
+                    .get(2)
+                    .map(String::as_str)
+                    .unwrap_or(conversations::NEW_TITLE);
+                conversations::create(&root, &workspace, project, title)
+                    .map(|key| println!("{key}"))
+            }
+            None => return usage(),
+        },
+        Some("rename") => match (args.get(1), args.get(2)) {
+            (Some(key), Some(title)) => conversations::rename(&root, key, title),
+            _ => return usage(),
+        },
+        Some(_) => return usage(),
+        None => {
+            for project in conversations::projects(&root, &workspace) {
+                println!("{}  {}", project.name, project.path.display());
+                for conversation in &project.conversations {
+                    let title = conversation.title.as_deref().unwrap_or("(sin título)");
+                    let mode = if conversation.read_only {
+                        "solo lectura"
+                    } else {
+                        "web"
+                    };
+                    println!("  {} · {} · {title}", conversation.key, mode);
+                }
+            }
+            Ok(())
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("jimmy conversations: {e}");
+            2
+        }
+    }
+}
+
+fn usage() -> i32 {
+    eprintln!("uso: jimmy conversations [new <proyecto> [título] | rename <clave> <título>]");
+    2
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {

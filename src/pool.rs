@@ -23,6 +23,10 @@ pub enum Turn {
     Failed(String),
 }
 
+/// What the caller wants to do with every event on the way to the end of the
+/// turn: jimmy writes them down as the conversation's log.
+pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
+
 struct Worker {
     pid: i32,
     stdin: Mutex<ChildStdin>,
@@ -45,15 +49,24 @@ impl Pool {
         })
     }
 
-    pub fn turn(self: &Arc<Self>, session: &Session, command: Command) -> Result<Turn, String> {
+    pub fn turn(
+        self: &Arc<Self>,
+        session: &Session,
+        command: Command,
+        on_event: OnEvent,
+    ) -> Result<Turn, String> {
         let worker = self.ensure(session)?;
         worker.send(&command)?;
         loop {
-            match worker.receive() {
-                Ok(Event::Ready) => continue,
-                Ok(Event::Answer { text }) => return Ok(Turn::Answer(text)),
-                Ok(Event::Failed { message }) => return Ok(Turn::Failed(message)),
-                Err(error) => return Err(error),
+            let event = worker.receive()?;
+            if !matches!(event, Event::Ready) {
+                on_event(&event);
+            }
+            match event {
+                Event::Ready => continue,
+                Event::Done { text } => return Ok(Turn::Answer(text)),
+                Event::Error { message } => return Ok(Turn::Failed(message)),
+                _ => continue,
             }
         }
     }
@@ -215,14 +228,14 @@ mod tests {
             "echo '{\"event\":\"ready\"}'
 while read -r line; do
   case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"answer\",\"text\":\"eco\"}'
+  echo '{\"event\":\"done\",\"text\":\"eco\"}'
 done
 ",
         );
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
         for _ in 0..2 {
-            match pool.turn(&session, Command::Resume).unwrap() {
+            match pool.turn(&session, Command::Resume, &mut |_| {}).unwrap() {
                 Turn::Answer(text) => assert_eq!(text, "eco"),
                 Turn::Failed(message) => panic!("esperaba respuesta, no {message}"),
             }
@@ -238,9 +251,9 @@ done
         let exe = script(&dir, "worker.sh", "exit 0\n");
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
-        assert!(pool.turn(&session, Command::Resume).is_err());
+        assert!(pool.turn(&session, Command::Resume, &mut |_| {}).is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
-        assert!(pool.turn(&session, Command::Resume).is_err());
+        assert!(pool.turn(&session, Command::Resume, &mut |_| {}).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

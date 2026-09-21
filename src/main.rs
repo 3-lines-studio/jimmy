@@ -1,5 +1,6 @@
 mod agent;
 mod audio;
+mod log;
 mod markdown;
 mod memo;
 mod pool;

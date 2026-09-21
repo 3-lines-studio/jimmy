@@ -1,6 +1,8 @@
+use crate::log::Log;
 use crate::pool::{Pool, Turn};
-use crate::protocol;
+use crate::protocol::{self, Event};
 use crate::transport::{Session, Transport};
+use crate::worker::Pipe;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -28,6 +30,7 @@ pub struct Agent {
     fragments: String,
     context: String,
     pool: Arc<Pool>,
+    pipe: Option<Arc<Pipe>>,
 }
 
 impl Agent {
@@ -55,7 +58,14 @@ impl Agent {
             fragments,
             context,
             pool,
+            pipe: None,
         }
+    }
+
+    /// Tell the parent what the turn is doing, event by event. Only the worker
+    /// sets this: it is the one with a pipe at the other end of the process.
+    pub(crate) fn set_pipe(&mut self, pipe: Arc<Pipe>) {
+        self.pipe = Some(pipe);
     }
 
     /// Point the pool at a different binary. Tests only.
@@ -103,7 +113,16 @@ impl Agent {
         command: protocol::Command,
     ) -> Result<(), String> {
         let status = transport.progress(session);
-        match self.pool.turn(session, command) {
+        let dir = self.chat_dir(session);
+        let _ = std::fs::create_dir_all(&dir);
+        let log = Log::in_dir(&dir);
+        if let protocol::Command::Prompt { text, .. } = &command {
+            log.append(&Event::User { text: text.clone() });
+        }
+        match self
+            .pool
+            .turn(session, command, &mut |event| log.append(event))
+        {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, status, &text);
                 Ok(())
@@ -244,6 +263,7 @@ impl Agent {
             threshold,
             events: dir.clone(),
             transcript: dir.as_ref().map(|d| d.join("transcript.jsonl")),
+            pipe: self.pipe.clone(),
         };
 
         let mut overflow_retried = false;
@@ -376,6 +396,7 @@ struct EventSink {
     threshold: Option<usize>,
     events: Option<PathBuf>,
     transcript: Option<PathBuf>,
+    pipe: Option<Arc<Pipe>>,
 }
 
 struct Inflight(PathBuf);
@@ -400,25 +421,54 @@ impl Sink for EventSink {
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
     }
 
-    fn tool_result(&mut self, call: &ToolCall, output: &ToolOutput, elapsed: Duration) {
-        let Some(dir) = &self.events else {
+    fn tool_start(&mut self, call: &ToolCall) {
+        let Some(pipe) = &self.pipe else {
             return;
         };
-        record(
-            dir,
-            serde_json::json!({
-                "ts": now(),
-                "kind": "tool",
-                "name": call.name,
-                "ms": elapsed.as_millis(),
-                "bytes": output.text.len(),
-                "failed": output.text.starts_with("error:"),
-            }),
-        );
+        let _ = pipe.emit(&Event::ToolStart {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            args: call.arguments.clone(),
+        });
+    }
+
+    fn tool_result(&mut self, call: &ToolCall, output: &ToolOutput, elapsed: Duration) {
+        let failed = output.text.starts_with("error:");
+        if let Some(dir) = &self.events {
+            record(
+                dir,
+                serde_json::json!({
+                    "ts": now(),
+                    "kind": "tool",
+                    "name": call.name,
+                    "ms": elapsed.as_millis(),
+                    "bytes": output.text.len(),
+                    "failed": failed,
+                }),
+            );
+        }
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::ToolResult {
+            id: call.id.clone(),
+            text: output.text.clone(),
+            ms: elapsed.as_millis() as u64,
+            failed,
+        });
     }
 
     fn assistant(&mut self, _turn: usize, message: &Message, _usage: Usage) {
         append_message(&self.transcript, message);
+        if message.content.is_empty() {
+            return;
+        }
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::Assistant {
+            text: message.content.clone(),
+        });
     }
 
     fn tool(&mut self, _turn: usize, message: &Message) {
@@ -821,12 +871,16 @@ mod tests {
     }
 
     fn agent() -> Agent {
+        agent_in(&std::env::temp_dir())
+    }
+
+    fn agent_in(root: &Path) -> Agent {
         Agent::new(
             "http://localhost".into(),
             "model".into(),
             "key".into(),
             Some(1_000_000),
-            std::env::temp_dir(),
+            root.to_path_buf(),
             "/tmp".into(),
             String::new(),
         )
@@ -834,8 +888,7 @@ mod tests {
 
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let dir = resume_dir("worker");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = resume_dir(name);
         let path = dir.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -844,13 +897,17 @@ mod tests {
 
     #[test]
     fn respond_relays_the_workers_answer() {
-        let mut agent = agent();
+        let root = resume_dir("relay");
+        let mut agent = agent_in(&root);
         agent.use_worker_exe(worker_script(
-            "worker.sh",
+            "relay.sh",
             "echo '{\"event\":\"ready\"}'
 while read -r line; do
   case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"answer\",\"text\":\"eco\"}'
+  echo '{\"event\":\"assistant\",\"text\":\"eco\"}'
+  echo '{\"event\":\"tool_start\",\"id\":\"c1\",\"name\":\"bash\",\"args\":\"{}\"}'
+  echo '{\"event\":\"tool_result\",\"id\":\"c1\",\"text\":\"hola\",\"ms\":3,\"failed\":false}'
+  echo '{\"event\":\"done\",\"text\":\"eco\"}'
 done
 ",
         ));
@@ -861,6 +918,19 @@ done
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
         crate::pool::kill_all();
+
+        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 5, "{log}");
+        assert!(
+            lines[0].contains("\"user\"") && lines[0].contains("hola"),
+            "{log}"
+        );
+        assert!(lines[1].contains("\"assistant\""), "{log}");
+        assert!(lines[2].contains("\"tool_start\""), "{log}");
+        assert!(lines[3].contains("\"tool_result\""), "{log}");
+        assert!(lines[4].contains("\"done\""), "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -932,6 +1002,7 @@ done
             threshold: None,
             events: None,
             transcript: Some(dir.join("transcript.jsonl")),
+            pipe: None,
         };
         sink.assistant(0, &assistant("uno", vec![call()]), axe::Usage::default());
         sink.tool(0, &message("tool", "dos"));

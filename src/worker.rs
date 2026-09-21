@@ -1,6 +1,6 @@
 //! One worker process per conversation. It owns the axe session and the
 //! transcript in the chat directory, and speaks the JSONL protocol with the
-//! parent that spawned it.
+//! parent that spawned it: a prompt or a resume in, events out.
 //!
 //! The turn logic is the same code the parent used to run in process; what
 //! changes is that it now happens in a process of its own, with its own
@@ -17,12 +17,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
     let config = Config::from_env()?;
-    let agent = crate::build_agent(&config)?;
+    let mut agent = crate::build_agent(&config)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
-    let out = Out::default();
+    if let Some(cwd) = crate::flag(&args, "--cwd") {
+        agent.set_cwd(&cwd);
+    }
+    let pipe = Pipe::new();
+    agent.set_pipe(pipe.clone());
 
     crate::install_sigterm();
-    out.emit(&Event::Ready)?;
+    pipe.emit(&Event::Ready)?;
 
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else {
@@ -34,39 +38,47 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         let Ok(command) = serde_json::from_str::<Command>(&line) else {
             continue;
         };
-        out.reset();
+        pipe.begin_turn();
         let result = match command {
             Command::Shutdown => break,
-            Command::Prompt { text, images } => agent.local_prompt(&out, &session, &text, images),
+            Command::Prompt { text, images } => {
+                agent.local_prompt(pipe.as_ref(), &session, &text, images)
+            }
             Command::Resume => {
-                let dir = agent.chat_dir(&session);
-                agent.local_resume(&out, &session, &dir)
+                let dir = agent.conversation(&session).dir;
+                agent.local_resume(pipe.as_ref(), &session, &dir)
             }
         };
         if let Err(error) = result {
-            if !out.emitted() {
-                out.fail(&session, None, &format!("⚠️ {error}"));
+            if !pipe.answered() {
+                pipe.fail(&session, None, &format!("⚠️ {error}"));
             }
         }
     }
     Ok(())
 }
 
+/// The worker's end of the pipe: every event it tells the parent goes through
+/// here, whether it comes from the turn or from the session machinery.
 #[derive(Default)]
-struct Out {
-    emitted: AtomicBool,
+pub struct Pipe {
+    answered: AtomicBool,
 }
 
-impl Out {
-    fn reset(&self) {
-        self.emitted.store(false, Ordering::SeqCst);
+impl Pipe {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::default())
     }
 
-    fn emitted(&self) -> bool {
-        self.emitted.load(Ordering::SeqCst)
+    fn begin_turn(&self) {
+        self.answered.store(false, Ordering::SeqCst);
     }
 
-    fn emit(&self, event: &Event) -> Result<(), String> {
+    fn answered(&self) -> bool {
+        self.answered.load(Ordering::SeqCst)
+    }
+
+    pub fn emit(&self, event: &Event) -> Result<(), String> {
         let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
         line.push('\n');
         let stdout = std::io::stdout();
@@ -76,12 +88,12 @@ impl Out {
     }
 
     fn terminal(&self, event: Event) {
-        self.emitted.store(true, Ordering::SeqCst);
+        self.answered.store(true, Ordering::SeqCst);
         let _ = self.emit(&event);
     }
 }
 
-impl Transport for Out {
+impl Transport for Pipe {
     fn parse_target(&self, key: &str) -> Result<Session, String> {
         crate::session_from_key(key).ok_or_else(|| "clave de chat inválida".into())
     }
@@ -91,7 +103,7 @@ impl Transport for Out {
     }
 
     fn answer(&self, _: &Session, _: Option<Msg>, markdown: &str) {
-        self.terminal(Event::Answer {
+        self.terminal(Event::Done {
             text: markdown.to_string(),
         });
     }
@@ -99,7 +111,7 @@ impl Transport for Out {
     fn note(&self, _: &Session, _: &str) {}
 
     fn fail(&self, _: &Session, _: Option<Msg>, text: &str) {
-        self.terminal(Event::Failed {
+        self.terminal(Event::Error {
             message: text.to_string(),
         });
     }

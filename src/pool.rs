@@ -5,6 +5,7 @@
 //! events out until one of them is terminal. A worker that dies is forgotten,
 //! so the next turn spawns a fresh one.
 
+use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
 use crate::transport::Session;
 use std::collections::HashMap;
@@ -22,6 +23,10 @@ pub enum Turn {
     Answer(String),
     Failed(String),
 }
+
+/// What the caller wants to do with every event on the way to the end of the
+/// turn: jimmy writes them down as the conversation's log.
+pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
     pid: i32,
@@ -45,20 +50,34 @@ impl Pool {
         })
     }
 
-    pub fn turn(self: &Arc<Self>, session: &Session, command: Command) -> Result<Turn, String> {
-        let worker = self.ensure(session)?;
+    pub fn turn(
+        self: &Arc<Self>,
+        session: &Session,
+        conversation: &Conversation,
+        command: Command,
+        on_event: OnEvent,
+    ) -> Result<Turn, String> {
+        let worker = self.ensure(session, conversation)?;
         worker.send(&command)?;
         loop {
-            match worker.receive() {
-                Ok(Event::Ready) => continue,
-                Ok(Event::Answer { text }) => return Ok(Turn::Answer(text)),
-                Ok(Event::Failed { message }) => return Ok(Turn::Failed(message)),
-                Err(error) => return Err(error),
+            let event = worker.receive()?;
+            if !matches!(event, Event::Ready) {
+                on_event(&event);
+            }
+            match event {
+                Event::Ready => continue,
+                Event::Done { text } => return Ok(Turn::Answer(text)),
+                Event::Error { message } => return Ok(Turn::Failed(message)),
+                _ => continue,
             }
         }
     }
 
-    fn ensure(self: &Arc<Self>, session: &Session) -> Result<Arc<Worker>, String> {
+    fn ensure(
+        self: &Arc<Self>,
+        session: &Session,
+        conversation: &Conversation,
+    ) -> Result<Arc<Worker>, String> {
         let key = session.key();
         let mut workers = self.workers.lock().unwrap();
         if let Some(worker) = workers.get(&key) {
@@ -70,7 +89,12 @@ impl Pool {
             None => std::env::current_exe().map_err(|e| e.to_string())?,
         };
         let mut process = Process::new(exe);
-        process.arg("worker").arg("--chat").arg(&key);
+        process
+            .arg("worker")
+            .arg("--chat")
+            .arg(&key)
+            .arg("--cwd")
+            .arg(&conversation.cwd);
         process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -199,6 +223,17 @@ mod tests {
         path
     }
 
+    fn conversation(cwd: &str) -> Conversation {
+        Conversation {
+            key: "test".into(),
+            dir: PathBuf::from("."),
+            cwd: PathBuf::from(cwd),
+            project: "general".into(),
+            title: None,
+            read_only: true,
+        }
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jimmy-pool-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -215,15 +250,22 @@ mod tests {
             "echo '{\"event\":\"ready\"}'
 while read -r line; do
   case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"answer\",\"text\":\"eco\"}'
+  printf '{\"event\":\"done\",\"text\":\"%s\"}\n' \"$*\"
 done
 ",
         );
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
+        let conversation = conversation("../workspace");
         for _ in 0..2 {
-            match pool.turn(&session, Command::Resume).unwrap() {
-                Turn::Answer(text) => assert_eq!(text, "eco"),
+            match pool
+                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .unwrap()
+            {
+                Turn::Answer(text) => {
+                    assert!(text.contains("--chat test"), "{text}");
+                    assert!(text.contains("--cwd ../workspace"), "{text}");
+                }
                 Turn::Failed(message) => panic!("esperaba respuesta, no {message}"),
             }
         }
@@ -238,9 +280,14 @@ done
         let exe = script(&dir, "worker.sh", "exit 0\n");
         let pool = Pool::new(Vec::new(), Some(exe));
         let session = Session::channel("test");
-        assert!(pool.turn(&session, Command::Resume).is_err());
+        let conversation = conversation("../workspace");
+        assert!(pool
+            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
-        assert!(pool.turn(&session, Command::Resume).is_err());
+        assert!(pool
+            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

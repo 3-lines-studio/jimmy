@@ -6,6 +6,7 @@ mod prompt;
 mod reap;
 mod schedule;
 mod skill;
+mod tools;
 mod transport;
 
 use agent::Agent;

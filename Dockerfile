@@ -66,10 +66,10 @@ RUN git config --system user.name "Jimmy" \
 ENV GIT_TERMINAL_PROMPT=0
 
 COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
+COPY --from=builder /build/jimmy/target/release/search /usr/local/bin/search
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY prompts /usr/local/share/jimmy/prompts
-COPY --chmod=0755 bin/search /usr/local/bin/search
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats

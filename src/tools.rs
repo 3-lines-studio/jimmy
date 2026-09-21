@@ -200,4 +200,18 @@ mod tests {
     fn neither_url_nor_steps_errors() {
         assert!(browse_argv(&args(None, None)).is_err());
     }
+
+    #[test]
+    fn extra_tools_join_the_builtin_list() {
+        let mut tools = axe::tui::build_tools("/tmp");
+        assert_eq!(tools.len(), 4);
+        tools.extend(all());
+        assert_eq!(tools.len(), 6);
+        let search = tools.iter().find(|t| t.name == "search").unwrap();
+        let browse = tools.iter().find(|t| t.name == "browse").unwrap();
+        assert!(!search.snippet.is_empty());
+        assert!(!browse.snippet.is_empty());
+        assert!(browse.sequential);
+        assert!(!search.sequential);
+    }
 }

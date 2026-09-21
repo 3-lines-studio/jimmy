@@ -87,6 +87,29 @@ impl Pool {
         }
     }
 
+    /// Interrumpe el turno de esa conversación, si hay uno corriendo. Va por el
+    /// mismo pipe que todo lo demás, así que el worker decide cuándo mirarlo.
+    pub fn cancel(&self, key: &str) {
+        let worker = self.workers.lock().unwrap().get(key).cloned();
+        if let Some(worker) = worker {
+            let _ = worker.send(&Command::Cancel);
+        }
+    }
+
+    /// Baja el worker de esa conversación y espera a que muera, para que no
+    /// siga escribiendo en una carpeta que estamos por borrar.
+    pub fn kill(&self, key: &str) {
+        let worker = self.workers.lock().unwrap().get(key).cloned();
+        let Some(worker) = worker else {
+            return;
+        };
+        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+        if let Ok(mut child) = worker.child.lock() {
+            let _ = child.wait();
+        }
+        self.forget(key, worker.pid);
+    }
+
     pub fn running(&self, key: &str) -> bool {
         self.workers
             .lock()

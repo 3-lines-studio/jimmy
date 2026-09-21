@@ -5,12 +5,18 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
+/// Lo más grande que aceptamos leer. Con la web expuesta, un cuerpo sin tope es
+/// una forma de quedarse sin memoria.
+pub const MAX_BODY: usize = 24 * 1024 * 1024;
+
 pub struct Request {
     pub method: String,
     pub path: String,
     pub query: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    /// El cuerpo se pasó del tope y no lo leímos.
+    pub too_large: bool,
 }
 
 impl Request {
@@ -45,6 +51,15 @@ impl Request {
             .as_str()
             .map(|value| value.to_string())
     }
+
+    pub fn list(&self, name: &str) -> Vec<String> {
+        self.json()
+            .and_then(|json| json.get(name).and_then(|value| value.as_array()).cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|value| value.as_str().map(|text| text.to_string()))
+            .collect()
+    }
 }
 
 pub fn read(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
@@ -78,8 +93,9 @@ pub fn read(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
-    let mut body = vec![0u8; length];
-    if length > 0 {
+    let too_large = length > MAX_BODY;
+    let mut body = vec![0u8; if too_large { 0 } else { length }];
+    if !too_large && length > 0 {
         reader.read_exact(&mut body)?;
     }
     Ok(Some(Request {
@@ -88,6 +104,7 @@ pub fn read(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         query,
         headers,
         body,
+        too_large,
     }))
 }
 
@@ -158,6 +175,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         303 => "See Other",
         400 => "Bad Request",
+        413 => "Payload Too Large",
         401 => "Unauthorized",
         404 => "Not Found",
         500 => "Internal Server Error",
@@ -215,6 +233,7 @@ mod tests {
             query: HashMap::new(),
             headers,
             body: Vec::new(),
+            too_large: false,
         }
     }
 

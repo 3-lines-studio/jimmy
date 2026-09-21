@@ -12,6 +12,14 @@ const sidebar = document.getElementById("sidebar");
 const backdrop = document.getElementById("backdrop");
 const composerEl = document.getElementById("composer");
 const inputEl = document.getElementById("input");
+const tabActionsEl = document.getElementById("tab-actions");
+const viewersEl = document.getElementById("viewers");
+const cancelEl = document.getElementById("cancel");
+const pendingEl = document.getElementById("pending");
+const fileEl = document.getElementById("file");
+const searchEl = document.getElementById("search");
+let pending = new Map();
+let searchTimer = null;
 
 async function api(path, body) {
   let response;
@@ -57,8 +65,9 @@ async function refresh() {
   for (const key of [...tabs.keys()]) {
     if (!live.has(key)) closeTab(key);
   }
-  renderSidebar();
+  if (searchEl.value.trim().length < 2) renderSidebar();
   renderTabs();
+  renderActions();
   updateTitle();
 }
 
@@ -72,6 +81,17 @@ function renderSidebar() {
     name.textContent = project.name;
     name.title = project.path;
     header.append(name);
+    if (project.name !== "general") {
+      const remove = document.createElement("button");
+      remove.className = "icon-btn";
+      remove.textContent = "×";
+      remove.title = "borrar proyecto";
+      remove.onclick = (event) => {
+        event.stopPropagation();
+        deleteProject(project);
+      };
+      header.append(remove);
+    }
     projectsEl.append(header);
 
     for (const conversation of project.conversations) {
@@ -94,7 +114,16 @@ function renderSidebar() {
           event.stopPropagation();
           rename(title, conversation);
         };
-        item.append(renameBtn);
+        const remove = document.createElement("button");
+        remove.className = "icon-btn";
+        remove.dataset.action = "delete";
+        remove.textContent = "×";
+        remove.title = "borrar conversación";
+        remove.onclick = (event) => {
+          event.stopPropagation();
+          deleteConversation(conversation);
+        };
+        item.append(renameBtn, remove);
       }
       item.onclick = () => {
         openTab(conversation.key);
@@ -129,6 +158,72 @@ function renderSidebar() {
     await refresh();
   };
   projectsEl.append(createProject);
+}
+
+async function deleteConversation(conversation) {
+  const name = conversation.title || conversation.key;
+  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
+  const done = await api("/api/delete-conversation", { conversation: conversation.key });
+  if (!done || done.error) {
+    alert(done && done.error ? done.error : "no pude borrarla");
+    return;
+  }
+  closeTab(conversation.key);
+  await refresh();
+}
+
+async function deleteProject(project) {
+  if (!confirm(`¿Borrar el proyecto "${project.name}"?`)) return;
+  const done = await api("/api/delete-project", { project: project.name });
+  if (!done || done.error) {
+    alert(done && done.error ? done.error : "no pude borrarlo");
+    return;
+  }
+  await refresh();
+}
+
+/* Buscar en el historial */
+
+searchEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 250);
+});
+
+async function runSearch() {
+  const query = searchEl.value.trim();
+  if (query.length < 2) {
+    renderSidebar();
+    return;
+  }
+  const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
+  renderResults((data && data.results) || []);
+}
+
+function renderResults(results) {
+  projectsEl.replaceChildren();
+  if (!results.length) {
+    const empty = document.createElement("div");
+    empty.className = "result-empty";
+    empty.textContent = "nada encontrado";
+    projectsEl.append(empty);
+    return;
+  }
+  for (const hit of results) {
+    const item = document.createElement("div");
+    item.className = "result";
+    const title = document.createElement("div");
+    title.className = "result-title";
+    title.textContent = `${hit.title} · ${hit.project}`;
+    const snippet = document.createElement("div");
+    snippet.className = "result-snippet";
+    snippet.textContent = `${hit.role === "user" ? "vos" : "jimmy"}: ${hit.snippet}`;
+    item.append(title, snippet);
+    item.onclick = () => {
+      openTab(hit.conversation);
+      closeSidebar();
+    };
+    projectsEl.append(item);
+  }
 }
 
 function rename(title, conversation) {
@@ -176,6 +271,7 @@ function createTab(key) {
 
   const tab = {
     key,
+    viewers: [],
     pane,
     transcript,
     jump,
@@ -222,7 +318,8 @@ function activate(key) {
   if (tab) tab.attention = null;
   renderSidebar();
   renderTabs();
-  renderComposer();
+  renderActions();
+  renderPending();
   updateTitle();
   inputEl.focus();
 }
@@ -244,7 +341,7 @@ function closeTab(key) {
     activeKey = null;
     placeholderEl.hidden = false;
     renderTabs();
-    renderComposer();
+    renderActions();
   }
 }
 
@@ -274,12 +371,15 @@ function renderTabs() {
   }
 }
 
-function renderComposer() {
+function renderActions() {
+  const tab = activeKey ? tabs.get(activeKey) : null;
   const conversation = activeKey ? conversationByKey(activeKey) : null;
+  tabActionsEl.hidden = !tab;
   composerEl.hidden = !conversation || conversation.read_only;
-  if (conversation && conversation.read_only) {
-    composerEl.hidden = true;
-  }
+  if (!tab || !conversation) return;
+  viewersEl.textContent =
+    tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
+  cancelEl.hidden = !conversation.running;
 }
 
 function updateTitle() {
@@ -321,6 +421,10 @@ function render(tab, event) {
         renderTabs();
         updateTitle();
       }
+      break;
+    case "presence":
+      tab.viewers = event.users || [];
+      if (tab.key === activeKey) renderActions();
       break;
     case "synced":
       tab.synced = true;
@@ -872,11 +976,17 @@ inputEl.addEventListener("input", grow);
 
 composerEl.onsubmit = async (event) => {
   event.preventDefault();
+  if (!activeKey) return;
+  const list = pendingFor(activeKey);
   const text = inputEl.value.trim();
-  if (!text || !activeKey) return;
+  if (!text && !list.length) return;
+  const images = list.map((item) => item.url);
   inputEl.value = "";
   grow();
-  await api("/api/send", { conversation: activeKey, text });
+  clearPending();
+  const tab = tabs.get(activeKey);
+  if (tab) tab.follow = true;
+  await api("/api/send", { conversation: activeKey, text, images });
 };
 
 inputEl.addEventListener("keydown", (event) => {
@@ -885,6 +995,77 @@ inputEl.addEventListener("keydown", (event) => {
     composerEl.requestSubmit();
   }
 });
+
+/* Adjuntos */
+
+function pendingFor(key) {
+  return pending.get(key) || [];
+}
+
+function readAsDataURL(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function attachFiles(files) {
+  if (!activeKey) return;
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    const url = await readAsDataURL(file);
+    const list = pendingFor(activeKey);
+    list.push({ url, preview: URL.createObjectURL(file) });
+    pending.set(activeKey, list);
+  }
+  renderPending();
+}
+
+function clearPending() {
+  for (const item of pendingFor(activeKey)) URL.revokeObjectURL(item.preview);
+  pending.delete(activeKey);
+  renderPending();
+}
+
+function renderPending() {
+  const list = pendingFor(activeKey);
+  pendingEl.hidden = list.length === 0;
+  pendingEl.replaceChildren();
+  list.forEach((item, index) => {
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const img = document.createElement("img");
+    img.src = item.preview;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.onclick = () => {
+      URL.revokeObjectURL(item.preview);
+      list.splice(index, 1);
+      renderPending();
+    };
+    thumb.append(img, remove);
+    pendingEl.append(thumb);
+  });
+}
+
+fileEl.onchange = async () => {
+  await attachFiles([...fileEl.files]);
+  fileEl.value = "";
+};
+
+inputEl.addEventListener("paste", async (event) => {
+  const files = [...(event.clipboardData ? event.clipboardData.files : [])];
+  if (!files.length) return;
+  event.preventDefault();
+  await attachFiles(files);
+});
+
+cancelEl.onclick = async () => {
+  if (!activeKey) return;
+  await api("/api/cancel", { conversation: activeKey });
+};
 
 /* Sidebar drawer */
 

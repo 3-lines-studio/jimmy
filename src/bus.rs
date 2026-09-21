@@ -11,8 +11,13 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+struct Watcher {
+    user: String,
+    sender: Sender<Event>,
+}
+
 pub struct Bus {
-    watchers: Mutex<HashMap<String, Vec<Sender<Event>>>>,
+    watchers: Mutex<HashMap<String, Vec<Watcher>>>,
 }
 
 impl Bus {
@@ -23,22 +28,50 @@ impl Bus {
     }
 
     /// The events so far and everything from here on.
-    pub fn attach(&self, key: &str, log: &Log) -> (Vec<Event>, Receiver<Event>) {
+    pub fn attach(&self, key: &str, log: &Log, user: &str) -> (Vec<Event>, Receiver<Event>) {
         let mut watchers = self.watchers.lock().unwrap();
         let backlog = log.events();
         let (sender, receiver) = mpsc::channel();
-        watchers.entry(key.to_string()).or_default().push(sender);
+        watchers.entry(key.to_string()).or_default().push(Watcher {
+            user: user.to_string(),
+            sender,
+        });
+        self.tell_who_is_watching(&mut watchers, key);
         (backlog, receiver)
+    }
+
+    pub fn detach(&self, key: &str, user: &str) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if let Some(list) = watchers.get_mut(key) {
+            if let Some(index) = list.iter().position(|watcher| watcher.user == user) {
+                list.remove(index);
+            }
+        }
+        self.tell_who_is_watching(&mut watchers, key);
     }
 
     pub fn publish(&self, key: &str, log: &Log, event: &Event) {
         let mut watchers = self.watchers.lock().unwrap();
-        if !matches!(event, Event::Delta { .. } | Event::ToolDelta { .. }) {
+        if !matches!(
+            event,
+            Event::Delta { .. } | Event::ToolDelta { .. } | Event::Presence { .. }
+        ) {
             log.append(event);
         }
         let Some(list) = watchers.get_mut(key) else {
             return;
         };
-        list.retain(|sender| sender.send(event.clone()).is_ok());
+        list.retain(|watcher| watcher.sender.send(event.clone()).is_ok());
+    }
+
+    fn tell_who_is_watching(&self, watchers: &mut HashMap<String, Vec<Watcher>>, key: &str) {
+        let Some(list) = watchers.get_mut(key) else {
+            return;
+        };
+        let mut users: Vec<String> = list.iter().map(|watcher| watcher.user.clone()).collect();
+        users.sort();
+        users.dedup();
+        let event = Event::Presence { users };
+        list.retain(|watcher| watcher.sender.send(event.clone()).is_ok());
     }
 }

@@ -14,6 +14,9 @@
           <strong>Jimmy</strong>
           <form id="logout" method="post" action="/api/logout"><button>salir</button></form>
         </header>
+        <div id="sidebar-search">
+          <input id="search" placeholder="buscar en el historial" spellcheck="false" />
+        </div>
         <nav id="projects"></nav>
       </aside>
 
@@ -21,12 +24,21 @@
         <div id="tabbar">
           <button id="menu" aria-label="proyectos">☰</button>
           <div id="tabs"></div>
+          <div id="tab-actions" hidden>
+            <span id="viewers"></span>
+            <button id="cancel">cancelar</button>
+          </div>
         </div>
         <div id="panes">
           <div id="placeholder">Elegí una conversación, o creá una nueva.</div>
         </div>
         <form id="composer" hidden>
+          <div id="pending" hidden></div>
           <div class="box">
+            <label id="attach" title="adjuntar imagen">
+              <input id="file" type="file" accept="image/*" multiple hidden />
+              <span>+</span>
+            </label>
             <textarea id="input" rows="1" placeholder="Escribí un mensaje…"></textarea>
             <button class="send">enviar</button>
           </div>

@@ -13,6 +13,8 @@ use crate::Config;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
@@ -25,21 +27,21 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let pipe = Pipe::new();
     agent.set_pipe(pipe.clone());
 
+    // El turno corre en este hilo, así que alguien tiene que seguir leyendo la
+    // entrada: es lo que deja cancelar sin esperar a que termine.
+    let cancel = Arc::new(AtomicBool::new(false));
+    agent.set_cancel(cancel.clone());
+    let (commands, incoming) = std::sync::mpsc::channel();
+    read_commands(commands, cancel.clone());
+
     crate::install_sigterm();
     pipe.emit(&Event::Ready)?;
 
-    for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else {
-            break;
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(command) = serde_json::from_str::<Command>(&line) else {
-            continue;
-        };
+    for command in incoming {
         pipe.begin_turn();
+        cancel.store(false, Ordering::SeqCst);
         let result = match command {
+            Command::Cancel => continue,
             Command::Shutdown => break,
             Command::Prompt { text, images } => {
                 agent.local_prompt(pipe.as_ref(), &session, &text, images)
@@ -56,6 +58,30 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Una cancelación se atiende acá mismo; el resto va para el hilo del turno.
+fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(command) = serde_json::from_str::<Command>(&line) else {
+                continue;
+            };
+            if matches!(command, Command::Cancel) {
+                cancel.store(true, Ordering::SeqCst);
+                continue;
+            }
+            if commands.send(command).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 /// The worker's end of the pipe: every event it tells the parent goes through

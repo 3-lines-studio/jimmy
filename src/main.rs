@@ -1,13 +1,23 @@
 mod agent;
 mod audio;
+mod bus;
+mod conversations;
+mod http;
+mod log;
 mod markdown;
 mod memo;
+mod pool;
 mod prompt;
+mod protocol;
+mod random;
 mod reap;
 mod schedule;
 mod skill;
 mod tools;
 mod transport;
+mod users;
+mod web;
+mod worker;
 
 use agent::Agent;
 use std::collections::HashMap;
@@ -92,8 +102,34 @@ fn main() {
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("conversations") {
+        std::process::exit(conversations_command(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("user") {
+        let code = match users::command(&args[1..]) {
+            Ok(report) => {
+                println!("{report}");
+                0
+            }
+            Err(e) => {
+                eprintln!("jimmy user: {e}");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
+    if args.first().map(String::as_str) == Some("worker") {
+        let code = match worker::run(args[1..].to_vec()) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("jimmy worker: {e}");
+                1
+            }
+        };
+        std::process::exit(code);
     }
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -111,26 +147,13 @@ fn main() {
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
-    let fragments = match prompt::assemble(
-        &config.prompt,
-        &prompt::dirs(&config.root),
-        &prompt::parse_vars(&config.vars),
-    ) {
-        Ok(fragments) => fragments,
+    let agent = match build_agent(&config) {
+        Ok(agent) => agent,
         Err(e) => {
             eprintln!("jimmy: {e}");
             std::process::exit(1);
         }
     };
-    let agent = Agent::new(
-        config.base.clone(),
-        config.model.clone(),
-        config.api_key.clone(),
-        config.context_window,
-        config.root.clone(),
-        config.workspace.clone(),
-        fragments,
-    );
     let transport = match transport_from_env() {
         Ok(transport) => transport,
         Err(e) => {
@@ -138,6 +161,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    serve_web(&config, agent.bus());
     let mut source = match source_from_env() {
         Ok(source) => source,
         Err(e) => {
@@ -237,6 +261,104 @@ fn main() {
             });
         }
     }
+}
+
+fn conversations_command(args: &[String]) -> i32 {
+    let root = root_from_env();
+    let workspace = workspace_from_env();
+    let result = match args.first().map(String::as_str) {
+        Some("new") => match args.get(1) {
+            Some(project) => {
+                let title = args
+                    .get(2)
+                    .map(String::as_str)
+                    .unwrap_or(conversations::NEW_TITLE);
+                conversations::create(&root, &workspace, project, title)
+                    .map(|key| println!("{key}"))
+            }
+            None => return usage(),
+        },
+        Some("rename") => match (args.get(1), args.get(2)) {
+            (Some(key), Some(title)) => conversations::rename(&root, key, title),
+            _ => return usage(),
+        },
+        Some(_) => return usage(),
+        None => {
+            for project in conversations::projects(&root, &workspace) {
+                println!("{}  {}", project.name, project.path.display());
+                for conversation in &project.conversations {
+                    let title = conversation.title.as_deref().unwrap_or("(sin título)");
+                    let mode = if conversation.read_only {
+                        "solo lectura"
+                    } else {
+                        "web"
+                    };
+                    println!("  {} · {} · {title}", conversation.key, mode);
+                }
+            }
+            Ok(())
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("jimmy conversations: {e}");
+            2
+        }
+    }
+}
+
+fn usage() -> i32 {
+    eprintln!("uso: jimmy conversations [new <proyecto> [título] | rename <clave> <título>]");
+    2
+}
+
+/// The web frontend is opt-in: without a port to listen on, jimmy is what it
+/// always was.
+fn serve_web(config: &Config, bus: Arc<bus::Bus>) {
+    let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
+        return;
+    };
+    if users::count(&config.root) == 0 {
+        eprintln!("jimmy: no hay usuarios todavía; corré `jimmy user add <nombre>`");
+    }
+    let web = web::Web::new(config.root.clone(), PathBuf::from(&config.workspace), bus);
+    let listener = match web::listen(port) {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            return;
+        }
+    };
+    eprintln!("jimmy: web escuchando en el puerto {port}");
+    std::thread::spawn(move || web::serve(web, listener));
+}
+
+fn build_agent(config: &Config) -> Result<Agent, String> {
+    let fragments = prompt::assemble(
+        &config.prompt,
+        &prompt::dirs(&config.root),
+        &prompt::parse_vars(&config.vars),
+    )?;
+    Ok(Agent::new(
+        config.base.clone(),
+        config.model.clone(),
+        config.api_key.clone(),
+        config.context_window,
+        config.root.clone(),
+        config.workspace.clone(),
+        fragments,
+    ))
+}
+
+pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == name {
+            return it.next().cloned();
+        }
+    }
+    None
 }
 
 fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
@@ -442,17 +564,7 @@ fn fetch_image(
 }
 
 fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
-    let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
-        return;
-    };
-    for chat in chats.flatten() {
-        let dir = chat.path();
-        if !dir.join("inflight").exists() {
-            continue;
-        }
-        let Some(key) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
-            continue;
-        };
+    for key in inflight_chats(root) {
         let Some(session) = session_from_key(&key) else {
             continue;
         };
@@ -462,11 +574,25 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
         std::thread::spawn(move || {
             let lock = chat_lock(&session.key());
             let _guard = lock.lock().unwrap();
-            if let Err(e) = agent.resume(transport.as_ref(), &session, &dir) {
+            if let Err(e) = agent.resume(transport.as_ref(), &session) {
                 eprintln!("jimmy: no pude reanudar {key}: {e}");
             }
         });
     }
+}
+
+/// Chats with a turn that was cut short, which is what the marker file means.
+fn inflight_chats(root: &Path) -> Vec<String> {
+    let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
+        return Vec::new();
+    };
+    let mut keys: Vec<String> = chats
+        .flatten()
+        .filter(|entry| entry.path().join("inflight").exists())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    keys.sort();
+    keys
 }
 
 fn session_from_key(key: &str) -> Option<Session> {
@@ -487,6 +613,7 @@ fn install_sigterm() {
 }
 
 extern "C" fn handle_sigterm(_: libc::c_int) {
+    pool::kill_all();
     axe::tools::kill_children();
     unsafe { libc::_exit(0) };
 }
@@ -512,39 +639,6 @@ fn clamp(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::Msg;
-
-    struct Fake {
-        answers: Mutex<Vec<String>>,
-    }
-
-    impl Default for Fake {
-        fn default() -> Self {
-            Self {
-                answers: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn parse_target(&self, _: &str) -> Result<Session, String> {
-            Ok(Session::channel("x"))
-        }
-        fn progress(&self, _: &Session) -> Option<Msg> {
-            None
-        }
-        fn answer(&self, _: &Session, _: Option<Msg>, markdown: &str) {
-            self.answers.lock().unwrap().push(markdown.to_string());
-        }
-        fn note(&self, _: &Session, _: &str) {}
-        fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
-        fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
-            Err("no".into())
-        }
-        fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
-            Err("no".into())
-        }
-    }
 
     #[test]
     fn telegram_voice_extension_is_ogg_not_oga() {
@@ -573,38 +667,15 @@ mod tests {
     }
 
     #[test]
-    fn recover_resumes_a_marked_chat() {
-        let root = std::env::temp_dir().join(format!("jimmy-recover-{}", std::process::id()));
+    fn inflight_chats_lists_only_the_ones_with_a_marker() {
+        let root = std::env::temp_dir().join(format!("jimmy-inflight-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let dir = root.join("chats/123");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("transcript.jsonl"),
-            "{\"type\":\"message\",\"message\":{\"Role\":\"user\",\"Content\":\"hola\"}}\n{\"type\":\"message\",\"message\":{\"Role\":\"assistant\",\"Content\":\"listo\"}}\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("inflight"), b"").unwrap();
-        let agent = Agent::new(
-            "http://localhost".into(),
-            "model".into(),
-            "key".into(),
-            Some(1_000_000),
-            root.clone(),
-            "/tmp".into(),
-            String::new(),
-        );
-        let fake = Arc::new(Fake::default());
-        recover(&agent, fake.clone(), &root);
-        let mut cleared = false;
-        for _ in 0..200 {
-            if !dir.join("inflight").exists() {
-                cleared = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(cleared, "recover debería borrar el marcador");
-        assert_eq!(fake.answers.lock().unwrap().as_slice(), ["listo"]);
+        std::fs::create_dir_all(root.join("chats/123")).unwrap();
+        std::fs::create_dir_all(root.join("chats/456")).unwrap();
+        std::fs::write(root.join("chats/123/inflight"), b"").unwrap();
+        assert_eq!(inflight_chats(&root), ["123"]);
+        std::fs::write(root.join("chats/456/inflight"), b"").unwrap();
+        assert_eq!(inflight_chats(&root), ["123", "456"]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -19,6 +19,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let config = Config::from_env()?;
     let mut agent = crate::build_agent(&config)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
+    if let Some(cwd) = crate::flag(&args, "--cwd") {
+        agent.set_cwd(&cwd);
+    }
     let pipe = Pipe::new();
     agent.set_pipe(pipe.clone());
 
@@ -42,7 +45,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 agent.local_prompt(pipe.as_ref(), &session, &text, images)
             }
             Command::Resume => {
-                let dir = agent.chat_dir(&session);
+                let dir = agent.conversation(&session).dir;
                 agent.local_resume(pipe.as_ref(), &session, &dir)
             }
         };

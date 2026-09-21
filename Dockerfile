@@ -16,20 +16,6 @@ RUN apt-get update \
         build-essential chromium tini ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-ARG WAX_VERSION=v0.3.2
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) asset=wax-linux-x86_64 ;; \
-         arm64) asset=wax-linux-aarch64 ;; \
-         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
-       esac \
-    && base="https://github.com/3-lines-studio/wax/releases/download/${WAX_VERSION}" \
-    && curl -fsSL -o "/tmp/$asset" "$base/$asset" \
-    && curl -fsSL -o /tmp/SHA256SUMS "$base/SHA256SUMS" \
-    && (cd /tmp && grep " $asset$" SHA256SUMS | sha256sum -c -) \
-    && install -m 0755 "/tmp/$asset" /usr/local/bin/wax \
-    && rm -f "/tmp/$asset" /tmp/SHA256SUMS
-
 ARG BQX_VERSION=v0.3.2
 ARG PGX_VERSION=v0.2.1
 RUN curl -fsSL https://ax.3lines.studio/install.sh -o /tmp/ax-install.sh \
@@ -74,8 +60,6 @@ COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
-ENV WAX_NO_SANDBOX=1
-
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["jimmy"]

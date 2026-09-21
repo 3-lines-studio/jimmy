@@ -241,10 +241,10 @@ change while the process lives, so the model's prefix cache stays warm.
 
 The image ships:
 
-- `wax` for fetching pages as Markdown, pinned by the `WAX_VERSION` build arg.
-  Chromium is installed and `WAX_NO_SANDBOX=1` is set, so pages that need
-  rendering work inside the container. The system prompt already tells the
-  agent to fetch with `wax <url>`.
+- `search` and `fetch`, from axe itself: DuckDuckGo and a page-to-Markdown
+  reader. Chromium is installed, so pages that build themselves with
+  JavaScript get rendered. `browse` drives that same Chromium when the agent
+  needs a session, a click, or a screenshot.
 - mise, with a global config copied from `mise.toml` to
   `/root/.config/mise/config.toml`: `go`, `node`, `python`, `bun`, `uv`,
   `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`. The
@@ -253,7 +253,7 @@ The image ships:
   agent can build and test itself. `git` is configured to authenticate to
   GitHub through `gh`, which reads `GITHUB_TOKEN`.
 
-Edit `mise.toml` or bump `WAX_VERSION` and rebuild to change the versions.
+Edit `mise.toml` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
 `/data`, so they do not survive a Railway redeploy.
 

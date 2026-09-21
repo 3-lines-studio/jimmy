@@ -37,7 +37,7 @@ COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
 
 RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
-    && uv venv "$VENV" \
+    && uv venv --clear "$VENV" \
     && uv pip install --python "$VENV/bin/python" playwright \
     && "$VENV/bin/playwright" install ffmpeg
 
@@ -52,7 +52,6 @@ RUN git config --system user.name "Jimmy" \
 ENV GIT_TERMINAL_PROMPT=0
 
 COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
-COPY --from=builder /build/jimmy/target/release/search /usr/local/bin/search
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY prompts /usr/local/share/jimmy/prompts

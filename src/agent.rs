@@ -137,7 +137,8 @@ impl Agent {
         dir: Option<PathBuf>,
     ) -> Result<(), String> {
         let _inflight = dir.as_ref().map(|d| Inflight::new(d));
-        let tools = axe::tui::build_tools(&self.workspace);
+        let mut tools = axe::tui::build_tools(&self.workspace);
+        tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
             system.push_str("\n\n");

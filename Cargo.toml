@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+argon2 = "0.5"
 axe = { git = "https://github.com/3-lines-studio/axe", rev = "cbc3e34c9daa4377647b04a7787888b742554c8b" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

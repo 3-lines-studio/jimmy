@@ -120,24 +120,12 @@ fn project_dir(workspace: &Path, project: &str) -> PathBuf {
     }
 }
 
-fn random_hex() -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 4];
-    if std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut buf))
-        .is_err()
-    {
-        buf = std::process::id().to_le_bytes();
-    }
-    buf.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn new_key() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("web-{ms}-{}", random_hex())
+    format!("web-{ms}-{}", crate::random::hex(4))
 }
 
 fn meta_path(root: &Path, key: &str) -> PathBuf {

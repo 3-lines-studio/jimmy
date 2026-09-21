@@ -1,3 +1,4 @@
+use crate::bus::Bus;
 use crate::conversations;
 use crate::log::Log;
 use crate::pool::{Pool, Turn};
@@ -32,6 +33,7 @@ pub struct Agent {
     fragments: String,
     context: String,
     pool: Arc<Pool>,
+    bus: Arc<Bus>,
     pipe: Option<Arc<Pipe>>,
 }
 
@@ -62,8 +64,14 @@ impl Agent {
             fragments,
             context,
             pool,
+            bus: Bus::new(),
             pipe: None,
         }
+    }
+
+    /// Who is watching the conversations, for the web frontend to attach to.
+    pub fn bus(&self) -> Arc<Bus> {
+        self.bus.clone()
     }
 
     /// Where the tools run. It is the workspace unless the conversation belongs
@@ -133,7 +141,7 @@ impl Agent {
         match self
             .pool
             .turn(session, &conversation, command, &mut |event| {
-                log.append(event)
+                self.bus.publish(&conversation.key, &log, event)
             }) {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, status, &text);

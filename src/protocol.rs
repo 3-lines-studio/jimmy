@@ -17,7 +17,7 @@ pub enum Command {
 
 /// What the worker tells the parent. It is also what the parent writes down as
 /// the conversation's log, so a client can replay the whole thing.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     /// The worker is up and reading commands.

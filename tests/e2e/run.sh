@@ -13,9 +13,6 @@ set -u
 BIN=${1:-target/debug/jimmy}
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d)
-TG_PORT=8791
-MODEL_PORT=8792
-WEB_PORT=8893
 FAIL=0
 PIDS=()
 
@@ -44,12 +41,24 @@ mkdir -p "$WORK/root/prompts" "$WORK/root/workspace/projects/ken"
 echo "sos jimmy, un ayudante." >"$WORK/root/prompts/jimmy.md"
 echo 'clave' | JIMMY_ROOT="$WORK/root" "$BIN" user add berti >/dev/null || exit 1
 
+free_port() {
+    python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1])"
+}
+
 say "levanto el Telegram falso"
-python3 "$HERE/telegram.py" "$TG_PORT" "$WORK/inbox.jsonl" >"$WORK/telegram.log" 2>&1 &
+python3 "$HERE/telegram.py" 0 "$WORK/inbox.jsonl" >"$WORK/telegram.log" 2>&1 &
 PIDS+=($!)
-python3 "$HERE/model.py" "$MODEL_PORT" >"$WORK/model.log" 2>&1 &
+python3 "$HERE/model.py" 0 >"$WORK/model.log" 2>&1 &
 PIDS+=($!)
 sleep 2
+TG_PORT=$(rg -o 'PORT [0-9]+' "$WORK/telegram.log" | rg -o '[0-9]+' | head -1)
+MODEL_PORT=$(rg -o 'PORT [0-9]+' "$WORK/model.log" | rg -o '[0-9]+' | head -1)
+WEB_PORT=$(free_port)
+if [ -z "$TG_PORT" ] || [ -z "$MODEL_PORT" ]; then
+    echo "no arrancaron los falsos:"
+    cat "$WORK/telegram.log" "$WORK/model.log"
+    exit 1
+fi
 
 say "levanto jimmy (transport=telegram, con la web adentro)"
 env \
@@ -106,7 +115,7 @@ kill -TERM $JIMMY_PID
 sleep 3
 kill -0 $JIMMY_PID 2>/dev/null
 [ $? -ne 0 ] && check "jimmy salió con SIGTERM" 0 || check "jimmy salió con SIGTERM" 1
-LEFT=$(pgrep -f "^$BIN worker" | wc -l)
+LEFT=$(pgrep -f "^$BIN worker .*--cwd $WORK/root/workspace" | wc -l)
 [ "$LEFT" = "0" ] && check "no quedaron workers huérfanos" 0 || check "no quedaron workers huérfanos" 1
 
 say "logs para mirar si algo falló"

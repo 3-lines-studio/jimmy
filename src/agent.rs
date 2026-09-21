@@ -74,6 +74,10 @@ impl Agent {
         self.bus.clone()
     }
 
+    pub fn running(&self, key: &str) -> bool {
+        self.pool.running(key)
+    }
+
     /// Where the tools run. It is the workspace unless the conversation belongs
     /// to a project, and the runtime context says so, so it is rebuilt here.
     pub(crate) fn set_cwd(&mut self, cwd: &str) {
@@ -440,6 +444,25 @@ impl Sink for EventSink {
     fn should_compact(&mut self, input: usize, output: usize) -> bool {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
+    }
+
+    fn assistant_delta(&mut self, text: &str) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::Delta {
+            text: text.to_string(),
+        });
+    }
+
+    fn tool_delta(&mut self, call: &ToolCall, text: &str) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::ToolDelta {
+            id: call.id.clone(),
+            text: text.to_string(),
+        });
     }
 
     fn tool_start(&mut self, call: &ToolCall) {

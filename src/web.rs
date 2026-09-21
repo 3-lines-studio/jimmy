@@ -18,7 +18,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The end of the backlog: everything before it is already rendered.
-const SYNCED: &str = r#"{"type":"synced"}"#;
+const SYNCED: &str = r#"{"event":"synced"}"#;
+
+const INDEX: &str = include_str!("../web/index.html");
+const LOGIN: &str = include_str!("../web/login.html");
+const STYLE: &str = include_str!("../web/style.css");
+const APP: &str = include_str!("../web/app.js");
 
 pub struct Web {
     root: PathBuf,
@@ -67,15 +72,29 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         return Ok(());
     };
     match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/") => app_page(web, &request, stream),
+        ("GET", "/login") => http::send_text(stream, 200, HTML, LOGIN),
+        ("GET", "/style.css") => http::send_text(stream, 200, "text/css; charset=utf-8", STYLE),
+        ("GET", "/app.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", APP),
         ("POST", "/api/login") => login(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
         ("GET", "/api/stream") => events(web, &request, stream),
         ("POST", "/api/conversations") => create(web, &request, stream),
+        ("POST", "/api/projects") => create_project(web, &request, stream),
         ("POST", "/api/rename") => rename(web, &request, stream),
         ("POST", "/api/send") => send(web, &request, stream),
         _ => http::send_text(stream, 404, "text/plain", "no está"),
     }
+}
+
+const HTML: &str = "text/html; charset=utf-8";
+
+fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::respond(stream, 303, "text/plain", &[("Location", "/login")], b"");
+    }
+    http::send_text(stream, 200, HTML, INDEX)
 }
 
 fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -125,6 +144,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                         "key": conversation.key,
                         "title": conversation.title,
                         "read_only": conversation.read_only,
+                        "running": web.agent.running(&conversation.key),
                     })
                 })
                 .collect();
@@ -156,6 +176,33 @@ fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     }
 }
 
+fn create_project(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("name").unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty()
+        || name == conversations::GENERAL
+        || name.contains('/')
+        || name.starts_with('.')
+    {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    let dir = web.workspace.join("projects").join(name);
+    if dir.exists() {
+        return http::send_error(stream, 400, "ese proyecto ya existe");
+    }
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return http::send_error(stream, 500, &error.to_string());
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "name": name }))
+}
+
 fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -184,8 +231,13 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if text.trim().is_empty() {
         return http::send_error(stream, 400, "el mensaje está vacío");
     }
-    if writable(web, &key).is_err() {
+    let Ok(conversation) = writable(web, &key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    };
+    if conversation.title.is_none()
+        || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
+    {
+        let _ = conversations::rename(&web.root, &key, &title_from(&text));
     }
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
@@ -228,6 +280,21 @@ impl Transport for Silent {
     fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
         Err("la web no manda archivos".into())
     }
+}
+
+/// Una conversación sin nombre se llama como su primer mensaje, que es lo que
+/// va a buscar el ojo en la lista.
+fn title_from(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let mut title: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        title.push('…');
+    }
+    title
 }
 
 fn writable(web: &Arc<Web>, key: &str) -> Result<conversations::Conversation, ()> {
@@ -385,6 +452,38 @@ done
     }
 
     #[test]
+    fn the_page_is_served_only_with_a_session() {
+        let server = start("assets");
+        let redirect = get(server.port, "/", None);
+        assert!(redirect.starts_with("HTTP/1.1 303"), "{redirect}");
+        assert!(redirect.contains("Location: /login"), "{redirect}");
+
+        let login = get(server.port, "/login", None);
+        assert!(login.starts_with("HTTP/1.1 200"), "{login}");
+        assert!(login.contains("text/html"), "{login}");
+        assert!(login.contains("<title>Jimmy</title>"), "{login}");
+
+        let app = get(server.port, "/app.js", None);
+        assert!(app.starts_with("HTTP/1.1 200"), "{app}");
+        assert!(app.contains("javascript"), "{app}");
+        assert!(app.contains("EventSource"), "{app}");
+
+        let style = get(server.port, "/style.css", None);
+        assert!(style.contains("text/css"), "{style}");
+
+        let login = post(
+            server.port,
+            "/api/login",
+            r#"{"user":"berti","password":"secreto"}"#,
+        );
+        let cookie = format!("jimmy_session={}", token(&login));
+        let page = get(server.port, "/", Some(&cookie));
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("<div id=\"panes\">"), "{page}");
+        std::fs::remove_dir_all(server.root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn everything_but_logging_in_needs_a_session() {
         let server = start("auth");
         assert!(get(server.port, "/api/state", None).starts_with("HTTP/1.1 401"));
@@ -480,6 +579,31 @@ done
         }
         assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
         assert!(text.contains("\"done\""), "{text}");
+
+        let fresh = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(fresh.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let fresh = body["key"].as_str().unwrap().to_string();
+        post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{fresh}","text":"decime los proyectos"}}"#),
+            Some(&cookie),
+        );
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(
+            state.contains("\"title\":\"decime los proyectos\""),
+            "el primer mensaje le pone nombre: {state}"
+        );
+        assert!(
+            state.contains("\"title\":\"otro título\""),
+            "y un nombre puesto a mano se respeta: {state}"
+        );
         std::fs::remove_dir_all(server.root.parent().unwrap()).unwrap();
     }
 

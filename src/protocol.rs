@@ -26,6 +26,11 @@ pub enum Event {
     User {
         text: String,
     },
+    /// Texto que va apareciendo mientras el modelo escribe. No se guarda: el
+    /// mensaje terminado es el que queda en el log.
+    Delta {
+        text: String,
+    },
     Assistant {
         text: String,
     },
@@ -33,6 +38,10 @@ pub enum Event {
         id: String,
         name: String,
         args: String,
+    },
+    ToolDelta {
+        id: String,
+        text: String,
     },
     ToolResult {
         id: String,

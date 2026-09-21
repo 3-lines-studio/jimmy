@@ -156,6 +156,7 @@ pub fn sse_ping(stream: &mut TcpStream) -> std::io::Result<()> {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        303 => "See Other",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",

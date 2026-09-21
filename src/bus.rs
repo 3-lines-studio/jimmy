@@ -33,7 +33,9 @@ impl Bus {
 
     pub fn publish(&self, key: &str, log: &Log, event: &Event) {
         let mut watchers = self.watchers.lock().unwrap();
-        log.append(event);
+        if !matches!(event, Event::Delta { .. } | Event::ToolDelta { .. }) {
+            log.append(event);
+        }
         let Some(list) = watchers.get_mut(key) else {
             return;
         };

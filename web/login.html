@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jimmy</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0b0d;
+        --panel: #101215;
+        --line: #1c2026;
+        --line-strong: #272c34;
+        --text: #e7e9ec;
+        --muted: #8b929d;
+        --faint: #59616c;
+        --err: #f0736b;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono",
+          "Roboto Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        height: 100dvh;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.6 var(--mono);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 264px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      input,
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+      }
+
+      input::placeholder {
+        color: var(--faint);
+      }
+
+      input:focus {
+        outline: none;
+        border-color: var(--line-strong);
+      }
+
+      button {
+        margin-top: 8px;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--line-strong);
+        color: var(--text);
+      }
+
+      .error {
+        color: var(--err);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="login">
+      <h1>Jimmy</h1>
+      <input id="user" placeholder="usuario" autocomplete="username" autofocus />
+      <input
+        id="password"
+        type="password"
+        placeholder="contraseña"
+        autocomplete="current-password"
+      />
+      <span class="error" id="error" hidden>usuario o contraseña incorrectos</span>
+      <button type="submit">entrar</button>
+    </form>
+    <script>
+      const error = document.getElementById("error");
+      document.getElementById("login").onsubmit = async (event) => {
+        event.preventDefault();
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user: document.getElementById("user").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (response.ok) location.href = "/";
+        else error.hidden = false;
+      };
+    </script>
+  </body>
+</html>

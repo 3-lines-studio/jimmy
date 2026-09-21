@@ -4,32 +4,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub fn all() -> Vec<Tool> {
-    vec![search(), browse()]
-}
-
-#[derive(Deserialize)]
-struct SearchArgs {
-    query: String,
-    count: Option<usize>,
-}
-
-fn search() -> Tool {
-    let mut tool = axe::new_tool(
-        "search",
-        "Busca en la web y devuelve resultados numerados (título, URL y snippet).",
-        r#"{"type":"object","properties":{"query":{"type":"string","description":"Consulta de búsqueda"},"count":{"type":"integer","description":"Cantidad de resultados (default 8)"}},"required":["query"]}"#,
-        |args: SearchArgs| {
-            let mut argv = vec!["search".to_string()];
-            if let Some(count) = args.count {
-                argv.push("-n".into());
-                argv.push(count.to_string());
-            }
-            argv.push(args.query);
-            or_error("search", run(&argv, None))
-        },
-    );
-    tool.snippet = "Busca en la web (DuckDuckGo) y devuelve resultados.";
-    tool
+    vec![browse()]
 }
 
 #[derive(Deserialize)]
@@ -204,14 +179,11 @@ mod tests {
     #[test]
     fn extra_tools_join_the_builtin_list() {
         let mut tools = axe::tui::build_tools("/tmp");
-        assert_eq!(tools.len(), 4);
-        tools.extend(all());
         assert_eq!(tools.len(), 6);
-        let search = tools.iter().find(|t| t.name == "search").unwrap();
+        tools.extend(all());
+        assert_eq!(tools.len(), 7);
         let browse = tools.iter().find(|t| t.name == "browse").unwrap();
-        assert!(!search.snippet.is_empty());
         assert!(!browse.snippet.is_empty());
         assert!(browse.sequential);
-        assert!(!search.sequential);
     }
 }

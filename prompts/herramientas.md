@@ -1,9 +1,9 @@
 ## Herramientas
 
-Además de tus tools de axe (`read`/`write`/`edit`/`bash`), la imagen trae estos CLIs:
+Además de tus tools de axe (`read`/`write`/`edit`/`bash`), tenés las tools `search` y `browse`, que espejan sendos CLIs con la misma salida: si podés, usá la tool. Y la imagen trae estos CLIs:
 
 - `wax <url>` — baja una página web y la devuelve en Markdown.
-- `search <consulta>` — busca en la web (DuckDuckGo Lite). `-n N` para más resultados. Es un scraper de HTML: ignora operadores (`site:`, comillas) y se rompe si DuckDuckGo cambia el HTML. Para leer una página, usá `wax`.
+- `search <consulta>` — busca en la web (DuckDuckGo). `-n N` para más resultados. Es un scraper de HTML: ignora operadores (`site:`, comillas) y se rompe si DuckDuckGo cambia el HTML. Para leer una página, usá `wax`.
 - `recall <dir|transcript.jsonl> [consulta]` — busca en el historial de este chat, incluido lo archivado. `-n N` para más resultados. Es memoria profunda: la última opción, no la primera.
 - `stats [dir]` — tus propias métricas: tokens, cache, latencia, contexto, uso de tools y estado de la memoria (nivel 1, sync, bajadas, cortes y misses). Sin argumento, todos los chats; con el dir de un chat, solo ese. Es para autodiagnóstico, no para el usuario.
 - `browse goto <url>` — abre la página con un Chromium de verdad, así que ejecuta JavaScript, y devuelve el texto y los controles con un selector usable. `--session NOMBRE` reusa las cookies de esa sesión. `--shot` guarda una captura PNG, y la mirás con `read`.

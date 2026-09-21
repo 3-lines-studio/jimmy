@@ -1,3 +1,5 @@
+use crate::pool::{Pool, Turn};
+use crate::protocol;
 use crate::transport::{Session, Transport};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
@@ -25,6 +27,7 @@ pub struct Agent {
     workspace: String,
     fragments: String,
     context: String,
+    pool: Arc<Pool>,
 }
 
 impl Agent {
@@ -38,6 +41,10 @@ impl Agent {
         fragments: String,
     ) -> Self {
         let context = runtime_context(&model, &base, &root, &workspace);
+        let pool = Pool::new(
+            worker_env(&base, &model, &api_key, context_window, &root, &workspace),
+            None,
+        );
         Self {
             base,
             model,
@@ -47,10 +54,73 @@ impl Agent {
             workspace,
             fragments,
             context,
+            pool,
         }
     }
 
+    /// Point the pool at a different binary. Tests only.
+    #[cfg(test)]
+    pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
+        self.pool = Pool::new(
+            worker_env(
+                &self.base,
+                &self.model,
+                &self.api_key,
+                self.context_window,
+                &self.root,
+                &self.workspace,
+            ),
+            Some(exe),
+        );
+    }
+
+    /// Hand the turn to this conversation's worker and relay what it answers.
     pub fn respond(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        text: &str,
+        images: Vec<Image>,
+    ) -> Result<(), String> {
+        self.relay(
+            transport,
+            session,
+            protocol::Command::Prompt {
+                text: text.to_string(),
+                images,
+            },
+        )
+    }
+
+    pub fn resume(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
+        self.relay(transport, session, protocol::Command::Resume)
+    }
+
+    fn relay(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        command: protocol::Command,
+    ) -> Result<(), String> {
+        let status = transport.progress(session);
+        match self.pool.turn(session, command) {
+            Ok(Turn::Answer(text)) => {
+                transport.answer(session, status, &text);
+                Ok(())
+            }
+            Ok(Turn::Failed(message)) => {
+                transport.fail(session, status, &message);
+                Err(message)
+            }
+            Err(error) => {
+                transport.fail(session, status, &format!("⚠️ {error}"));
+                Err(error)
+            }
+        }
+    }
+
+    /// The turn as the worker runs it, in its own process.
+    pub(crate) fn local_prompt(
         &self,
         transport: &dyn Transport,
         session: &Session,
@@ -80,7 +150,7 @@ impl Agent {
         self.execute(transport, session, history, entries, Some(dir))
     }
 
-    pub fn resume(
+    pub(crate) fn local_resume(
         &self,
         transport: &dyn Transport,
         session: &Session,
@@ -124,7 +194,7 @@ impl Agent {
         self.execute(transport, session, vec![user], Vec::new(), None)
     }
 
-    fn chat_dir(&self, session: &Session) -> PathBuf {
+    pub(crate) fn chat_dir(&self, session: &Session) -> PathBuf {
         self.root.join("chats").join(session.key())
     }
 
@@ -354,6 +424,29 @@ impl Sink for EventSink {
     fn tool(&mut self, _turn: usize, message: &Message) {
         append_message(&self.transcript, message);
     }
+}
+
+/// What the worker needs to rebuild the same agent on the other side of the
+/// pipe. Everything else it inherits.
+fn worker_env(
+    base: &str,
+    model: &str,
+    api_key: &str,
+    context_window: Option<usize>,
+    root: &Path,
+    workspace: &str,
+) -> Vec<(String, String)> {
+    vec![
+        ("OPENAI_API_KEY".into(), api_key.to_string()),
+        ("AXE_BASE".into(), base.to_string()),
+        ("AXE_MODEL".into(), model.to_string()),
+        (
+            "AXE_CONTEXT_WINDOW".into(),
+            context_window.map(|w| w.to_string()).unwrap_or_default(),
+        ),
+        ("JIMMY_ROOT".into(), root.display().to_string()),
+        ("JIMMY_WORKSPACE".into(), workspace.to_string()),
+    ]
 }
 
 fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str) -> String {
@@ -677,16 +770,10 @@ mod tests {
         assert_eq!(answer(&messages), "✅ listo");
     }
 
+    #[derive(Default)]
     struct Fake {
         answers: Mutex<Vec<String>>,
-    }
-
-    impl Default for Fake {
-        fn default() -> Self {
-            Self {
-                answers: Mutex::new(Vec::new()),
-            }
-        }
+        failures: Mutex<Vec<String>>,
     }
 
     impl Transport for Fake {
@@ -700,7 +787,9 @@ mod tests {
             self.answers.lock().unwrap().push(markdown.to_string());
         }
         fn note(&self, _: &Session, _: &str) {}
-        fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+        fn fail(&self, _: &Session, _: Option<Msg>, text: &str) {
+            self.failures.lock().unwrap().push(text.to_string());
+        }
         fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
             Err("no".into())
         }
@@ -743,6 +832,50 @@ mod tests {
         )
     }
 
+    fn worker_script(name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = resume_dir("worker");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn respond_relays_the_workers_answer() {
+        let mut agent = agent();
+        agent.use_worker_exe(worker_script(
+            "worker.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo '{\"event\":\"answer\",\"text\":\"eco\"}'
+done
+",
+        ));
+        let fake = Fake::default();
+        agent
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .unwrap();
+        assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
+        assert!(fake.failures.lock().unwrap().is_empty());
+        crate::pool::kill_all();
+    }
+
+    #[test]
+    fn respond_reports_a_worker_that_dies() {
+        let mut agent = agent();
+        agent.use_worker_exe(worker_script("dead.sh", "exit 0\n"));
+        let fake = Fake::default();
+        assert!(agent
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .is_err());
+        let failures = fake.failures.lock().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("sin responder"), "{failures:?}");
+    }
+
     #[test]
     fn final_answer_is_the_last_assistant_without_tool_calls() {
         let history = vec![message("user", "hola"), message("assistant", "listo")];
@@ -771,7 +904,9 @@ mod tests {
         );
         std::fs::write(dir.join("inflight"), b"").unwrap();
         let fake = Fake::default();
-        agent().resume(&fake, &Session::channel("x"), &dir).unwrap();
+        agent()
+            .local_resume(&fake, &Session::channel("x"), &dir)
+            .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["listo"]);
         assert!(!dir.join("inflight").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -782,7 +917,9 @@ mod tests {
         let dir = resume_dir("empty");
         std::fs::write(dir.join("inflight"), b"").unwrap();
         let fake = Fake::default();
-        agent().resume(&fake, &Session::channel("x"), &dir).unwrap();
+        agent()
+            .local_resume(&fake, &Session::channel("x"), &dir)
+            .unwrap();
         assert!(fake.answers.lock().unwrap().is_empty());
         assert!(!dir.join("inflight").exists());
         std::fs::remove_dir_all(&dir).unwrap();

@@ -161,7 +161,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    serve_web(&config, agent.bus());
+    serve_web(&config, agent.bus(), agent.clone());
     let mut source = match source_from_env() {
         Ok(source) => source,
         Err(e) => {
@@ -315,14 +315,19 @@ fn usage() -> i32 {
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
 /// always was.
-fn serve_web(config: &Config, bus: Arc<bus::Bus>) {
+fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
     if users::count(&config.root) == 0 {
         eprintln!("jimmy: no hay usuarios todavía; corré `jimmy user add <nombre>`");
     }
-    let web = web::Web::new(config.root.clone(), PathBuf::from(&config.workspace), bus);
+    let web = web::Web::new(
+        config.root.clone(),
+        PathBuf::from(&config.workspace),
+        bus,
+        agent,
+    );
     let listener = match web::listen(port) {
         Ok(listener) => listener,
         Err(e) => {

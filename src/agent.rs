@@ -136,7 +136,8 @@ impl Agent {
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
         if let protocol::Command::Prompt { text, .. } = &command {
-            log.append(&Event::User { text: text.clone() });
+            self.bus
+                .publish(&conversation.key, &log, &Event::User { text: text.clone() });
         }
         match self
             .pool
@@ -940,7 +941,6 @@ done
             .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
-        crate::pool::kill_all();
 
         let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
         let lines: Vec<&str> = log.lines().collect();
@@ -953,6 +953,39 @@ done
         assert!(lines[2].contains("\"tool_start\""), "{log}");
         assert!(lines[3].contains("\"tool_result\""), "{log}");
         assert!(lines[4].contains("\"done\""), "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_user_message_reaches_whoever_is_watching() {
+        let root = resume_dir("watch");
+        let mut agent = agent_in(&root);
+        agent.use_worker_exe(worker_script(
+            "watch.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo '{\"event\":\"assistant\",\"text\":\"eco\"}'
+  echo '{\"event\":\"done\",\"text\":\"eco\"}'
+done
+",
+        ));
+        let log = Log::in_dir(&root.join("chats/x"));
+        let (_backlog, live) = agent.bus().attach("x", &log);
+        let fake = Fake::default();
+        agent
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .unwrap();
+
+        let seen: Vec<String> = live
+            .iter()
+            .take(3)
+            .map(|event| serde_json::to_string(&event).unwrap())
+            .collect();
+        assert!(seen[0].contains("\"user\""), "{seen:?}");
+        assert!(seen[0].contains("hola"), "{seen:?}");
+        assert!(seen[1].contains("\"assistant\""), "{seen:?}");
+        assert!(seen[2].contains("\"done\""), "{seen:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

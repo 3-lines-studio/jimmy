@@ -67,6 +67,11 @@ struct User {
     is_bot: bool,
 }
 
+/// Where Telegram lives. Only a test harness changes it.
+fn api_base() -> String {
+    crate::env("TELEGRAM_API_BASE").unwrap_or_else(|| "https://api.telegram.org".into())
+}
+
 impl Telegram {
     pub fn new(token: String) -> Self {
         let http = ureq::AgentBuilder::new()
@@ -78,7 +83,7 @@ impl Telegram {
     }
 
     fn url(&self, method: &str) -> String {
-        format!("https://api.telegram.org/bot{}/{method}", self.token)
+        format!("{}/bot{}/{method}", api_base(), self.token)
     }
 
     fn call(&self, method: &str, body: Value) -> Result<Value, String> {
@@ -127,10 +132,7 @@ impl Telegram {
     }
 
     fn download_file(&self, file_path: &str) -> Result<Vec<u8>, String> {
-        let url = format!(
-            "https://api.telegram.org/file/bot{}/{}",
-            self.token, file_path
-        );
+        let url = format!("{}/file/bot{}/{}", api_base(), self.token, file_path);
         let response = self
             .http
             .get(&url)

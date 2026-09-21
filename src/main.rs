@@ -1,17 +1,22 @@
 mod agent;
 mod audio;
+mod bus;
 mod conversations;
+mod http;
 mod log;
 mod markdown;
 mod memo;
 mod pool;
 mod prompt;
 mod protocol;
+mod random;
 mod reap;
 mod schedule;
 mod skill;
 mod tools;
 mod transport;
+mod users;
+mod web;
 mod worker;
 
 use agent::Agent;
@@ -103,6 +108,19 @@ fn main() {
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("user") {
+        let code = match users::command(&args[1..]) {
+            Ok(report) => {
+                println!("{report}");
+                0
+            }
+            Err(e) => {
+                eprintln!("jimmy user: {e}");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("worker") {
         let code = match worker::run(args[1..].to_vec()) {
             Ok(()) => 0,
@@ -143,6 +161,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    serve_web(&config, agent.bus());
     let mut source = match source_from_env() {
         Ok(source) => source,
         Err(e) => {
@@ -292,6 +311,27 @@ fn conversations_command(args: &[String]) -> i32 {
 fn usage() -> i32 {
     eprintln!("uso: jimmy conversations [new <proyecto> [título] | rename <clave> <título>]");
     2
+}
+
+/// The web frontend is opt-in: without a port to listen on, jimmy is what it
+/// always was.
+fn serve_web(config: &Config, bus: Arc<bus::Bus>) {
+    let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
+        return;
+    };
+    if users::count(&config.root) == 0 {
+        eprintln!("jimmy: no hay usuarios todavía; corré `jimmy user add <nombre>`");
+    }
+    let web = web::Web::new(config.root.clone(), PathBuf::from(&config.workspace), bus);
+    let listener = match web::listen(port) {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            return;
+        }
+    };
+    eprintln!("jimmy: web escuchando en el puerto {port}");
+    std::thread::spawn(move || web::serve(web, listener));
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {

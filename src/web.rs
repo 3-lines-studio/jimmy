@@ -1,43 +1,69 @@
 //! The web frontend: the same conversations the transports have, served to a
 //! browser over HTTP and SSE.
 //!
-//! Read-only for now: the conversations that arrive through a transport are
-//! watched, not written.
+//! What arrives through a transport is watched, not written; the conversations
+//! the web creates are its own and can be written from here.
 
+use crate::agent::Agent;
+use crate::auth::{self, Auth};
 use crate::bus::Bus;
 use crate::conversations;
 use crate::http::{self, Request};
 use crate::log::Log;
-use crate::users::{self, Sessions};
+use crate::transport::{Msg, Session, Transport};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// The end of the backlog: everything before it is already rendered.
-const SYNCED: &str = r#"{"type":"synced"}"#;
+const SYNCED: &str = r#"{"event":"synced"}"#;
+
+const INDEX: &str = include_str!("../web/index.html");
+const LOGIN: &str = include_str!("../web/login.html");
+const STYLE: &str = include_str!("../web/style.css");
+const APP: &str = include_str!("../web/app.js");
 
 pub struct Web {
     root: PathBuf,
     workspace: PathBuf,
     bus: Arc<Bus>,
-    sessions: Sessions,
+    agent: Agent,
+    auth: Auth,
 }
 
 impl Web {
-    pub fn new(root: PathBuf, workspace: PathBuf, bus: Arc<Bus>) -> Arc<Web> {
-        let sessions = Sessions::load(&root);
+    pub fn new(
+        root: PathBuf,
+        workspace: PathBuf,
+        bus: Arc<Bus>,
+        agent: Agent,
+        auth: Auth,
+    ) -> Arc<Web> {
         Arc::new(Web {
             root,
             workspace,
             bus,
-            sessions,
+            agent,
+            auth,
         })
     }
 
+    /// El nombre para mostrar: la parte del mail antes del arroba.
     fn user(&self, request: &Request) -> Option<String> {
-        self.sessions.user(&request.cookie(users::COOKIE)?)
+        let email = self.auth.user(&request.cookie(auth::COOKIE)?)?;
+        Some(match email.split_once('@') {
+            Some((name, _)) => name.to_string(),
+            None => email,
+        })
+    }
+
+    fn base_url(&self, request: &Request) -> String {
+        if let Some(url) = crate::env("JIMMY_WEB_URL") {
+            return url.trim_end_matches('/').to_string();
+        }
+        format!("https://{}", request.header("host").unwrap_or("localhost"))
     }
 }
 
@@ -62,38 +88,86 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(request) = http::read(stream)? else {
         return Ok(());
     };
+    if request.too_large {
+        return http::send_error(stream, 413, "eso es demasiado grande");
+    }
     match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/") => app_page(web, &request, stream),
+        ("GET", "/login") => http::send_text(stream, 200, HTML, LOGIN),
+        ("GET", "/style.css") => http::send_text(stream, 200, "text/css; charset=utf-8", STYLE),
+        ("GET", "/app.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", APP),
         ("POST", "/api/login") => login(web, &request, stream),
+        ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
         ("GET", "/api/stream") => events(web, &request, stream),
+        ("GET", "/api/search") => search(web, &request, stream),
+        ("POST", "/api/conversations") => create(web, &request, stream),
+        ("POST", "/api/projects") => create_project(web, &request, stream),
+        ("POST", "/api/rename") => rename(web, &request, stream),
+        ("POST", "/api/send") => send(web, &request, stream),
+        ("POST", "/api/cancel") => cancel(web, &request, stream),
+        ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
+        ("POST", "/api/delete-project") => delete_project(web, &request, stream),
         _ => http::send_text(stream, 404, "text/plain", "no está"),
     }
 }
 
-fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let name = request.field("user").unwrap_or_default();
-    let password = request.field("password").unwrap_or_default();
-    if !users::verify(&web.root, &name, &password) {
-        return http::send_error(stream, 401, "usuario o contraseña mal");
+const HTML: &str = "text/html; charset=utf-8";
+
+fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::respond(stream, 303, "text/plain", &[("Location", "/login")], b"");
     }
-    let token = web.sessions.open(&name);
-    let cookie = format!("{}={token}; Path=/; HttpOnly; SameSite=Lax", users::COOKIE);
-    let body = serde_json::json!({ "user": name }).to_string();
-    http::respond(
-        stream,
-        200,
-        "application/json",
-        &[("Set-Cookie", &cookie)],
-        body.as_bytes(),
-    )
+    http::send_text(stream, 200, HTML, INDEX)
+}
+
+/// Pedir el link. La respuesta es siempre la misma, esté o no el mail en la
+/// lista: si no está, no se manda nada y desde afuera no se nota.
+fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let email = request.field("email").unwrap_or_default();
+    let sent = serde_json::json!({ "sent": true });
+    let Some(token) = web.auth.request_link(&email) else {
+        return http::send_json(stream, 200, &sent);
+    };
+    let link = format!("{}/auth?token={token}", web.base_url(request));
+    let Some(mail) = &web.auth.mail else {
+        eprintln!("jimmy web: sin proveedor de mail, el link para {email} es {link}");
+        let body = serde_json::json!({ "sent": true, "link": link });
+        return http::send_json(stream, 200, &body);
+    };
+    if let Err(e) = mail.send_link(&email, &link) {
+        eprintln!("jimmy web: no pude mandar el mail a {email}: {e}");
+        return http::send_error(stream, 502, "no pude mandar el mail");
+    }
+    http::send_json(stream, 200, &sent)
+}
+
+/// El link del mail: sirve una vez, deja la cookie y manda al principio.
+fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(token) = request.param("token") else {
+        return http::send_error(stream, 400, "falta el token");
+    };
+    let Some(email) = web.auth.consume_link(token) else {
+        return http::respond(
+            stream,
+            303,
+            "text/plain",
+            &[("Location", "/login?error=1")],
+            b"",
+        );
+    };
+    let session = web.auth.open_session(&email);
+    let cookie = format!("{}={session}; Path=/; HttpOnly; SameSite=Lax", auth::COOKIE);
+    let headers = [("Set-Cookie", cookie.as_str()), ("Location", "/")];
+    http::respond(stream, 303, "text/plain", &headers, b"")
 }
 
 fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if let Some(token) = request.cookie(users::COOKIE) {
-        web.sessions.close(&token);
+    if let Some(token) = request.cookie(auth::COOKIE) {
+        web.auth.close_session(&token);
     }
-    let cookie = format!("{}=; Path=/; Max-Age=0", users::COOKIE);
+    let cookie = format!("{}=; Path=/; Max-Age=0", auth::COOKIE);
     http::respond(
         stream,
         200,
@@ -118,6 +192,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                         "key": conversation.key,
                         "title": conversation.title,
                         "read_only": conversation.read_only,
+                        "running": web.agent.running(&conversation.key),
                     })
                 })
                 .collect();
@@ -135,10 +210,290 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     )
 }
 
-fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
+    let project = request.field("project").unwrap_or_default();
+    let title = request
+        .field("title")
+        .unwrap_or_else(|| conversations::NEW_TITLE.to_string());
+    match conversations::create(&web.root, &web.workspace, &project, &title) {
+        Ok(key) => http::send_json(stream, 200, &serde_json::json!({ "key": key })),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
+}
+
+fn create_project(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("name").unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty()
+        || name == conversations::GENERAL
+        || name.contains('/')
+        || name.starts_with('.')
+    {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    let dir = web.workspace.join("projects").join(name);
+    if dir.exists() {
+        return http::send_error(stream, 400, "ese proyecto ya existe");
+    }
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return http::send_error(stream, 500, &error.to_string());
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "name": name }))
+}
+
+fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.field("conversation").unwrap_or_default();
+    let title = request.field("title").unwrap_or_default();
+    if writable(web, &key).is_err() {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    }
+    match conversations::rename(&web.root, &key, &title) {
+        Ok(()) => http::send_json(
+            stream,
+            200,
+            &serde_json::json!({ "key": key, "title": title }),
+        ),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
+}
+
+fn delete_conversation(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.field("conversation").unwrap_or_default();
+    if writable(web, &key).is_err() {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    }
+    match web.agent.delete(&key) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Err(error) => http::send_error(stream, 500, &error),
+    }
+}
+
+fn delete_project(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("project").unwrap_or_default();
+    let name = name.trim();
+    if name.is_empty()
+        || name == conversations::GENERAL
+        || name.contains('/')
+        || name.starts_with('.')
+    {
+        return http::send_error(stream, 400, "ese nombre no es un proyecto");
+    }
+    let dir = web.workspace.join("projects").join(name);
+    if !dir.is_dir() {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    }
+    if let Err(why) = disposable(&dir) {
+        return http::send_error(stream, 400, &format!("no lo borro: {why}"));
+    }
+    let conversations = conversations::projects(&web.root, &web.workspace)
+        .into_iter()
+        .find(|project| project.name == name)
+        .map(|project| project.conversations)
+        .unwrap_or_default();
+    for conversation in conversations {
+        let _ = web.agent.delete(&conversation.key);
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Err(error) => http::send_error(stream, 500, &error.to_string()),
+    }
+}
+
+/// Un proyecto se borra si está vacío o si es un clon con todo commiteado y
+/// pusheado. Cualquier otra cosa puede tener trabajo adentro que solo existe
+/// acá, y eso no lo borra un botón.
+fn disposable(dir: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?.count();
+    if entries == 0 {
+        return Ok(());
+    }
+    if !dir.join(".git").exists() {
+        return Err("tiene archivos que no están en git".into());
+    }
+    if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
+        return Err("tiene cambios sin commitear".into());
+    }
+    if !git(
+        dir,
+        &["log", "--branches", "--not", "--remotes", "--oneline"],
+    )?
+    .trim()
+    .is_empty()
+    {
+        return Err("tiene commits sin pushear".into());
+    }
+    Ok(())
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err("no pude preguntarle a git".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let needle = request.param("q").unwrap_or_default();
+    let results: Vec<serde_json::Value> = web
+        .agent
+        .search(needle, 30)
+        .into_iter()
+        .map(|hit| {
+            serde_json::json!({
+                "conversation": hit.conversation,
+                "title": hit.title,
+                "project": hit.project,
+                "role": hit.role,
+                "snippet": hit.snippet,
+            })
+        })
+        .collect();
+    http::send_json(stream, 200, &serde_json::json!({ "results": results }))
+}
+
+fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.field("conversation").unwrap_or_default();
+    if writable(web, &key).is_err() {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    }
+    web.agent.cancel(&key);
+    http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
+}
+
+fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.field("conversation").unwrap_or_default();
+    let text = request.field("text").unwrap_or_default();
+    if text.trim().is_empty() {
+        return http::send_error(stream, 400, "el mensaje está vacío");
+    }
+    let Ok(conversation) = writable(web, &key) else {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    };
+    if conversation.title.is_none()
+        || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
+    {
+        let _ = conversations::rename(&web.root, &key, &title_from(&text));
+    }
+    let Some(session) = crate::session_from_key(&key) else {
+        return http::send_error(stream, 400, "clave de conversación inválida");
+    };
+    let images: Vec<axe::Image> = request
+        .list("images")
+        .into_iter()
+        .map(|url| axe::Image {
+            path: String::new(),
+            url,
+        })
+        .collect();
+
+    let web = web.clone();
+    std::thread::spawn(move || {
+        let lock = crate::chat_lock(&session.key());
+        let _guard = lock.lock().unwrap();
+        if let Err(error) = web.agent.respond(&Silent, &session, &text, images) {
+            eprintln!("jimmy web: {error}");
+        }
+    });
+    http::send_json(stream, 202, &serde_json::json!({ "started": true }))
+}
+
+/// The answer of a web conversation is its own log, which the browser is
+/// already watching, so there is nobody to hand it to here.
+struct Silent;
+
+impl Transport for Silent {
+    fn parse_target(&self, key: &str) -> Result<Session, String> {
+        crate::session_from_key(key).ok_or_else(|| "clave de conversación inválida".into())
+    }
+
+    fn progress(&self, _: &Session) -> Option<Msg> {
+        None
+    }
+
+    fn answer(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+    fn note(&self, _: &Session, _: &str) {}
+
+    fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+    fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+        Err("la web no baja archivos".into())
+    }
+
+    fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+        Err("la web no manda archivos".into())
+    }
+}
+
+/// Una conversación sin nombre se llama como su primer mensaje, que es lo que
+/// va a buscar el ojo en la lista.
+fn title_from(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let mut title: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        title.push('…');
+    }
+    title
+}
+
+fn writable(web: &Arc<Web>, key: &str) -> Result<conversations::Conversation, ()> {
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    if conversation.read_only || !conversation.dir.is_dir() {
+        return Err(());
+    }
+    Ok(conversation)
+}
+
+fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(user) = web.user(request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
     let Some(key) = request.param("conversation") else {
         return http::send_error(stream, 400, "falta conversation");
     };
@@ -147,10 +502,19 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 404, "esa conversación no existe");
     }
     let log = Log::in_dir(&conversation.dir);
-    let (backlog, live) = web.bus.attach(key, &log);
+    let (backlog, live) = web.bus.attach(key, &log, &user);
+    let result = follow(stream, &backlog, &live);
+    web.bus.detach(key, &user);
+    result
+}
 
+fn follow(
+    stream: &mut TcpStream,
+    backlog: &[crate::protocol::Event],
+    live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
+) -> std::io::Result<()> {
     http::sse_open(stream)?;
-    for event in &backlog {
+    for event in backlog {
         if let Ok(json) = serde_json::to_string(event) {
             http::sse_data(stream, &json)?;
         }
@@ -178,11 +542,14 @@ mod tests {
 
     struct Server {
         root: PathBuf,
+        workspace: PathBuf,
         port: u16,
         bus: Arc<Bus>,
     }
 
     fn start(tag: &str) -> Server {
+        use std::os::unix::fs::PermissionsExt;
+
         let base = std::env::temp_dir().join(format!("jimmy-web-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("root");
@@ -194,14 +561,48 @@ mod tests {
             "{\"event\":\"user\",\"text\":\"hola\"}\n{\"event\":\"done\",\"text\":\"listo\"}\n",
         )
         .unwrap();
-        users::add(&root, "berti", "secreto").unwrap();
+        std::fs::write(
+            root.join("chats/7469057930/transcript.jsonl"),
+            "{\"type\":\"message\",\"message\":{\"Role\":\"user\",\"Content\":\"el gato duerme\"}}\n",
+        )
+        .unwrap();
+
+        let script = base.join("worker.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo '{\"event\":\"done\",\"text\":\"eco\"}'
+done
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut agent = Agent::new(
+            "http://localhost".into(),
+            "model".into(),
+            "key".into(),
+            Some(1_000_000),
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let web = Web::new(root.clone(), workspace, bus.clone());
+        let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None);
+        let web = Web::new(root.clone(), workspace.clone(), bus.clone(), agent, auth);
         let listener = listen(0).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || serve(web, listener));
-        Server { root, port, bus }
+        Server {
+            root,
+            workspace,
+            port,
+            bus,
+        }
     }
 
     fn connect(port: u16) -> TcpStream {
@@ -224,14 +625,43 @@ mod tests {
     }
 
     fn post(port: u16, path: &str, body: &str) -> String {
+        post_with(port, path, body, None)
+    }
+
+    fn post_with(port: u16, path: &str, body: &str, cookie: Option<&str>) -> String {
         let mut stream = connect(port);
+        let cookie = cookie
+            .map(|c| format!("Cookie: {c}\r\n"))
+            .unwrap_or_default();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: jimmy\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: jimmy\r\n{cookie}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
         whole(stream)
+    }
+
+    /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
+    /// hay proveedor, así que el link vuelve en la misma respuesta.
+    fn login(port: u16, email: &str) -> String {
+        let response = post(port, "/api/login", &format!(r#"{{"email":"{email}"}}"#));
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let link = link_in(&response);
+        let magic = link
+            .split_once("token=")
+            .expect("esperaba el token del link")
+            .1;
+        let followed = get(port, &format!("/auth?token={magic}"), None);
+        assert!(followed.starts_with("HTTP/1.1 303"), "{followed}");
+        assert!(followed.contains("Location: /"), "{followed}");
+        format!("jimmy_session={}", token(&followed))
+    }
+
+    fn link_in(response: &str) -> String {
+        let body: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        body["link"].as_str().expect("esperaba el link").to_string()
     }
 
     fn token(response: &str) -> String {
@@ -249,32 +679,53 @@ mod tests {
     }
 
     #[test]
+    fn the_page_is_served_only_with_a_session() {
+        let server = start("assets");
+        let redirect = get(server.port, "/", None);
+        assert!(redirect.starts_with("HTTP/1.1 303"), "{redirect}");
+        assert!(redirect.contains("Location: /login"), "{redirect}");
+
+        let page = get(server.port, "/login", None);
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("text/html"), "{page}");
+        assert!(page.contains("<title>Jimmy</title>"), "{page}");
+
+        let app = get(server.port, "/app.js", None);
+        assert!(app.starts_with("HTTP/1.1 200"), "{app}");
+        assert!(app.contains("javascript"), "{app}");
+        assert!(app.contains("EventSource"), "{app}");
+
+        let style = get(server.port, "/style.css", None);
+        assert!(style.contains("text/css"), "{style}");
+
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let page = get(server.port, "/", Some(&cookie));
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("<div id=\"panes\">"), "{page}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
     fn everything_but_logging_in_needs_a_session() {
         let server = start("auth");
         assert!(get(server.port, "/api/state", None).starts_with("HTTP/1.1 401"));
-        assert!(post(
-            server.port,
-            "/api/login",
-            r#"{"user":"berti","password":"mal"}"#
-        )
-        .starts_with("HTTP/1.1 401"));
+        let without = post(server.port, "/api/login", r#"{"email":"otro@ejemplo.com"}"#);
+        assert!(without.starts_with("HTTP/1.1 200"), "{without}");
+        assert!(
+            !without.contains("link"),
+            "a un mail de afuera no se le manda nada"
+        );
         assert!(
             get(server.port, "/api/state", Some("jimmy_session=nada")).starts_with("HTTP/1.1 401")
         );
         assert!(get(server.port, "/nada", None).starts_with("HTTP/1.1 404"));
-        std::fs::remove_dir_all(server.root.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
     fn the_state_lists_projects_and_conversations() {
         let server = start("state");
-        let login = post(
-            server.port,
-            "/api/login",
-            r#"{"user":"berti","password":"secreto"}"#,
-        );
-        assert!(login.starts_with("HTTP/1.1 200"), "{login}");
-        let cookie = format!("jimmy_session={}", token(&login));
+        let cookie = login(server.port, "berti@ejemplo.com");
 
         let state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"general\""), "{state}");
@@ -285,18 +736,332 @@ mod tests {
 
         let logout = post(server.port, "/api/logout", "{}");
         assert!(logout.contains("Max-Age=0"), "{logout}");
-        std::fs::remove_dir_all(server.root.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_web_creates_and_writes_its_own_conversations() {
+        let server = start("write");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken","title":"una prueba"}"#,
+            Some(&cookie),
+        );
+        assert!(created.starts_with("HTTP/1.1 200"), "{created}");
+        let body: serde_json::Value =
+            serde_json::from_str(created.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let key = body["key"].as_str().unwrap().to_string();
+
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(state.contains(&key), "{state}");
+        assert!(state.contains("una prueba"), "{state}");
+
+        let renamed = post_with(
+            server.port,
+            "/api/rename",
+            &format!(r#"{{"conversation":"{key}","title":"otro título"}}"#),
+            Some(&cookie),
+        );
+        assert!(renamed.starts_with("HTTP/1.1 200"), "{renamed}");
+
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"hola"}}"#),
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
+
+        let log = server
+            .root
+            .join("chats")
+            .join(&key)
+            .join("conversation.jsonl");
+        let mut text = String::new();
+        for _ in 0..200 {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("\"done\"") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
+        assert!(text.contains("\"done\""), "{text}");
+
+        let fresh = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(fresh.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let fresh = body["key"].as_str().unwrap().to_string();
+        post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{fresh}","text":"decime los proyectos"}}"#),
+            Some(&cookie),
+        );
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(
+            state.contains("\"title\":\"decime los proyectos\""),
+            "el primer mensaje le pone nombre: {state}"
+        );
+        assert!(
+            state.contains("\"title\":\"otro título\""),
+            "y un nombre puesto a mano se respeta: {state}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_conversation_that_comes_from_a_transport_is_not_written_from_the_web() {
+        let server = start("readonly");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            r#"{"conversation":"7469057930","text":"hola"}"#,
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 400"), "{sent}");
+        let renamed = post_with(
+            server.port,
+            "/api/rename",
+            r#"{"conversation":"7469057930","title":"mío"}"#,
+            Some(&cookie),
+        );
+        assert!(renamed.starts_with("HTTP/1.1 400"), "{renamed}");
+        assert!(!server.root.join("chats/7469057930/meta.json").exists());
+
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"nada"}"#,
+            Some(&cookie),
+        );
+        assert!(created.starts_with("HTTP/1.1 400"), "{created}");
+        let unauthenticated = post(server.port, "/api/conversations", r#"{"project":"ken"}"#);
+        assert!(
+            unauthenticated.starts_with("HTTP/1.1 401"),
+            "{unauthenticated}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_stream_says_who_is_watching() {
+        let server = start("presence");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "GET /api/stream?conversation=7469057930 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        let seen: Vec<String> = lines
+            .by_ref()
+            .take(12)
+            .filter_map(Result::ok)
+            .filter(|line| line.starts_with("data: "))
+            .collect();
+        assert!(
+            seen.iter()
+                .any(|line| line.contains("presence") && line.contains("berti")),
+            "esperaba quién está mirando: {seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn cancel_only_goes_to_a_conversation_you_can_write() {
+        let server = start("cancel");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let refused = post_with(
+            server.port,
+            "/api/cancel",
+            r#"{"conversation":"7469057930"}"#,
+            Some(&cookie),
+        );
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(created.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let key = body["key"].as_str().unwrap().to_string();
+        let cancelled = post_with(
+            server.port,
+            "/api/cancel",
+            &format!(r#"{{"conversation":"{key}"}}"#),
+            Some(&cookie),
+        );
+        assert!(cancelled.starts_with("HTTP/1.1 200"), "{cancelled}");
+
+        let unknown = post_with(
+            server.port,
+            "/api/cancel",
+            r#"{"conversation":"no-existe"}"#,
+            Some(&cookie),
+        );
+        assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_body_that_is_too_big_is_refused_without_reading_it() {
+        let server = start("big");
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "POST /api/send HTTP/1.1\r\nHost: jimmy\r\nContent-Length: {}\r\n\r\n",
+            http::MAX_BODY + 1
+        )
+        .unwrap();
+        let response = whole(stream);
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn search_looks_in_what_was_said() {
+        let server = start("search");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let found = get(server.port, "/api/search?q=gato", Some(&cookie));
+        assert!(found.contains("el gato duerme"), "{found}");
+        assert!(found.contains("7469057930"), "{found}");
+        assert!(found.contains("\"role\":\"user\""), "{found}");
+
+        let nothing = get(server.port, "/api/search?q=elefante", Some(&cookie));
+        assert!(nothing.contains("\"results\":[]"), "{nothing}");
+
+        let short = get(server.port, "/api/search?q=g", Some(&cookie));
+        assert!(short.contains("\"results\":[]"), "{short}");
+        assert!(get(server.port, "/api/search?q=gato", None).starts_with("HTTP/1.1 401"));
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn delete_takes_the_conversation_with_it() {
+        let server = start("delete");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(created.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let key = body["key"].as_str().unwrap().to_string();
+        assert!(server.root.join("chats").join(&key).is_dir());
+
+        let deleted = post_with(
+            server.port,
+            "/api/delete-conversation",
+            &format!(r#"{{"conversation":"{key}"}}"#),
+            Some(&cookie),
+        );
+        assert!(deleted.starts_with("HTTP/1.1 200"), "{deleted}");
+        assert!(!server.root.join("chats").join(&key).exists());
+
+        let refused = post_with(
+            server.port,
+            "/api/delete-conversation",
+            r#"{"conversation":"7469057930"}"#,
+            Some(&cookie),
+        );
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+        assert!(server.root.join("chats/7469057930").is_dir());
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_project_is_deleted_only_when_it_has_nothing_to_lose() {
+        let server = start("delete-project");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let projects = server.workspace.join("projects");
+
+        std::fs::write(projects.join("ken/nota.txt"), "trabajo sin versionar").unwrap();
+        let dirty = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        assert!(dirty.starts_with("HTTP/1.1 400"), "{dirty}");
+        assert!(dirty.contains("no lo borro"), "{dirty}");
+
+        let general = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"general"}"#,
+            Some(&cookie),
+        );
+        assert!(general.starts_with("HTTP/1.1 400"), "{general}");
+
+        std::fs::create_dir_all(projects.join("vacio")).unwrap();
+        let clean = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"vacio"}"#,
+            Some(&cookie),
+        );
+        assert!(clean.starts_with("HTTP/1.1 200"), "{clean}");
+        assert!(!projects.join("vacio").exists());
+
+        let repo = projects.join("clon");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "jimmy@test"],
+            vec!["config", "user.name", "jimmy"],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(&args)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(repo.join("nota.txt"), "hola").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-q", "-m", "algo"]] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(&args)
+                .output()
+                .unwrap();
+        }
+        let unpushed = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"clon"}"#,
+            Some(&cookie),
+        );
+        assert!(unpushed.starts_with("HTTP/1.1 400"), "{unpushed}");
+        assert!(unpushed.contains("sin pushear"), "{unpushed}");
+        assert!(repo.is_dir());
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
     fn the_stream_replays_the_backlog_and_then_follows() {
         let server = start("stream");
-        let login = post(
-            server.port,
-            "/api/login",
-            r#"{"user":"berti","password":"secreto"}"#,
-        );
-        let cookie = format!("jimmy_session={}", token(&login));
+        let cookie = login(server.port, "berti@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -330,6 +1095,6 @@ mod tests {
             live = lines.next().unwrap().unwrap();
         }
         assert!(live.starts_with("data: "), "{live}");
-        std::fs::remove_dir_all(server.root.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 }

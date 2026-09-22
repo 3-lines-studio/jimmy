@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command as Process, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +30,7 @@ pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
     pid: i32,
+    busy: AtomicBool,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     events: Mutex<Receiver<Event>>,
@@ -59,6 +60,13 @@ impl Pool {
     ) -> Result<Turn, String> {
         let worker = self.ensure(session, conversation)?;
         worker.send(&command)?;
+        worker.busy.store(true, Ordering::SeqCst);
+        let result = self.run_turn(&worker, on_event);
+        worker.busy.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn run_turn(&self, worker: &Arc<Worker>, on_event: OnEvent) -> Result<Turn, String> {
         loop {
             let event = worker.receive()?;
             if !matches!(event, Event::Ready) {
@@ -66,11 +74,48 @@ impl Pool {
             }
             match event {
                 Event::Ready => continue,
-                Event::Done { text } => return Ok(Turn::Answer(text)),
-                Event::Error { message } => return Ok(Turn::Failed(message)),
+                Event::Done { text } => {
+                    worker.busy.store(false, Ordering::SeqCst);
+                    return Ok(Turn::Answer(text));
+                }
+                Event::Error { message } => {
+                    worker.busy.store(false, Ordering::SeqCst);
+                    return Ok(Turn::Failed(message));
+                }
                 _ => continue,
             }
         }
+    }
+
+    /// Interrumpe el turno de esa conversación, si hay uno corriendo. Va por el
+    /// mismo pipe que todo lo demás, así que el worker decide cuándo mirarlo.
+    pub fn cancel(&self, key: &str) {
+        let worker = self.workers.lock().unwrap().get(key).cloned();
+        if let Some(worker) = worker {
+            let _ = worker.send(&Command::Cancel);
+        }
+    }
+
+    /// Baja el worker de esa conversación y espera a que muera, para que no
+    /// siga escribiendo en una carpeta que estamos por borrar.
+    pub fn kill(&self, key: &str) {
+        let worker = self.workers.lock().unwrap().get(key).cloned();
+        let Some(worker) = worker else {
+            return;
+        };
+        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+        if let Ok(mut child) = worker.child.lock() {
+            let _ = child.wait();
+        }
+        self.forget(key, worker.pid);
+    }
+
+    pub fn running(&self, key: &str) -> bool {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(key)
+            .is_some_and(|worker| worker.busy.load(Ordering::SeqCst))
     }
 
     fn ensure(
@@ -112,6 +157,7 @@ impl Pool {
         let (sender, receiver) = mpsc::channel();
         let worker = Arc::new(Worker {
             pid,
+            busy: AtomicBool::new(false),
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
             events: Mutex::new(receiver),

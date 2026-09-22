@@ -35,6 +35,7 @@ pub struct Agent {
     pool: Arc<Pool>,
     bus: Arc<Bus>,
     pipe: Option<Arc<Pipe>>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -66,12 +67,78 @@ impl Agent {
             pool,
             bus: Bus::new(),
             pipe: None,
+            cancel: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// El worker reemplaza esto por un flag propio, que puede levantar mientras
+    /// el turno corre.
+    pub(crate) fn set_cancel(&mut self, cancel: Arc<AtomicBool>) {
+        self.cancel = cancel;
+    }
+
+    pub fn cancel(&self, key: &str) {
+        self.pool.cancel(key);
+    }
+
+    /// Corta el worker y se lleva la carpeta de la conversación.
+    pub fn delete(&self, key: &str) -> Result<(), String> {
+        self.pool.kill(key);
+        let dir = self.conversation_dir(key);
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    }
+
+    pub fn conversation_dir(&self, key: &str) -> PathBuf {
+        conversations::get(&self.root, Path::new(&self.workspace), key).dir
+    }
+
+    /// Busca en lo que se dijo, no en lo que se escribió en los archivos: es lo
+    /// que uno quiere de un chat.
+    pub fn search(&self, needle: &str, limit: usize) -> Vec<Hit> {
+        let needle = needle.trim().to_lowercase();
+        if needle.chars().count() < 2 {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for project in conversations::projects(&self.root, Path::new(&self.workspace)) {
+            for conversation in project.conversations {
+                let Ok(text) = std::fs::read_to_string(conversation.dir.join("transcript.jsonl"))
+                else {
+                    continue;
+                };
+                for line in text.lines() {
+                    let Some(hit) = search_line(line, &needle) else {
+                        continue;
+                    };
+                    hits.push(Hit {
+                        conversation: conversation.key.clone(),
+                        title: conversation
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| conversation.key.clone()),
+                        project: project.name.clone(),
+                        role: hit.0,
+                        snippet: hit.1,
+                    });
+                    if hits.len() >= limit {
+                        return hits;
+                    }
+                }
+            }
+        }
+        hits
     }
 
     /// Who is watching the conversations, for the web frontend to attach to.
     pub fn bus(&self) -> Arc<Bus> {
         self.bus.clone()
+    }
+
+    pub fn running(&self, key: &str) -> bool {
+        self.pool.running(key)
     }
 
     /// Where the tools run. It is the workspace unless the conversation belongs
@@ -277,7 +344,7 @@ impl Agent {
         let threshold = self
             .context_window
             .map(|w| w.saturating_sub(OUTPUT_RESERVE));
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = self.cancel.clone();
 
         let status = transport.progress(session);
         let mut sink = EventSink {
@@ -413,6 +480,46 @@ impl Agent {
     }
 }
 
+/// Un pedazo de conversación que contiene lo que se buscó.
+pub struct Hit {
+    pub conversation: String,
+    pub title: String,
+    pub project: String,
+    pub role: String,
+    pub snippet: String,
+}
+
+/// Busca en una entrada del transcript y devuelve quién lo dijo y el pedazo
+/// donde aparece.
+fn search_line(line: &str, needle: &str) -> Option<(String, String)> {
+    let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+    let message = entry.get("message")?;
+    let content = message.get("Content")?.as_str()?;
+    let role = message
+        .get("Role")
+        .and_then(|role| role.as_str())
+        .unwrap_or("")
+        .to_string();
+    let position = content.to_lowercase().find(needle)?;
+    let start = content[..position]
+        .char_indices()
+        .rev()
+        .nth(60)
+        .map_or(0, |(i, _)| i);
+    let end = content[position..]
+        .char_indices()
+        .nth(120)
+        .map_or(content.len(), |(i, _)| position + i);
+    let mut snippet = content[start..end].replace('\n', " ");
+    if start > 0 {
+        snippet.insert(0, '…');
+    }
+    if end < content.len() {
+        snippet.push('…');
+    }
+    Some((role, snippet))
+}
+
 struct EventSink {
     threshold: Option<usize>,
     events: Option<PathBuf>,
@@ -440,6 +547,25 @@ impl Sink for EventSink {
     fn should_compact(&mut self, input: usize, output: usize) -> bool {
         self.threshold
             .is_some_and(|threshold| input.saturating_add(output) > threshold)
+    }
+
+    fn assistant_delta(&mut self, text: &str) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::Delta {
+            text: text.to_string(),
+        });
+    }
+
+    fn tool_delta(&mut self, call: &ToolCall, text: &str) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&Event::ToolDelta {
+            id: call.id.clone(),
+            text: text.to_string(),
+        });
     }
 
     fn tool_start(&mut self, call: &ToolCall) {
@@ -910,10 +1036,16 @@ mod tests {
         )
     }
 
+    /// Cada llamada escribe un archivo nuevo: reescribir uno que otro proceso
+    /// todavía está ejecutando da «Text file busy».
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = resume_dir(name);
-        let path = dir.join(name);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!("{unique}-{name}"));
         std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
@@ -971,7 +1103,7 @@ done
 ",
         ));
         let log = Log::in_dir(&root.join("chats/x"));
-        let (_backlog, live) = agent.bus().attach("x", &log);
+        let (_backlog, live) = agent.bus().attach("x", &log, "berti");
         let fake = Fake::default();
         agent
             .respond(&fake, &Session::channel("x"), "hola", Vec::new())
@@ -979,8 +1111,9 @@ done
 
         let seen: Vec<String> = live
             .iter()
-            .take(3)
+            .take(4)
             .map(|event| serde_json::to_string(&event).unwrap())
+            .filter(|line| !line.contains("\"presence\""))
             .collect();
         assert!(seen[0].contains("\"user\""), "{seen:?}");
         assert!(seen[0].contains("hola"), "{seen:?}");

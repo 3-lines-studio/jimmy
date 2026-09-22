@@ -12,6 +12,8 @@ pub enum Command {
         images: Vec<Image>,
     },
     Resume,
+    /// Interrumpe el turno que esté corriendo, si hay alguno.
+    Cancel,
     Shutdown,
 }
 
@@ -22,8 +24,17 @@ pub enum Command {
 pub enum Event {
     /// The worker is up and reading commands.
     Ready,
+    /// Quién está mirando esta conversación. Lo dice el bus, no el worker.
+    Presence {
+        users: Vec<String>,
+    },
     /// What the user sent. The parent writes this one, nobody else.
     User {
+        text: String,
+    },
+    /// Texto que va apareciendo mientras el modelo escribe. No se guarda: el
+    /// mensaje terminado es el que queda en el log.
+    Delta {
         text: String,
     },
     Assistant {
@@ -33,6 +44,10 @@ pub enum Event {
         id: String,
         name: String,
         args: String,
+    },
+    ToolDelta {
+        id: String,
+        text: String,
     },
     ToolResult {
         id: String,

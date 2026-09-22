@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jimmy</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0b0d;
+        --panel: #101215;
+        --line: #1c2026;
+        --line-strong: #272c34;
+        --text: #e7e9ec;
+        --muted: #8b929d;
+        --faint: #59616c;
+        --err: #f0736b;
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono",
+          "Roboto Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        height: 100dvh;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.6 var(--mono);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 264px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      input,
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+      }
+
+      input::placeholder {
+        color: var(--faint);
+      }
+
+      input:focus {
+        outline: none;
+        border-color: var(--line-strong);
+      }
+
+      button {
+        margin-top: 8px;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--line-strong);
+        color: var(--text);
+      }
+
+      .error {
+        color: var(--err);
+        font-size: 12px;
+      }
+
+      .ok {
+        color: var(--muted);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="login">
+      <h1>Jimmy</h1>
+      <input id="email" type="email" placeholder="tu mail" autocomplete="email" autofocus />
+      <span class="ok" id="ok" hidden>si tu mail está en la lista, te llegó un link</span>
+      <span class="error" id="error" hidden>el link venció o ya se usó, pedí otro</span>
+      <button type="submit">mandame el link</button>
+    </form>
+    <script>
+      const error = document.getElementById("error");
+      const ok = document.getElementById("ok");
+      if (new URLSearchParams(location.search).has("error")) error.hidden = false;
+      document.getElementById("login").onsubmit = async (event) => {
+        event.preventDefault();
+        ok.hidden = true;
+        error.hidden = true;
+        let response;
+        try {
+          response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: document.getElementById("email").value }),
+          });
+        } catch {
+          error.textContent = "no hay conexión";
+          error.hidden = false;
+          return;
+        }
+        if (!response.ok) {
+          error.textContent = "no se pudo mandar el mail, probá de nuevo";
+          error.hidden = false;
+          return;
+        }
+        const body = await response.json();
+        if (body.link) {
+          location.href = body.link;
+          return;
+        }
+        ok.hidden = false;
+      };
+    </script>
+  </body>
+</html>

@@ -1,9 +1,11 @@
 mod agent;
 mod audio;
+mod auth;
 mod bus;
 mod conversations;
 mod http;
 mod log;
+mod mail;
 mod markdown;
 mod memo;
 mod pool;
@@ -15,7 +17,6 @@ mod schedule;
 mod skill;
 mod tools;
 mod transport;
-mod users;
 mod web;
 mod worker;
 
@@ -108,19 +109,6 @@ fn main() {
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
     }
-    if args.first().map(String::as_str) == Some("user") {
-        let code = match users::command(&args[1..]) {
-            Ok(report) => {
-                println!("{report}");
-                0
-            }
-            Err(e) => {
-                eprintln!("jimmy user: {e}");
-                2
-            }
-        };
-        std::process::exit(code);
-    }
     if args.first().map(String::as_str) == Some("worker") {
         let code = match worker::run(args[1..].to_vec()) {
             Ok(()) => 0,
@@ -161,7 +149,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    serve_web(&config, agent.bus());
+    serve_web(&config, agent.bus(), agent.clone());
     let mut source = match source_from_env() {
         Ok(source) => source,
         Err(e) => {
@@ -315,14 +303,27 @@ fn usage() -> i32 {
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
 /// always was.
-fn serve_web(config: &Config, bus: Arc<bus::Bus>) {
+fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
-    if users::count(&config.root) == 0 {
-        eprintln!("jimmy: no hay usuarios todavía; corré `jimmy user add <nombre>`");
+    let auth = auth::Auth::new(
+        &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
+        &config.root,
+        mail::Mail::from_env(),
+    );
+    if auth.allowed().is_empty() {
+        eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");
+    } else if auth.mail.is_none() {
+        eprintln!("jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM, el link se muestra en pantalla");
     }
-    let web = web::Web::new(config.root.clone(), PathBuf::from(&config.workspace), bus);
+    let web = web::Web::new(
+        config.root.clone(),
+        PathBuf::from(&config.workspace),
+        bus,
+        agent,
+        auth,
+    );
     let listener = match web::listen(port) {
         Ok(listener) => listener,
         Err(e) => {

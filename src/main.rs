@@ -233,6 +233,12 @@ fn main() {
                     transport.note(&session, &reply);
                     return;
                 }
+                if text.split_whitespace().next() == Some("/compact") {
+                    if let Err(e) = agent.compact(transport.as_ref(), &session) {
+                        eprintln!("jimmy: {} falló: {e}", session.channel);
+                    }
+                    return;
+                }
                 let images = match image {
                     Some(file_id) => match fetch_image(transport.as_ref(), &session, &file_id) {
                         Ok(image) => vec![image],

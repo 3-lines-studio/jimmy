@@ -50,6 +50,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 let dir = agent.conversation(&session).dir;
                 agent.local_resume(pipe.as_ref(), &session, &dir)
             }
+            Command::Compact => agent.local_compact(pipe.as_ref(), &session),
         };
         if let Err(error) = result {
             if !pipe.answered() {

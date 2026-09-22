@@ -111,6 +111,14 @@ check "el stream marca dónde termina el backlog" $?
 rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
+say "el comando de compactar, por Telegram"
+printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"/compact"}}' >>"$WORK/inbox.jsonl"
+sleep 14
+rg -q 'compactado' "$WORK/telegram.log"
+check "el compactado respondió por Telegram" $?
+rg -q '"type":"compaction"' "$WORK/root/chats/999/transcript.jsonl"
+check "el transcript tiene la compactación" $?
+
 say "el apagado, como en un redeploy"
 kill -TERM $JIMMY_PID
 sleep 3

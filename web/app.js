@@ -88,6 +88,7 @@ const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 document.getElementById("menu").append(icon("menu", 18));
 document.querySelector("#sidebar-search .field").prepend(icon("search", 15));
 const themeEl = document.getElementById("theme");
+const themeColor = document.querySelector('meta[name="theme-color"]');
 const sunEl = icon("sun", 18);
 const moonEl = icon("moon", 18);
 sunEl.classList.add("sun");
@@ -1232,6 +1233,7 @@ function showTheme() {
   const title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
   themeEl.title = title;
   themeEl.setAttribute("aria-label", title);
+  themeColor.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
 }
 
 themeEl.onclick = () => {

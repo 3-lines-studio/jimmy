@@ -29,6 +29,10 @@ const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const TOOL: &str = include_str!("../web/tool.js");
+const ICON: &str = include_str!("../web/icon.svg");
+const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../web/icon-512.png");
+const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
 
 pub struct Web {
     root: PathBuf,
@@ -108,6 +112,15 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             http::send_text(stream, 200, "text/javascript; charset=utf-8", MARKDOWN)
         }
         ("GET", "/tool.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", TOOL),
+        ("GET", "/icon.svg") => http::send_text(stream, 200, "image/svg+xml", ICON),
+        ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
+        ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
+        ("GET", "/manifest.webmanifest") => http::send_text(
+            stream,
+            200,
+            "application/manifest+json",
+            &versioned(MANIFEST),
+        ),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -149,6 +162,12 @@ fn versioned(page: &str) -> String {
         .replace("/tool.js", &format!("/tool.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
+        .replace("/icon.svg", &format!("/icon.svg?v={version}"))
+        .replace("/icon-192.png", &format!("/icon-192.png?v={version}"))
+        .replace(
+            "/manifest.webmanifest",
+            &format!("/manifest.webmanifest?v={version}"),
+        )
 }
 
 /// Pedir el link. La respuesta es siempre la misma, esté o no el mail en la
@@ -896,6 +915,20 @@ done
         let tool = get(server.port, "/tool.js", None);
         assert!(tool.starts_with("HTTP/1.1 200"), "{tool}");
         assert!(tool.contains("function describeTool"), "{tool}");
+
+        let icon = get(server.port, "/icon.svg", None);
+        assert!(icon.contains("image/svg+xml"), "{icon}");
+        assert!(icon.contains("<svg"), "{icon}");
+
+        let manifest = get(server.port, "/manifest.webmanifest", None);
+        assert!(manifest.contains("application/manifest+json"), "{manifest}");
+        assert!(manifest.contains("\"standalone\""), "{manifest}");
+        assert!(manifest.contains("icon-512.png"), "{manifest}");
+
+        for size in [192, 512] {
+            let png = get(server.port, &format!("/icon-{size}.png"), None);
+            assert!(png.contains("image/png"), "{png}");
+        }
 
         let cookie = login(server.port, "berti@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 const MESSAGE_CHARS: usize = 4000;
 const MARKDOWN_CHARS: usize = 3500;
+const STOP: &str = "frenar";
 
 #[derive(Clone)]
 pub struct Telegram {
@@ -19,6 +20,22 @@ pub struct Telegram {
 struct Update {
     update_id: i64,
     message: Option<Incoming>,
+    #[serde(default)]
+    callback_query: Option<Callback>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Callback {
+    id: String,
+    #[serde(default)]
+    data: String,
+    from: User,
+    message: Option<CallbackMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CallbackMessage {
+    chat: Chat,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,7 +133,7 @@ impl Telegram {
     fn get_updates(&self, offset: i64) -> Result<Vec<Update>, String> {
         let value = self.call(
             "getUpdates",
-            json!({ "offset": offset, "timeout": 30, "allowed_updates": ["message"] }),
+            json!({ "offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"] }),
         )?;
         let result = value.get("result").cloned().unwrap_or_else(|| json!([]));
         serde_json::from_value(result).map_err(|e| e.to_string())
@@ -155,6 +172,16 @@ impl Telegram {
     }
 
     fn send(&self, session: &Session, text: &str, parse_mode: Option<&str>) -> Result<i64, String> {
+        self.send_with(session, text, parse_mode, None)
+    }
+
+    fn send_with(
+        &self,
+        session: &Session,
+        text: &str,
+        parse_mode: Option<&str>,
+        reply_markup: Option<Value>,
+    ) -> Result<i64, String> {
         let mut body = json!({
             "chat_id": self.chat_id(session)?,
             "text": text,
@@ -162,6 +189,9 @@ impl Telegram {
         });
         if let Some(mode) = parse_mode {
             body["parse_mode"] = json!(mode);
+        }
+        if let Some(markup) = reply_markup {
+            body["reply_markup"] = markup;
         }
         let value = self.call("sendMessage", body)?;
         Ok(value
@@ -171,11 +201,16 @@ impl Telegram {
     }
 
     fn edit_message(&self, session: &Session, message_id: i64, text: &str) -> Result<(), String> {
-        self.edit(session, message_id, text, None)
+        self.edit(session, message_id, text, None, true)
     }
 
     fn edit_html(&self, session: &Session, message_id: i64, text: &str) -> Result<(), String> {
-        self.edit(session, message_id, text, Some("HTML"))
+        self.edit(session, message_id, text, Some("HTML"), true)
+    }
+
+    /// El mensaje que sigue trabajando: mantiene el botón de frenar.
+    fn edit_status(&self, session: &Session, message_id: i64, text: &str) -> Result<(), String> {
+        self.edit(session, message_id, text, Some("HTML"), false)
     }
 
     fn edit(
@@ -184,6 +219,7 @@ impl Telegram {
         message_id: i64,
         text: &str,
         parse_mode: Option<&str>,
+        drop_keyboard: bool,
     ) -> Result<(), String> {
         let mut body = json!({
             "chat_id": self.chat_id(session)?,
@@ -194,7 +230,14 @@ impl Telegram {
         if let Some(mode) = parse_mode {
             body["parse_mode"] = json!(mode);
         }
+        if drop_keyboard {
+            body["reply_markup"] = json!({ "inline_keyboard": [] });
+        }
         self.call("editMessageText", body).map(|_| ())
+    }
+
+    fn answer_callback(&self, id: &str) {
+        let _ = self.call("answerCallbackQuery", json!({ "callback_query_id": id }));
     }
 
     fn delete_message(&self, session: &Session, message_id: i64) {
@@ -222,9 +265,17 @@ impl Transport for Telegram {
     }
 
     fn progress(&self, session: &Session) -> Option<Msg> {
-        self.send_message(session, "⚙️ pensando…")
+        let keyboard = json!({
+            "inline_keyboard": [[{ "text": "⏹ Frenar", "callback_data": STOP }]]
+        });
+        self.send_with(session, "⚙️ pensando…", None, Some(keyboard))
             .ok()
             .map(|id| Msg(id.to_string()))
+    }
+
+    fn status(&self, session: &Session, placeholder: &Msg, text: &str) {
+        let id = placeholder.0.parse().unwrap_or(0);
+        let _ = self.edit_status(session, id, &markdown::to_telegram_html(text));
     }
 
     fn answer(&self, session: &Session, placeholder: Option<Msg>, markdown: &str) {
@@ -355,6 +406,13 @@ impl EventSource for Updates {
         let mut events = Vec::new();
         for update in updates {
             self.offset = update.update_id + 1;
+            if let Some(callback) = update.callback_query {
+                self.telegram.answer_callback(&callback.id);
+                if let Some(event) = stop_event(callback) {
+                    events.push(event);
+                }
+                continue;
+            }
             let Some(message) = update.message else {
                 continue;
             };
@@ -386,6 +444,7 @@ impl EventSource for Updates {
                 session: Session::channel(message.chat.id.to_string()),
                 sender: from.map(|from| from.id.to_string()).unwrap_or_default(),
                 is_bot: from.is_some_and(|from| from.is_bot),
+                stop: false,
                 text,
                 image,
                 voice,
@@ -456,9 +515,49 @@ fn push_file(body: &mut Vec<u8>, boundary: &str, name: &str, filename: &str, dat
     body.extend_from_slice(b"\r\n");
 }
 
+/// El toque en el botón de frenar, si es eso lo que fue.
+fn stop_event(callback: Callback) -> Option<Event> {
+    let message = callback.message?;
+    if callback.data != STOP {
+        return None;
+    }
+    Some(Event {
+        session: Session::channel(message.chat.id.to_string()),
+        sender: callback.from.id.to_string(),
+        is_bot: callback.from.is_bot,
+        stop: true,
+        text: String::new(),
+        image: None,
+        voice: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stop_button_comes_back_as_an_order() {
+        let raw = r#"{
+            "id": "1", "data": "frenar", "from": {"id": 999, "is_bot": false},
+            "message": {"chat": {"id": 42}}
+        }"#;
+        let callback: Callback = serde_json::from_str(raw).unwrap();
+        let event = stop_event(callback).unwrap();
+        assert!(event.stop);
+        assert_eq!(event.session.key(), "42");
+        assert_eq!(event.sender, "999");
+    }
+
+    #[test]
+    fn another_button_is_not_an_order() {
+        let raw = r#"{
+            "id": "1", "data": "otra-cosa", "from": {"id": 999, "is_bot": false},
+            "message": {"chat": {"id": 42}}
+        }"#;
+        let callback: Callback = serde_json::from_str(raw).unwrap();
+        assert!(stop_event(callback).is_none());
+    }
 
     #[test]
     fn media_method_picks_by_extension() {

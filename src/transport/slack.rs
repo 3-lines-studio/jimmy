@@ -135,6 +135,10 @@ impl Transport for Slack {
         self.post(session, "⚙️ pensando…").ok().map(Msg)
     }
 
+    fn status(&self, session: &Session, placeholder: &Msg, text: &str) {
+        let _ = self.update(session, &placeholder.0, &escape(text));
+    }
+
     fn answer(&self, session: &Session, placeholder: Option<Msg>, markdown: &str) {
         let mut parts = markdown::split(markdown, MARKDOWN_CHARS).into_iter();
         if let Some(placeholder) = placeholder {
@@ -367,6 +371,7 @@ fn event_from_payload(value: &Value) -> Option<Event> {
             .unwrap_or_default()
             .to_string(),
         is_bot: false,
+        stop: false,
         text,
         image,
         voice: None,

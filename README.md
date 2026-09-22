@@ -10,7 +10,10 @@ append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
 listens by long polling and Slack over Socket Mode, so there is no public URL
 and no webhook to configure. Sending a message shows one `pensando`
 placeholder, which is replaced by the reply when the agent finishes. There is no
-per-token streaming, so the chat does not flicker.
+per-token streaming, so the chat does not flicker. That placeholder carries a
+stop button: pressing it cancels the turn in progress. On a turn that runs long,
+the same message says what the agent is doing — `leyendo src/web.rs` — and
+refreshes itself at most every two minutes.
 
 Replies are converted from Markdown to Telegram HTML: bold and italic, inline
 code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram

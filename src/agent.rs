@@ -3,7 +3,7 @@ use crate::conversations;
 use crate::log::Log;
 use crate::pool::{Pool, Turn};
 use crate::protocol::{self, Event};
-use crate::transport::{Session, Transport};
+use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
@@ -203,6 +203,7 @@ impl Agent {
         command: protocol::Command,
     ) -> Result<(), String> {
         let status = transport.progress(session);
+        let mut live = Live::new(transport, session, status);
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
@@ -210,21 +211,23 @@ impl Agent {
             self.bus
                 .publish(&conversation.key, &log, &Event::User { text: text.clone() });
         }
-        match self
+        let turn = self
             .pool
             .turn(session, &conversation, command, &mut |event| {
+                live.on(event);
                 self.bus.publish(&conversation.key, &log, event)
-            }) {
+            });
+        match turn {
             Ok(Turn::Answer(text)) => {
-                transport.answer(session, status, &text);
+                transport.answer(session, live.take(), &text);
                 Ok(())
             }
             Ok(Turn::Failed(message)) => {
-                transport.fail(session, status, &message);
+                transport.fail(session, live.take(), &message);
                 Err(message)
             }
             Err(error) => {
-                transport.fail(session, status, &format!("⚠️ {error}"));
+                transport.fail(session, live.take(), &format!("⚠️ {error}"));
                 Err(error)
             }
         }
@@ -512,6 +515,103 @@ impl Agent {
             Err(e) => format!("🧹 contexto borrado, pero no comprimí: {e}"),
         }
     }
+}
+
+/// El mensaje que ya está en pantalla, actualizado mientras el turno sigue. No
+/// es streaming: el transporte escucha cada dos minutos como mucho, y lo que
+/// dice es qué está haciendo, no lo que va escribiendo.
+struct Live<'a> {
+    transport: &'a dyn Transport,
+    session: &'a Session,
+    placeholder: Option<Msg>,
+    started: Instant,
+    written: Option<Instant>,
+    step: String,
+}
+
+const STATUS_AFTER: Duration = Duration::from_secs(120);
+const STATUS_EVERY: Duration = Duration::from_secs(120);
+
+impl<'a> Live<'a> {
+    fn new(transport: &'a dyn Transport, session: &'a Session, placeholder: Option<Msg>) -> Self {
+        Self {
+            transport,
+            session,
+            placeholder,
+            started: Instant::now(),
+            written: None,
+            step: String::new(),
+        }
+    }
+
+    fn on(&mut self, event: &Event) {
+        if let Event::ToolStart { name, args, .. } = event {
+            self.step = step(name, args);
+        }
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        let Some(placeholder) = &self.placeholder else {
+            return;
+        };
+        let elapsed = self.started.elapsed();
+        if elapsed < STATUS_AFTER {
+            return;
+        }
+        if self
+            .written
+            .is_some_and(|last| last.elapsed() < STATUS_EVERY)
+        {
+            return;
+        }
+        self.transport
+            .status(self.session, placeholder, &self.line(elapsed));
+        self.written = Some(Instant::now());
+    }
+
+    fn line(&self, elapsed: Duration) -> String {
+        let minutes = elapsed.as_secs() / 60;
+        if self.step.is_empty() {
+            return format!("⏳ sigue · {minutes} min");
+        }
+        format!("⏳ {} · {minutes} min", self.step)
+    }
+
+    fn take(self) -> Option<Msg> {
+        self.placeholder
+    }
+}
+
+/// Qué está haciendo la tool, en una línea que entre en un mensaje.
+fn step(name: &str, args: &str) -> String {
+    let args: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let detail = ["path", "file_path", "command", "query", "url", "prompt"]
+        .iter()
+        .find_map(|key| args.get(key)?.as_str())
+        .unwrap_or_default();
+    let verb = match name {
+        "read" | "fetch" => "leyendo",
+        "write" => "escribiendo",
+        "edit" => "editando",
+        "bash" => "corriendo",
+        "search" => "buscando",
+        "browse" => "navegando",
+        other => other,
+    };
+    if detail.is_empty() {
+        return verb.to_string();
+    }
+    format!("{verb} `{}`", short(detail))
+}
+
+fn short(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    let cut: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        return format!("{cut}…");
+    }
+    cut
 }
 
 /// Un pedazo de conversación que contiene lo que se buscó.
@@ -1008,6 +1108,7 @@ mod tests {
     struct Fake {
         answers: Mutex<Vec<String>>,
         failures: Mutex<Vec<String>>,
+        statuses: Mutex<Vec<String>>,
     }
 
     impl Transport for Fake {
@@ -1016,6 +1117,9 @@ mod tests {
         }
         fn progress(&self, _: &Session) -> Option<Msg> {
             None
+        }
+        fn status(&self, _: &Session, _: &Msg, text: &str) {
+            self.statuses.lock().unwrap().push(text.to_string());
         }
         fn answer(&self, _: &Session, _: Option<Msg>, markdown: &str) {
             self.answers.lock().unwrap().push(markdown.to_string());
@@ -1216,6 +1320,66 @@ done
         assert!(fake.answers.lock().unwrap().is_empty());
         assert!(!dir.join("inflight").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_step_says_what_the_tool_is_doing() {
+        assert_eq!(
+            step("read", r#"{"path":"src/web.rs"}"#),
+            "leyendo `src/web.rs`"
+        );
+        assert_eq!(
+            step("bash", r#"{"command":"cargo test"}"#),
+            "corriendo `cargo test`"
+        );
+        assert_eq!(step("read", "no es json"), "leyendo");
+        assert_eq!(step("raro", r#"{"path":"x"}"#), "raro `x`");
+    }
+
+    #[test]
+    fn a_long_command_is_cut_to_one_line() {
+        let args = format!(r#"{{"command":"{}"}}"#, "x".repeat(200));
+        let line = step("bash", &args);
+        assert!(line.contains('…'), "{line}");
+        assert!(line.chars().count() < 90, "{line}");
+        assert_eq!(step("bash", r#"{"command":"uno\ndos"}"#), "corriendo `uno`");
+    }
+
+    fn tool_start(name: &str, args: &str) -> Event {
+        Event::ToolStart {
+            id: "1".into(),
+            name: name.into(),
+            args: args.into(),
+        }
+    }
+
+    #[test]
+    fn the_message_stays_quiet_until_the_turn_gets_long() {
+        let fake = Fake::default();
+        let session = Session::channel("x");
+        let mut live = Live::new(&fake, &session, Some(Msg("1".into())));
+        live.on(&tool_start("read", r#"{"path":"a.rs"}"#));
+        assert!(fake.statuses.lock().unwrap().is_empty());
+
+        live.started = Instant::now() - Duration::from_secs(121);
+        live.on(&tool_start("bash", r#"{"command":"make"}"#));
+        let said = fake.statuses.lock().unwrap().clone();
+        assert_eq!(said.len(), 1);
+        assert!(said[0].contains("corriendo `make`"), "{said:?}");
+        assert!(said[0].contains("2 min"), "{said:?}");
+
+        live.on(&tool_start("read", r#"{"path":"otro.rs"}"#));
+        assert_eq!(fake.statuses.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn without_a_message_on_screen_nothing_is_said() {
+        let fake = Fake::default();
+        let session = Session::channel("x");
+        let mut live = Live::new(&fake, &session, None);
+        live.started = Instant::now() - Duration::from_secs(600);
+        live.on(&tool_start("bash", r#"{"command":"make"}"#));
+        assert!(fake.statuses.lock().unwrap().is_empty());
     }
 
     #[test]

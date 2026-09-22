@@ -30,6 +30,14 @@ pub enum Event {
     Presence {
         users: Vec<String>,
     },
+    /// Quién está conectado, mire lo que mire. También lo dice el bus.
+    Online {
+        users: Vec<String>,
+    },
+    /// Alguien está escribiendo en esta conversación. No se guarda.
+    Typing {
+        user: String,
+    },
     /// What the user sent. The parent writes this one, nobody else.
     User {
         text: String,

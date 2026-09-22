@@ -1,4 +1,4 @@
-const ICON = { read: "▤", write: "✎", edit: "±", bash: "$" };
+const ICON = { read: "▤", write: "✎", edit: "±", bash: "$", search: "⌕", fetch: "↓", browse: "◇" };
 const NOUN = {
   read: ["archivo", "archivos"],
   write: ["archivo", "archivos"],
@@ -29,6 +29,7 @@ const searchEl = document.getElementById("search");
 const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
+const toastEl = document.getElementById("toast");
 
 async function api(path, body) {
   let response;
@@ -39,13 +40,30 @@ async function api(path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
+    notify("no hay conexión con jimmy");
     return null;
   }
   if (response.status === 401) {
     location.href = "/login";
     return null;
   }
-  return response.json().catch(() => null);
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    notify((data && data.error) || `jimmy contestó ${response.status}`);
+    return null;
+  }
+  return data;
+}
+
+let toastTimer = null;
+
+function notify(text) {
+  toastEl.textContent = text;
+  toastEl.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.hidden = true;
+  }, 6000);
 }
 
 function conversationById(id) {
@@ -91,108 +109,165 @@ async function refresh() {
 
 /* Sidebar */
 
-function renderSidebar() {
-  projectsEl.replaceChildren();
-  for (const project of state.projects) {
-    const group = document.createElement("div");
-    group.className = "group" + (collapsed.has(project.name) ? " collapsed" : "");
-    const header = document.createElement("div");
-    header.className = "project toggle";
-    header.onclick = () => toggleProject(project.name);
-    const caret = document.createElement("span");
-    caret.className = "caret";
-    caret.textContent = "▾";
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = project.name;
-    name.title = project.path;
-    const remove = document.createElement("button");
-    remove.className = "icon-btn";
-    remove.textContent = "×";
-    remove.title = "quitar proyecto";
-    remove.onclick = (event) => {
+const groupEls = new Map();
+
+function projectEl(project) {
+  const group = {
+    el: document.createElement("div"),
+    project,
+    name: document.createElement("span"),
+    conversations: new Map(),
+  };
+  group.el.className = "group";
+  const header = document.createElement("div");
+  header.className = "project toggle";
+  header.onclick = () => toggleProject(group.project.name);
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  caret.textContent = "▾";
+  group.name.className = "name";
+  const remove = iconButton("×", "quitar proyecto", () => deleteProject(group.project), "danger");
+  header.append(caret, group.name, remove);
+  group.create = document.createElement("div");
+  group.create.className = "conversation create";
+  group.create.textContent = "+ conversación";
+  group.create.onclick = async () => {
+    const made = await api("/api/conversations", { project: group.project.name });
+    await refresh();
+    if (made && made.key) openTab(made.key);
+    closeSidebar();
+  };
+  group.el.append(header);
+  return group;
+}
+
+function iconButton(label, title, action, kind = "") {
+  const button = document.createElement("button");
+  button.className = "icon-btn" + (kind ? " " + kind : "");
+  button.textContent = label;
+  button.title = title;
+  button.onclick = (event) => {
+    event.stopPropagation();
+    action();
+  };
+  return button;
+}
+
+function conversationEl(conversation) {
+  const item = {
+    el: document.createElement("div"),
+    conversation,
+    renaming: false,
+    dot: document.createElement("span"),
+    title: document.createElement("span"),
+  };
+  item.el.className = "conversation";
+  item.el.dataset.conversation = conversation.key;
+  item.dot.className = "dot";
+  item.title.className = "title";
+  item.el.append(item.dot, item.title);
+  item.el.onclick = () => {
+    openTab(item.conversation.key);
+    closeSidebar();
+  };
+  if (!conversation.read_only) {
+    item.title.ondblclick = (event) => {
       event.stopPropagation();
-      deleteProject(project);
+      rename(item);
     };
-    header.append(caret, name, remove);
-    group.append(header);
+    item.el.append(
+      iconButton("✎", "renombrar", () => rename(item)),
+      iconButton("×", "borrar conversación", () => deleteConversation(item.conversation), "danger"),
+    );
+  }
+  return item;
+}
 
-    for (const conversation of project.conversations) {
-      const item = document.createElement("div");
-      item.className = "conversation" + (conversation.key === activeId ? " active" : "");
-      item.dataset.conversation = conversation.key;
-      const dot = document.createElement("span");
-      dot.className = "dot" + (conversation.running ? " running" : "");
-      const title = document.createElement("span");
-      title.className = "title";
-      title.textContent = conversation.title || conversation.key;
-      title.ondblclick = (event) => {
-        event.stopPropagation();
-        rename(title, conversation);
-      };
-      const renameBtn = document.createElement("button");
-      renameBtn.className = "icon-btn";
-      renameBtn.dataset.action = "rename";
-      renameBtn.textContent = "✎";
-      renameBtn.title = "renombrar";
-      renameBtn.onclick = (event) => {
-        event.stopPropagation();
-        rename(title, conversation);
-      };
-      const remove = document.createElement("button");
-      remove.className = "icon-btn";
-      remove.dataset.action = "delete";
-      remove.textContent = "×";
-      remove.title = "borrar conversación";
-      remove.onclick = (event) => {
-        event.stopPropagation();
-        deleteConversation(conversation);
-      };
-      if (conversation.read_only) {
-        item.append(dot, title);
-      } else {
-        item.append(dot, title, renameBtn, remove);
-      }
-      item.onclick = () => {
-        openTab(conversation.key);
-        closeSidebar();
-      };
-      group.append(item);
+function refreshConversation(item, conversation) {
+  item.conversation = conversation;
+  item.el.classList.toggle("active", conversation.key === activeId);
+  const dot = "dot" + (conversation.running ? " running" : "");
+  if (item.dot.className !== dot) item.dot.className = dot;
+  if (!item.renaming) setText(item.title, conversation.title || conversation.key);
+}
+
+function setText(node, value) {
+  if (node.textContent !== value) node.textContent = value;
+}
+
+function place(parent, child, after) {
+  const before = after ? after.nextSibling : parent.firstChild;
+  if (before === child) return;
+  if (!before && parent.lastChild === child) return;
+  parent.insertBefore(child, before);
+}
+
+function renderSidebar() {
+  const alive = new Set();
+  let lastGroup = null;
+  for (const project of state.projects) {
+    alive.add(project.name);
+    let group = groupEls.get(project.name);
+    if (!group) {
+      group = projectEl(project);
+      groupEls.set(project.name, group);
     }
-
-    const create = document.createElement("div");
-    create.className = "conversation create";
-    create.textContent = "+ conversación";
-    create.onclick = async () => {
-      const made = await api("/api/conversations", { project: project.name });
-      await refresh();
-      if (made && made.key) openTab(made.key);
-      closeSidebar();
-    };
-    group.append(create);
-    projectsEl.append(group);
+    group.project = project;
+    setText(group.name, project.name);
+    group.name.title = project.path;
+    group.el.classList.toggle("collapsed", collapsed.has(project.name));
+    const seen = new Set();
+    let lastItem = null;
+    for (const conversation of project.conversations) {
+      seen.add(conversation.key);
+      let item = group.conversations.get(conversation.key);
+      if (!item) {
+        item = conversationEl(conversation);
+        group.conversations.set(conversation.key, item);
+      }
+      refreshConversation(item, conversation);
+      place(group.el, item.el, lastItem);
+      lastItem = item.el;
+    }
+    for (const [key, item] of group.conversations) {
+      if (seen.has(key)) continue;
+      item.el.remove();
+      group.conversations.delete(key);
+    }
+    place(group.el, group.create, lastItem);
+    place(projectsEl, group.el, lastGroup);
+    lastGroup = group.el;
+  }
+  for (const [name, group] of groupEls) {
+    if (alive.has(name)) continue;
+    group.el.remove();
+    groupEls.delete(name);
   }
 }
 
 function toggleProject(name) {
   if (collapsed.has(name)) collapsed.delete(name);
   else collapsed.add(name);
-  renderSidebar();
+  const group = groupEls.get(name);
+  if (group) group.el.classList.toggle("collapsed", collapsed.has(name));
 }
 
-function rename(title, conversation) {
+function rename(item) {
+  if (item.renaming) return;
+  item.renaming = true;
   const input = document.createElement("input");
   input.className = "rename";
-  input.value = conversation.title;
-  title.replaceWith(input);
+  input.value = item.conversation.title || "";
+  item.title.replaceWith(input);
   input.focus();
   input.select();
 
   const commit = async () => {
     const value = input.value.trim();
-    input.replaceWith(title);
-    if (!value || value === conversation.title) return;
-    await api("/api/rename", { conversation: conversation.key, title: value });
+    if (input.isConnected) input.replaceWith(item.title);
+    item.renaming = false;
+    if (!value || value === item.conversation.title) return;
+    await api("/api/rename", { conversation: item.conversation.key, title: value });
     await refresh();
   };
 
@@ -200,14 +275,15 @@ function rename(title, conversation) {
   input.onkeydown = (event) => {
     if (event.key === "Enter") input.blur();
     if (event.key === "Escape") {
-      input.value = conversation.title;
+      input.value = item.conversation.title || "";
       input.blur();
     }
   };
 }
 
 async function deleteConversation(conversation) {
-  if (!confirm(`¿Borrar la conversación "${conversation.title}"? Se pierde el historial.`)) return;
+  const name = conversation.title || conversation.key;
+  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
   await api("/api/delete-conversation", { conversation: conversation.key });
   closeTab(conversation.key);
   await refresh();
@@ -240,6 +316,7 @@ async function runSearch() {
 }
 
 function renderResults(query, results) {
+  groupEls.clear();
   projectsEl.replaceChildren();
   const header = document.createElement("div");
   header.className = "project";
@@ -336,6 +413,7 @@ function createTab(id) {
     synced: false,
     attention: null,
   };
+  tab.item = tabEl(tab);
   tabs.set(id, tab);
 
   transcript.addEventListener("scroll", () => {
@@ -384,6 +462,8 @@ function closeTab(id) {
   if (!tab) return;
   if (tab.stream) tab.stream.close();
   tab.pane.remove();
+  tab.item.el.remove();
+  pending.delete(id);
   tabs.delete(id);
   if (activeId !== id) {
     renderTabs();
@@ -397,31 +477,42 @@ function closeTab(id) {
     placeholderEl.hidden = false;
     renderTabs();
     renderActions();
+    renderPending();
   }
 }
 
+function tabEl(tab) {
+  const item = {
+    el: document.createElement("div"),
+    dot: document.createElement("span"),
+    title: document.createElement("span"),
+  };
+  item.el.className = "tab";
+  item.dot.className = "dot";
+  item.title.className = "title";
+  const close = document.createElement("button");
+  close.className = "close";
+  close.textContent = "×";
+  close.title = "cerrar pestaña";
+  close.onclick = (event) => {
+    event.stopPropagation();
+    closeTab(tab.id);
+  };
+  item.el.append(item.dot, item.title, close);
+  item.el.onclick = () => activate(tab.id);
+  return item;
+}
+
 function renderTabs() {
-  tabsEl.replaceChildren();
+  let last = null;
   for (const tab of tabs.values()) {
-    const item = document.createElement("div");
-    item.className = "tab" + (tab.id === activeId ? " active" : "");
-    const dot = document.createElement("span");
+    tab.item.el.classList.toggle("active", tab.id === activeId);
     const status = isRunning(tab.id) ? "running" : tab.attention || "";
-    dot.className = "dot" + (status ? " " + status : "");
-    const title = document.createElement("span");
-    title.className = "title";
-    title.textContent = titleOf(tab.id);
-    const close = document.createElement("button");
-    close.className = "close";
-    close.textContent = "×";
-    close.title = "cerrar pestaña";
-    close.onclick = (event) => {
-      event.stopPropagation();
-      closeTab(tab.id);
-    };
-    item.append(dot, title, close);
-    item.onclick = () => activate(tab.id);
-    tabsEl.append(item);
+    const dot = "dot" + (status ? " " + status : "");
+    if (tab.item.dot.className !== dot) tab.item.dot.className = dot;
+    setText(tab.item.title, titleOf(tab.id));
+    place(tabsEl, tab.item.el, last);
+    last = tab.item.el;
   }
 }
 
@@ -687,6 +778,9 @@ function toolDetail(name, raw) {
   if (!args) return raw;
   if (name === "bash") return args.command || "";
   if (name === "read" || name === "write" || name === "edit") return args.path || "";
+  if (name === "search") return args.query || "";
+  if (name === "fetch") return args.url || "";
+  if (name === "browse") return args.url || `${(args.steps || []).length} pasos`;
   return JSON.stringify(args);
 }
 
@@ -1194,7 +1288,7 @@ document.getElementById("new-project").onclick = async () => {
   const name = field.value.trim();
   if (!name) return;
   const made = await api("/api/projects", { name });
-  if (!made || made.error) return;
+  if (!made) return;
   field.value = "";
   await refresh();
 };

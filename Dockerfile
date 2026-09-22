@@ -5,6 +5,7 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock /build/jimmy/
 COPY src /build/jimmy/src
+COPY web /build/jimmy/web
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 

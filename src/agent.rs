@@ -81,8 +81,17 @@ impl Agent {
         self.cancel = cancel;
     }
 
-    pub fn cancel(&self, key: &str) {
-        self.pool.cancel(key);
+    /// Interrumpe el turno que esté corriendo, y deja dicho quién lo frenó.
+    pub fn cancel(&self, session: &Session, author: &str) {
+        if !author.is_empty() {
+            self.say(
+                session,
+                &Event::Stopped {
+                    author: author.to_string(),
+                },
+            );
+        }
+        self.pool.cancel(&session.key());
     }
 
     /// Corta el worker y se lleva la carpeta de la conversación.
@@ -195,6 +204,7 @@ impl Agent {
             protocol::Command::Prompt {
                 text: text.to_string(),
                 images,
+                author: author.to_string(),
             },
         )
     }
@@ -214,17 +224,20 @@ impl Agent {
     /// Deja el mensaje escrito en el log sin esperar turno: es lo que ven los
     /// demás apenas alguien aprieta enviar.
     pub fn announce(&self, session: &Session, text: &str, author: &str) {
-        let conversation = self.conversation(session);
-        let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
-        self.bus.publish(
-            &conversation.key,
-            &log,
+        self.say(
+            session,
             &Event::User {
                 text: text.to_string(),
                 author: author.to_string(),
             },
         );
+    }
+
+    fn say(&self, session: &Session, event: &Event) {
+        let conversation = self.conversation(session);
+        let _ = std::fs::create_dir_all(&conversation.dir);
+        let log = Log::in_dir(&conversation.dir);
+        self.bus.publish(&conversation.key, &log, event);
     }
 
     /// Un turno por conversación: el que llega segundo espera.
@@ -277,6 +290,7 @@ impl Agent {
         session: &Session,
         text: &str,
         images: Vec<Image>,
+        author: &str,
     ) -> Result<(), String> {
         let dir = self.conversation(session).dir;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -287,7 +301,7 @@ impl Agent {
 
         let user = Message {
             role: "user".into(),
-            content: text.to_string(),
+            content: signed(text, author),
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             reasoning: String::new(),
@@ -404,6 +418,9 @@ impl Agent {
             session.key(),
             self.conversation(session).dir.display()
         ));
+        system.push_str(
+            "Si un mensaje empieza con un nombre entre corchetes, es quien lo escribió.\n",
+        );
         let memory = crate::memo::render(Path::new(&self.workspace));
         if !memory.is_empty() {
             system.push_str("\n## Memoria en contexto\n");
@@ -921,6 +938,15 @@ fn gzip(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+}
+
+/// El nombre de quien escribe, delante del mensaje: sin eso el modelo lee
+/// "hola" y no sabe a quién le está contestando.
+fn signed(text: &str, author: &str) -> String {
+    if author.is_empty() {
+        return text.to_string();
+    }
+    format!("[{author}] {text}")
 }
 
 fn load_entries(dir: &Path) -> Vec<Entry> {

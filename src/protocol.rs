@@ -10,6 +10,9 @@ pub enum Command {
         text: String,
         #[serde(default)]
         images: Vec<Image>,
+        /// Quién lo escribió, para que el modelo sepa a quién le contesta.
+        #[serde(default)]
+        author: String,
     },
     Resume,
     /// Compacta el contexto ahora, sin esperar al umbral.
@@ -37,6 +40,10 @@ pub enum Event {
     /// Alguien está escribiendo en esta conversación. No se guarda.
     Typing {
         user: String,
+    },
+    /// Alguien cortó el turno que estaba corriendo.
+    Stopped {
+        author: String,
     },
     /// What the user sent. The parent writes this one, nobody else.
     User {

@@ -167,7 +167,7 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     let (base, served) = model_server(vec![answer_chunk("hola desde el fake")]);
 
     let mut worker = Worker::start(&root, &base, &root.join("workspace"));
-    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\"}");
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\",\"author\":\"ana\"}");
     let events = worker.until_done();
     assert_eq!(served.load(Ordering::SeqCst), 1);
     assert!(
@@ -178,7 +178,10 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     drop(worker);
 
     let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
-    assert!(transcript.contains("hola"), "{transcript}");
+    assert!(
+        transcript.contains("[ana] hola"),
+        "el modelo tiene que saber quién le habla: {transcript}"
+    );
     assert!(transcript.contains("hola desde el fake"), "{transcript}");
     assert!(!chat.join("inflight").exists());
     std::fs::remove_dir_all(&root).unwrap();

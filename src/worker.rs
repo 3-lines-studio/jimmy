@@ -43,9 +43,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         let result = match command {
             Command::Cancel => continue,
             Command::Shutdown => break,
-            Command::Prompt { text, images } => {
-                agent.local_prompt(pipe.as_ref(), &session, &text, images)
-            }
+            Command::Prompt {
+                text,
+                images,
+                author,
+            } => agent.local_prompt(pipe.as_ref(), &session, &text, images, &author),
             Command::Resume => {
                 let dir = agent.conversation(&session).dir;
                 agent.local_resume(pipe.as_ref(), &session, &dir)

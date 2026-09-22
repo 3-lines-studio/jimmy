@@ -11,8 +11,10 @@
 
 use axe::atomic_write;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub const GENERAL: &str = "general";
 pub const NEW_TITLE: &str = "nueva conversación";
@@ -30,6 +32,19 @@ pub struct Conversation {
     pub project: String,
     pub title: Option<String>,
     pub read_only: bool,
+}
+
+impl Conversation {
+    /// Lo último que pasó en la conversación: es lo que ordena la lista. El log
+    /// y el transcript se escriben en cada turno, la metadata al crear o al
+    /// renombrar.
+    pub fn updated(&self) -> SystemTime {
+        ["conversation.jsonl", "transcript.jsonl", "meta.json"]
+            .iter()
+            .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok()?.modified().ok())
+            .max()
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    }
 }
 
 pub struct Project {
@@ -79,7 +94,12 @@ pub fn projects(root: &Path, workspace: &Path) -> Vec<Project> {
         .into_iter()
         .map(|name| {
             let mut conversations = owned.remove(&name).unwrap_or_default();
-            conversations.sort_by(|a, b| b.key.cmp(&a.key));
+            conversations.sort_by_cached_key(|conversation| {
+                (
+                    Reverse(conversation.updated()),
+                    Reverse(conversation.key.clone()),
+                )
+            });
             Project {
                 path: project_dir(workspace, &name),
                 name,
@@ -271,6 +291,40 @@ mod tests {
         assert_eq!(ken.conversations[0].cwd, workspace.join("projects/ken"));
         assert!(!ken.conversations[0].read_only);
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_threads_go_from_the_newest_to_the_oldest() {
+        let (root, workspace) = scratch("order");
+        let old = create(&root, &workspace, "ken", "vieja").unwrap();
+        let new = create(&root, &workspace, "ken", "nueva").unwrap();
+        let middle = create(&root, &workspace, "ken", "media").unwrap();
+        let busy = create(&root, &workspace, "ken", "al día").unwrap();
+        touch(&chat_dir(&root, &old).join("meta.json"), 1_000);
+        touch(&chat_dir(&root, &middle).join("meta.json"), 2_000);
+        touch(&chat_dir(&root, &new).join("meta.json"), 3_000);
+        touch(&chat_dir(&root, &busy).join("meta.json"), 500);
+        std::fs::write(chat_dir(&root, &busy).join("transcript.jsonl"), "{}\n").unwrap();
+
+        let listed = projects(&root, &workspace);
+        let ken = listed.iter().find(|project| project.name == "ken").unwrap();
+        let titles: Vec<&str> = ken
+            .conversations
+            .iter()
+            .filter_map(|conversation| conversation.title.as_deref())
+            .collect();
+        assert_eq!(
+            titles,
+            ["al día", "nueva", "media", "vieja"],
+            "manda el último turno, no la creación"
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    fn touch(path: &Path, seconds: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        file.set_modified(when).unwrap();
     }
 
     #[test]

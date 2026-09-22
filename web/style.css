@@ -295,6 +295,10 @@ textarea:focus {
   display: none;
 }
 
+.group.collapsed .more {
+  display: none;
+}
+
 .conversation {
   display: flex;
   align-items: center;
@@ -331,6 +335,15 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+.more:not([hidden]) {
+  display: flex;
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--s1) 0 var(--s2);
+  color: var(--faint);
+  font-size: 12px;
 }
 
 .dot {

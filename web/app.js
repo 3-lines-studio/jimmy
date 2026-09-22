@@ -59,6 +59,8 @@ const tabs = new Map();
 let activeId = null;
 let pending = new Map();
 const collapsed = new Set();
+const expanded = new Set();
+const VISIBLE = 10;
 
 const projectsEl = document.getElementById("projects");
 const tabsEl = document.getElementById("tabs");
@@ -187,6 +189,7 @@ function projectEl(project) {
     name: document.createElement("span"),
     list: document.createElement("div"),
     conversations: new Map(),
+    more: document.createElement("button"),
   };
   group.el.className = "group";
   group.list.className = "threads";
@@ -204,8 +207,11 @@ function projectEl(project) {
     closeSidebar();
   });
   const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
+  group.more.className = "more";
+  group.more.hidden = true;
+  group.more.onclick = () => toggleMore(group.project.name);
   header.append(caret, group.name, add, remove);
-  group.el.append(header, group.list);
+  group.el.append(header, group.list, group.more);
   return group;
 }
 
@@ -285,9 +291,13 @@ function renderSidebar() {
     setText(group.name, project.name);
     group.name.title = project.path;
     group.el.classList.toggle("collapsed", collapsed.has(project.name));
+    const open = expanded.has(project.name);
+    setText(group.more, open ? "ver menos" : "ver más");
+    group.more.hidden = project.conversations.length <= VISIBLE;
     const seen = new Set();
     let lastItem = null;
-    for (const conversation of project.conversations) {
+    const shown = open ? project.conversations : project.conversations.slice(0, VISIBLE);
+    for (const conversation of shown) {
       seen.add(conversation.key);
       let item = group.conversations.get(conversation.key);
       if (!item) {
@@ -311,6 +321,12 @@ function renderSidebar() {
     group.el.remove();
     groupEls.delete(name);
   }
+}
+
+function toggleMore(name) {
+  if (expanded.has(name)) expanded.delete(name);
+  else expanded.add(name);
+  renderSidebar();
 }
 
 function toggleProject(name) {

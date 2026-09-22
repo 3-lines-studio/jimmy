@@ -195,6 +195,11 @@ fn main() {
                 eprintln!("jimmy: ignoré un mensaje de {}", event.sender);
                 continue;
             }
+            if event.stop {
+                eprintln!("jimmy: freno el turno de {}", event.session.key());
+                agent.cancel(&event.session.key());
+                continue;
+            }
             let agent = agent.clone();
             let transport = transport.clone();
             let transcribe_key = config.transcribe_key.clone();

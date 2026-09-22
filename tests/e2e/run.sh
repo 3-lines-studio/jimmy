@@ -119,6 +119,16 @@ check "el compactado respondió por Telegram" $?
 rg -q '"type":"compaction"' "$WORK/root/chats/999/transcript.jsonl"
 check "el transcript tiene la compactación" $?
 
+say "frenar un turno por Telegram"
+printf '%s\n' '{"update_id":4,"message":{"message_id":10,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"contame algo largo"}}' >>"$WORK/inbox.jsonl"
+sleep 1
+printf '%s\n' '{"update_id":5,"callback_query":{"id":"9","data":"frenar","from":{"id":999,"is_bot":false},"message":{"message_id":11,"chat":{"id":999}}}}' >>"$WORK/inbox.jsonl"
+sleep 8
+rg -q 'SEND .*Frenar' "$WORK/telegram.log"
+check "el mensaje de espera trae el botón de frenar" $?
+rg -q 'EDIT .*interrumpido' "$WORK/telegram.log"
+check "el botón frena el turno que está corriendo" $?
+
 say "el apagado, como en un redeploy"
 kill -TERM $JIMMY_PID
 sleep 3

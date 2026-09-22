@@ -144,7 +144,9 @@ An image attached in the composer is uploaded as it is picked (10 MB per file) t
 `$JIMMY_ROOT/chats/<key>/uploads/`, and the message carries the file name, not
 the bytes: the log keeps the name and `GET /api/file` serves the file, so the
 image is still there after a reload and on another device. A message can be just
-an image, with no text.
+an image, with no text. The images Jimmy sends with `jimmy send` land in the same
+place and are shown the same way, so a chart or a screenshot it made appears in
+the conversation.
 
 The page is quiet on purpose: the reply is the content, and what the agent did
 on the way is one folded line per run of steps — `6 pasos · 1m 51s` — which

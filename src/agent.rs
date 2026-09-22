@@ -1,6 +1,7 @@
 use crate::bus::Bus;
 use crate::conversations;
 use crate::log::Log;
+use crate::media;
 use crate::pool::{Pool, Turn};
 use crate::protocol::{self, Event};
 use crate::transport::{Msg, Session, Transport};
@@ -241,6 +242,16 @@ impl Agent {
         self.bus.publish(&conversation.key, &log, event);
     }
 
+    /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
+    /// CLI es otro proceso y no puede escribir el log, así que las deja en la
+    /// cola de la conversación y esto las publica.
+    fn flush_media(&self, session: &Session) {
+        let conversation = self.conversation(session);
+        for event in media::drain(&conversation) {
+            self.say(session, &event);
+        }
+    }
+
     /// Un turno por conversación: el que llega segundo espera.
     fn wait_turn(&self, session: &Session) -> Arc<Mutex<()>> {
         self.turns
@@ -268,6 +279,7 @@ impl Agent {
                 live.on(event);
                 self.bus.publish(&conversation.key, &log, event)
             });
+        self.flush_media(session);
         match turn {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, live.take(), &text);
@@ -919,7 +931,7 @@ fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
 /// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
 /// mostrar y se queda afuera.
 fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
-    let uploads = dir.join("uploads");
+    let uploads = dir.join(media::UPLOADS);
     images
         .iter()
         .filter(|image| Path::new(&image.path).parent() == Some(uploads.as_path()))
@@ -1319,6 +1331,49 @@ done
         assert!(lines[2].contains("\"tool_start\""), "{log}");
         assert!(lines[3].contains("\"tool_result\""), "{log}");
         assert!(lines[4].contains("\"done\""), "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn what_jimmy_send_leaves_in_the_queue_ends_up_in_the_log() {
+        let root = resume_dir("media");
+        let mut agent = agent_in(&root);
+        agent.use_worker_exe(worker_script(
+            "media.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo '{\"event\":\"done\",\"text\":\"listo\"}'
+done
+",
+        ));
+        let conversation = conversations::get(&root, Path::new("/tmp"), "x");
+        media::queue(
+            &conversation,
+            &Event::Image {
+                name: "17-foto.png".into(),
+                caption: "mirá".into(),
+            },
+        )
+        .unwrap();
+
+        agent
+            .respond(
+                &Fake::default(),
+                &Session::channel("x"),
+                "hola",
+                Vec::new(),
+                "berti",
+            )
+            .unwrap();
+
+        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
+        assert!(log.contains("\"event\":\"image\""), "{log}");
+        assert!(log.contains("\"name\":\"17-foto.png\""), "{log}");
+        assert!(
+            !conversation.dir.join("outbox.jsonl").exists(),
+            "la cola queda vacía"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

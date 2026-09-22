@@ -7,6 +7,7 @@ mod http;
 mod log;
 mod mail;
 mod markdown;
+mod media;
 mod memo;
 mod pool;
 mod prompt;
@@ -440,6 +441,21 @@ fn send_command(args: &[String]) -> i32 {
         eprintln!("jimmy send: falta --target");
         return 2;
     };
+    let root = root_from_env();
+    let workspace = workspace_from_env();
+    let conversation = conversations::get(&root, &workspace, &target);
+    if !conversation.read_only && conversation.dir.is_dir() {
+        return match keep(&conversation, &path, caption.as_deref()) {
+            Ok(name) => {
+                println!("{name}");
+                0
+            }
+            Err(e) => {
+                eprintln!("jimmy send: {e}");
+                1
+            }
+        };
+    }
     let transport = match transport_from_env() {
         Ok(transport) => transport,
         Err(e) => {
@@ -454,7 +470,13 @@ fn send_command(args: &[String]) -> i32 {
             return 1;
         }
     };
-    match transport.send_media(&session, Path::new(&path), caption.as_deref()) {
+    let sent = transport.send_media(&session, Path::new(&path), caption.as_deref());
+    if media::is_image(&path) {
+        if let Err(e) = keep(&conversation, &path, caption.as_deref()) {
+            eprintln!("jimmy send: la web no lo va a mostrar: {e}");
+        }
+    }
+    match sent {
         Ok(msg) => {
             println!("{}", msg.0);
             0
@@ -464,6 +486,33 @@ fn send_command(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Una imagen que va a una conversación de la web no sale por ningún transporte:
+/// queda en el chat, que es donde se mira. Y la que sale por Telegram también
+/// queda, porque la web muestra las mismas conversaciones.
+fn keep(
+    conversation: &conversations::Conversation,
+    path: &str,
+    caption: Option<&str>,
+) -> Result<String, String> {
+    if !media::is_image(path) {
+        return Err("sólo sé mostrar imágenes: png, jpg, gif o webp".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("no pude leer {path}: {e}"))?;
+    let base = Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = media::store(&media::dir(conversation), &base, &bytes)?;
+    media::queue(
+        conversation,
+        &protocol::Event::Image {
+            name: name.clone(),
+            caption: caption.unwrap_or_default().to_string(),
+        },
+    )?;
+    Ok(name)
 }
 
 fn skills_dir() -> PathBuf {
@@ -668,6 +717,38 @@ mod tests {
                 thread: Some("1699.1".into())
             }
         );
+    }
+
+    #[test]
+    fn an_image_for_a_web_conversation_is_kept_and_queued() {
+        let dir = std::env::temp_dir().join(format!("jimmy-send-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("circulo.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nlos bytes").unwrap();
+        let conversation = conversations::Conversation {
+            key: "web-1".into(),
+            dir: dir.join("chats/web-1"),
+            cwd: dir.clone(),
+            project: "general".into(),
+            title: None,
+            read_only: false,
+        };
+
+        let name = keep(&conversation, image.to_str().unwrap(), Some("el círculo")).unwrap();
+        assert!(name.ends_with("-circulo.png"), "{name}");
+        let kept = std::fs::read(media::dir(&conversation).join(&name)).unwrap();
+        assert_eq!(kept, b"\x89PNG\r\n\x1a\nlos bytes");
+
+        let queued = media::drain(&conversation);
+        assert_eq!(queued.len(), 1);
+        assert!(
+            matches!(&queued[0], protocol::Event::Image { name: kept, caption } if kept == &name && caption == "el círculo")
+        );
+
+        let other = dir.join("informe.pdf");
+        assert!(keep(&conversation, other.to_str().unwrap(), None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -633,6 +633,9 @@ function render(tab, event) {
     case "user":
       renderUser(tab, event);
       break;
+    case "image":
+      renderImage(tab, event);
+      break;
     case "delta":
       renderDelta(tab, event);
       break;
@@ -736,6 +739,19 @@ function renderThumbs(tab, images) {
     thumbs.append(link);
   }
   return thumbs;
+}
+
+function renderImage(tab, event) {
+  const element = document.createElement("div");
+  element.className = "event image";
+  element.append(renderThumbs(tab, [event.name]));
+  if (event.caption) {
+    const caption = document.createElement("div");
+    caption.className = "caption";
+    caption.textContent = event.caption;
+    element.append(caption);
+  }
+  append(tab, element);
 }
 
 function renderDelta(tab, event) {

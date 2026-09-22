@@ -10,6 +10,7 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::http::{self, Request};
 use crate::log::Log;
+use crate::media;
 use crate::protocol::Event;
 use crate::transport::{Msg, Session, Transport};
 use std::net::{TcpListener, TcpStream};
@@ -34,9 +35,6 @@ pub struct Web {
     agent: Agent,
     auth: Auth,
 }
-
-/// Donde viven los adjuntos de una conversación, adentro de su carpeta de chat.
-const UPLOADS: &str = "uploads";
 
 impl Web {
     pub fn new(
@@ -484,11 +482,11 @@ fn read_attachments(
     conversation: &conversations::Conversation,
     names: &[String],
 ) -> Result<Vec<axe::Image>, String> {
-    let uploads = conversation.dir.join(UPLOADS);
+    let uploads = media::dir(conversation);
     names
         .iter()
         .map(|name| {
-            let name = safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
+            let name = media::safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
             axe::image::attach(&uploads.join(name).display().to_string())
         })
         .collect()
@@ -510,14 +508,14 @@ fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if request.body.len() > MAX_UPLOAD {
         return http::send_error(stream, 400, "ese archivo es muy grande");
     }
-    let dir = conversation.dir.join(UPLOADS);
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        return http::send_error(stream, 500, &error.to_string());
-    }
-    let name = uploaded_name(request.param("name").unwrap_or_default());
-    if let Err(error) = std::fs::write(dir.join(&name), &request.body) {
-        return http::send_error(stream, 500, &error.to_string());
-    }
+    let name = match media::store(
+        &media::dir(&conversation),
+        request.param("name").unwrap_or_default(),
+        &request.body,
+    ) {
+        Ok(name) => name,
+        Err(error) => return http::send_error(stream, 500, &error),
+    };
     http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
@@ -529,60 +527,13 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     }
     let key = request.param("conversation").unwrap_or_default();
     let conversation = conversations::get(&web.root, &web.workspace, key);
-    let Some(name) = request.param("name").and_then(safe_name) else {
+    let Some(name) = request.param("name").and_then(media::safe_name) else {
         return http::send_error(stream, 400, "ese nombre no sirve");
     };
-    let Ok(data) = std::fs::read(conversation.dir.join(UPLOADS).join(name)) else {
+    let Ok(data) = std::fs::read(media::dir(&conversation).join(name)) else {
         return http::send_error(stream, 404, "no está");
     };
-    http::respond(stream, 200, content_type(name), &[], &data)
-}
-
-/// El nombre de un archivo subido: el cliente elige la parte legible y el sello
-/// de tiempo la hace única, así dos `foto.png` no se pisan.
-fn uploaded_name(name: &str) -> String {
-    let base: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(60)
-        .collect();
-    let base = base.trim_matches('.');
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis())
-        .unwrap_or_default();
-    if base.is_empty() {
-        return format!("{stamp}-adjunto");
-    }
-    format!("{stamp}-{base}")
-}
-
-/// Lo que llega de la query es un nombre, y nada más: sin barras, sin `..` y sin
-/// nada que `join` pueda leer como un camino.
-fn safe_name(name: &str) -> Option<&str> {
-    let clean = !name.is_empty()
-        && name.len() <= 80
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
-    clean.then_some(name)
-}
-
-fn content_type(name: &str) -> &'static str {
-    match name.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "application/octet-stream",
-    }
+    http::respond(stream, 200, media::content_type(name), &[], &data)
 }
 
 fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {

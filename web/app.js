@@ -474,6 +474,37 @@ function clearMarks(root) {
 
 /* Tabs */
 
+const TABS_KEY = "jimmy-tabs";
+
+function readTabs() {
+  try {
+    const value = JSON.parse(localStorage.getItem(TABS_KEY) || "{}");
+    return { open: value.open || [], active: value.active || null };
+  } catch {
+    return { open: [], active: null };
+  }
+}
+
+function remember() {
+  localStorage.setItem(TABS_KEY, JSON.stringify({ open: [...tabs.keys()], active: activeId }));
+  history.replaceState(null, "", activeId ? "#" + encodeURIComponent(activeId) : location.pathname);
+}
+
+function restore() {
+  const saved = readTabs();
+  const hash = decodeURIComponent(location.hash.slice(1));
+  const wanted = saved.open.includes(hash) || !hash ? saved.open : [...saved.open, hash];
+  const seen = new Set();
+  for (const id of wanted) {
+    if (seen.has(id) || !conversationById(id)) continue;
+    seen.add(id);
+    if (!tabs.has(id)) createTab(id);
+  }
+  const active = [hash, saved.active].find((id) => tabs.has(id)) || tabs.keys().next().value;
+  if (active) activate(active);
+  else if (hash) remember();
+}
+
 function openTab(id) {
   if (!tabs.has(id)) createTab(id);
   activate(id);
@@ -547,6 +578,7 @@ function activate(id) {
   renderActions();
   renderPending();
   updateTitle();
+  remember();
   if (finePointer.matches) inputEl.focus();
 }
 
@@ -559,6 +591,7 @@ function closeTab(id) {
   pending.delete(id);
   tabs.delete(id);
   if (activeId !== id) {
+    remember();
     renderTabs();
     return;
   }
@@ -568,6 +601,7 @@ function closeTab(id) {
   } else {
     activeId = null;
     placeholderEl.hidden = false;
+    remember();
     renderTabs();
     renderActions();
     renderPending();
@@ -1512,6 +1546,12 @@ function closeSidebar() {
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
 
+addEventListener("hashchange", () => {
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id === activeId) return;
+  if (id && conversationById(id)) openTab(id);
+});
+
 function watchOnline() {
   const source = new EventSource("/api/online");
   source.onmessage = (message) => {
@@ -1524,6 +1564,7 @@ function watchOnline() {
 async function main() {
   watchOnline();
   await refresh();
+  restore();
   setInterval(refresh, 3000);
 }
 

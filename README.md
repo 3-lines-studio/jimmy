@@ -140,10 +140,14 @@ and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
 the response instead, which is how it works locally and in the tests. Sessions
 live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
 
-The page is dark and quiet on purpose: the reply is the content, and what the
-agent did on the way is one folded line per run of steps — `6 pasos · 1m 51s` —
-which opens into the individual tool calls. A tool that fails opens its group
-and says so in red.
+The page is quiet on purpose: the reply is the content, and what the agent did
+on the way is one folded line per run of steps — `6 pasos · 1m 51s` — which
+opens into the individual tool calls. A tool that fails opens its group and says
+so in red. It follows the system theme; the button in the sidebar overrides it
+and remembers.
+
+Searching the sidebar looks through what was said in every conversation, and
+each result opens its transcript with the matches marked.
 
 ### Slack app
 
@@ -373,7 +377,8 @@ src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the two-level memory: sync, demote, miss
 src/prompt.rs     assemble the system prompt from fragments
-bin/              the CLIs the agent gets: search, recall, browse, stats
+bin/              the CLIs the agent gets: browse, gen-image, recall, stats
+web/              the browser frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
 prompts/          system prompt fragments, baked into the image
 ```

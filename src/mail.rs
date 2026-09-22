@@ -52,6 +52,10 @@ impl Mail {
             .post(&self.endpoint)
             .set("Authorization", &format!("Bearer {}", self.key))
             .set("Content-Type", "application/json")
+            .set(
+                "User-Agent",
+                "jimmy (+https://github.com/3-lines-studio/jimmy)",
+            )
             .send_string(&body.to_string());
         match response {
             Ok(_) => Ok(()),

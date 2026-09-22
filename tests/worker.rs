@@ -4,6 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -157,6 +158,70 @@ fn resumes_a_turn_that_was_cut_short() {
         !chat.join("inflight").exists(),
         "el marcador quedó sin limpiar"
     );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Takes the turn of that chat the way another instance would: the same
+/// `inflight` file, locked until the returned handle goes away.
+fn hold_the_turn(chat: &Path) -> std::fs::File {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(chat.join("inflight"))
+        .unwrap();
+    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(taken, 0, "no pude tomar el turno");
+    file
+}
+
+#[test]
+fn a_resume_that_another_instance_owns_stays_quiet() {
+    let root = scratch("locked-resume");
+    let chat = root.join("chats/test");
+    std::fs::write(chat.join("transcript.jsonl"), "").unwrap();
+    let held = hold_the_turn(&chat);
+
+    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));
+    worker.send("{\"cmd\":\"resume\"}");
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\"}");
+    let events = worker.until_done();
+    let first = events.first().unwrap();
+    assert!(
+        first.contains("otra instancia"),
+        "el resume tenía que quedarse callado y el prompt avisar: {events:?}"
+    );
+    drop(worker);
+    drop(held);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
+    let root = scratch("locked-prompt");
+    let chat = root.join("chats/test");
+    let (base, served) = model_server(vec![answer_chunk("segundo")]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    let held = hold_the_turn(&chat);
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"primero\"}");
+    let refused = worker.until_done();
+    assert!(
+        refused.last().unwrap().contains("otra instancia"),
+        "{refused:?}"
+    );
+    drop(held);
+
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"segundo\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("segundo"), "{events:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1, "solo el segundo turno");
+    drop(worker);
+
+    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    assert!(!transcript.contains("primero"), "{transcript}");
+    assert!(transcript.contains("segundo"), "{transcript}");
+    assert!(!chat.join("inflight").exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
 

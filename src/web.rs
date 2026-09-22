@@ -28,6 +28,7 @@ const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
+const TOOL: &str = include_str!("../web/tool.js");
 
 pub struct Web {
     root: PathBuf,
@@ -106,6 +107,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/markdown.js") => {
             http::send_text(stream, 200, "text/javascript; charset=utf-8", MARKDOWN)
         }
+        ("GET", "/tool.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", TOOL),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -144,6 +146,7 @@ fn versioned(page: &str) -> String {
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
+        .replace("/tool.js", &format!("/tool.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
 }
@@ -243,7 +246,11 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     http::send_json(
         stream,
         200,
-        &serde_json::json!({ "user": user, "projects": projects }),
+        &serde_json::json!({
+            "user": user,
+            "workspace": web.workspace.display().to_string(),
+            "projects": projects,
+        }),
     )
 }
 
@@ -886,12 +893,21 @@ done
         assert!(markdown.starts_with("HTTP/1.1 200"), "{markdown}");
         assert!(markdown.contains("function markdown"), "{markdown}");
 
+        let tool = get(server.port, "/tool.js", None);
+        assert!(tool.starts_with("HTTP/1.1 200"), "{tool}");
+        assert!(tool.contains("function describeTool"), "{tool}");
+
         let cookie = login(server.port, "berti@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("<div id=\"panes\">"), "{page}");
         assert!(page.contains("/markdown.js?v="), "{page}");
+        assert!(page.contains("/tool.js?v="), "{page}");
         assert!(page.contains("/app.js?v="), "{page}");
+        assert!(
+            page.find("/tool.js?v=") < page.find("/app.js?v="),
+            "la app usa lo que define el tool: {page}"
+        );
         assert!(
             page.find("/markdown.js?v=") < page.find("/app.js?v="),
             "el markdown se carga antes que la app: {page}"
@@ -978,6 +994,7 @@ done
         assert!(state.contains("\"read_only\":true"), "{state}");
         assert!(state.contains("\"ken\""), "{state}");
         assert!(state.contains("\"berti\""), "{state}");
+        assert!(state.contains("\"workspace\""), "{state}");
 
         let logout = post(server.port, "/api/logout", "{}");
         assert!(logout.contains("Max-Age=0"), "{logout}");

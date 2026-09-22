@@ -310,6 +310,49 @@ fn a_tool_call_shows_up_as_events() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Two tool calls in one assistant message: they run in parallel and each
+/// result lands when it is ready, not in call order.
+fn parallel_tool_chunk(first: &str, second: &str) -> String {
+    let args = |command: &str| serde_json::json!({"command": command}).to_string();
+    let calls = serde_json::json!({
+        "choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "function": {"name": "bash", "arguments": args(first)}},
+            {"index": 1, "id": "call_2", "function": {"name": "bash", "arguments": args(second)}}
+        ]}}]
+    });
+    format!(
+        "data: {calls}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
+/// Whatever the order they finish in, the results stay with the call that
+/// asked for them: the provider rejects anything else.
+#[test]
+fn a_parallel_batch_lands_next_to_its_call() {
+    let root = scratch("batch");
+    let chat = root.join("chats/test");
+    let (base, _) = model_server(vec![
+        parallel_tool_chunk("sleep 2", "echo rapido"),
+        answer_chunk("listo"),
+    ]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"dos cosas\"}");
+    worker.until_done();
+    drop(worker);
+
+    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let roles: Vec<String> = transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|entry| Some(entry.get("message")?.get("Role")?.as_str()?.to_string()))
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "tool", "assistant"]);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn the_tools_run_in_the_project_the_conversation_belongs_to() {
     let root = scratch("cwd");

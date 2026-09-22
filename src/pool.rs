@@ -280,6 +280,18 @@ mod tests {
         }
     }
 
+    /// El olvido de un worker muerto pasa en el hilo que lee su salida, así que
+    /// hay que esperarlo.
+    fn eventually(mut ready: impl FnMut() -> bool) -> bool {
+        for _ in 0..200 {
+            if ready() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        ready()
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jimmy-pool-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -330,7 +342,7 @@ done
         assert!(pool
             .turn(&session, &conversation, Command::Resume, &mut |_| {})
             .is_err());
-        assert!(pool.workers.lock().unwrap().is_empty());
+        assert!(eventually(|| pool.workers.lock().unwrap().is_empty()));
         assert!(pool
             .turn(&session, &conversation, Command::Resume, &mut |_| {})
             .is_err());

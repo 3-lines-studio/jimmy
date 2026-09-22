@@ -317,11 +317,15 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
         &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
         &config.root,
         mail::Mail::from_env(),
+        env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
     );
     if auth.allowed().is_empty() {
         eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");
-    } else if auth.mail.is_none() {
-        eprintln!("jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM, el link se muestra en pantalla");
+    } else if auth.mail.is_none() && !auth.dev {
+        eprintln!(
+            "jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM nadie puede entrar; \
+             JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
+        );
     }
     let web = web::Web::new(
         config.root.clone(),

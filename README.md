@@ -112,6 +112,7 @@ appends a block. The tick picks it up without a restart.
 | `RESEND_API_KEY` | empty | Resend key that sends the link; empty shows the link on screen |
 | `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>` |
 | `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
+| `JIMMY_WEB_DEV` | empty | `1` returns the link in the response instead of mailing it; development and tests only |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
@@ -132,9 +133,9 @@ With `JIMMY_WEB_PORT` set, Jimmy also serves the same conversations the
 transports have, plus the ones created in the browser. There are no passwords:
 whoever is in `JIMMY_WEB_EMAILS` asks for a link, the link arrives by mail
 (Resend, with `RESEND_API_KEY` and `JIMMY_WEB_FROM`) and lasts fifteen minutes
-and one use. Without a key the link comes back on screen, which is how it works
-locally. Sessions live in `$JIMMY_ROOT/sessions.json`, so a redeploy does not log
-anyone out. Conversations that come from a transport show up read-only.
+and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
+the response instead, which is how it works locally and in the tests. Sessions
+live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
 
 ### Slack app
 

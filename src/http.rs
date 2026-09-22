@@ -117,7 +117,7 @@ pub fn respond(
 ) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n",
         reason(status),
         body.len()
     )?;

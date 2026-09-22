@@ -195,7 +195,7 @@ impl Agent {
         images: Vec<Image>,
         author: &str,
     ) -> Result<(), String> {
-        self.announce(session, text, author);
+        self.announce(session, text, &images, author);
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
         self.relay(
@@ -223,12 +223,13 @@ impl Agent {
 
     /// Deja el mensaje escrito en el log sin esperar turno: es lo que ven los
     /// demás apenas alguien aprieta enviar.
-    pub fn announce(&self, session: &Session, text: &str, author: &str) {
+    pub fn announce(&self, session: &Session, text: &str, images: &[Image], author: &str) {
         self.say(
             session,
             &Event::User {
                 text: text.to_string(),
                 author: author.to_string(),
+                images: attachments(&self.conversation(session).dir, images),
             },
         );
     }
@@ -913,6 +914,20 @@ fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
     }
 }
 
+/// Los adjuntos que el log guarda: el nombre de cada archivo subido a
+/// `uploads/` de la conversación, que es lo que la web puede servir después. Un
+/// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
+/// mostrar y se queda afuera.
+fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
+    let uploads = dir.join("uploads");
+    images
+        .iter()
+        .filter(|image| Path::new(&image.path).parent() == Some(uploads.as_path()))
+        .filter_map(|image| Path::new(&image.path).file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn drop_superseded_images(entries: &mut [Entry]) {
     let Some(last) = entries
         .iter()
@@ -1093,6 +1108,20 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(line).unwrap();
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_log_keeps_the_name_of_the_files_that_live_in_uploads() {
+        let dir = Path::new("/data/chats/web-1");
+        let uploaded = Image {
+            path: "/data/chats/web-1/uploads/17-foto.png".into(),
+            url: "data:image/png;base64,QUJD".into(),
+        };
+        let temporary = Image {
+            path: "/tmp/jimmy-image-17.png".into(),
+            url: "data:image/png;base64,QUJD".into(),
+        };
+        assert_eq!(attachments(dir, &[uploaded, temporary]), ["17-foto.png"]);
     }
 
     fn image(url: &str) -> Image {

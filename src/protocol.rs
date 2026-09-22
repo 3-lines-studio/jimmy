@@ -50,6 +50,10 @@ pub enum Event {
         text: String,
         #[serde(default)]
         author: String,
+        /// Los adjuntos que subió, como nombres de archivo en el `uploads/` de
+        /// la conversación. El contenido no va acá: lo sirve `/api/file`.
+        #[serde(default)]
+        images: Vec<String>,
     },
     /// Texto que va apareciendo mientras el modelo escribe. No se guarda: el
     /// mensaje terminado es el que queda en el log.

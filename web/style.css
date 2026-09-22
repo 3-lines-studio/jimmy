@@ -205,6 +205,26 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.project.toggle {
+  cursor: pointer;
+}
+
+.project.toggle:hover {
+  color: var(--text);
+}
+
+.project .caret {
+  transition: transform 120ms ease;
+}
+
+.group.collapsed .caret {
+  transform: rotate(-90deg);
+}
+
+.group.collapsed .conversation {
+  display: none;
+}
+
 .conversation {
   display: flex;
   align-items: center;

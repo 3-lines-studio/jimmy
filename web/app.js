@@ -4,6 +4,7 @@ let state = { projects: [] };
 const tabs = new Map();
 let activeId = null;
 let pending = new Map();
+const collapsed = new Set();
 
 const projectsEl = document.getElementById("projects");
 const tabsEl = document.getElementById("tabs");
@@ -83,8 +84,14 @@ async function refresh() {
 function renderSidebar() {
   projectsEl.replaceChildren();
   for (const project of state.projects) {
+    const group = document.createElement("div");
+    group.className = "group" + (collapsed.has(project.name) ? " collapsed" : "");
     const header = document.createElement("div");
-    header.className = "project";
+    header.className = "project toggle";
+    header.onclick = () => toggleProject(project.name);
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    caret.textContent = "▾";
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = project.name;
@@ -93,9 +100,12 @@ function renderSidebar() {
     remove.className = "icon-btn";
     remove.textContent = "×";
     remove.title = "quitar proyecto";
-    remove.onclick = () => deleteProject(project);
-    header.append(name, remove);
-    projectsEl.append(header);
+    remove.onclick = (event) => {
+      event.stopPropagation();
+      deleteProject(project);
+    };
+    header.append(caret, name, remove);
+    group.append(header);
 
     for (const conversation of project.conversations) {
       const item = document.createElement("div");
@@ -137,7 +147,7 @@ function renderSidebar() {
         openTab(conversation.key);
         closeSidebar();
       };
-      projectsEl.append(item);
+      group.append(item);
     }
 
     const create = document.createElement("div");
@@ -149,8 +159,15 @@ function renderSidebar() {
       if (made && made.key) openTab(made.key);
       closeSidebar();
     };
-    projectsEl.append(create);
+    group.append(create);
+    projectsEl.append(group);
   }
+}
+
+function toggleProject(name) {
+  if (collapsed.has(name)) collapsed.delete(name);
+  else collapsed.add(name);
+  renderSidebar();
 }
 
 function rename(title, conversation) {

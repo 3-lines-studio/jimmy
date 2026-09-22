@@ -41,6 +41,10 @@ pub enum Event {
     Typing {
         user: String,
     },
+    /// Alguien cortó el turno que estaba corriendo.
+    Stopped {
+        author: String,
+    },
     /// What the user sent. The parent writes this one, nobody else.
     User {
         text: String,

@@ -196,7 +196,7 @@ fn main() {
             }
             if event.stop {
                 eprintln!("jimmy: freno el turno de {}", event.session.key());
-                agent.cancel(&event.session.key());
+                agent.cancel(&event.session, &event.author);
                 continue;
             }
             let agent = agent.clone();

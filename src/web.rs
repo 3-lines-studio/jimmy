@@ -417,14 +417,17 @@ fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 }
 
 fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if web.user(request).is_none() {
+    let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
-    }
+    };
     let key = request.field("conversation").unwrap_or_default();
     if writable(web, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
-    web.agent.cancel(&key);
+    let Some(session) = crate::session_from_key(&key) else {
+        return http::send_error(stream, 400, "clave de conversación inválida");
+    };
+    web.agent.cancel(&session, &user);
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
@@ -1116,6 +1119,18 @@ done
             Some(&cookie),
         );
         assert!(cancelled.starts_with("HTTP/1.1 200"), "{cancelled}");
+        let log = std::fs::read_to_string(
+            server
+                .root
+                .join("chats")
+                .join(&key)
+                .join("conversation.jsonl"),
+        )
+        .unwrap_or_default();
+        assert!(
+            log.contains("\"stopped\"") && log.contains("berti"),
+            "el log dice quién frenó: {log}"
+        );
 
         let unknown = post_with(
             server.port,

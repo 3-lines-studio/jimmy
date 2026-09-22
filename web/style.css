@@ -6,12 +6,12 @@
   --raised: #1c1c22;
   --hover: #1f1f26;
 
-  --line: #26262c;
-  --line-strong: #34343c;
+  --line: #2f2f37;
+  --line-strong: #6a6a76;
 
   --text: #ececf1;
   --muted: #9b9ba4;
-  --faint: #6c6c76;
+  --faint: #85858f;
 
   --accent: #8ab4ff;
   --ok: #4ade80;
@@ -70,7 +70,7 @@ pre,
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #232830 transparent;
+  scrollbar-color: #3a3a44 transparent;
 }
 
 ::-webkit-scrollbar {
@@ -79,14 +79,14 @@ pre,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #232830;
+  background: #3a3a44;
   background-clip: content-box;
   border: 3px solid transparent;
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #2e353f;
+  background: #4c4c58;
   background-clip: content-box;
 }
 
@@ -336,6 +336,10 @@ textarea:focus {
 
 .icon-btn:hover {
   background: transparent;
+  color: var(--text);
+}
+
+.icon-btn.danger:hover {
   color: var(--err);
 }
 
@@ -556,7 +560,7 @@ main {
 .event.assistant {
   font-size: 14.5px;
   line-height: 1.65;
-  color: #e3e3e8;
+  color: var(--text);
 }
 
 .event.assistant :where(p, ul, ol, pre, blockquote) {
@@ -696,9 +700,9 @@ main {
 
 mark {
   padding: 0 1px;
-  background: rgba(106, 162, 255, 0.28);
+  background: rgba(106, 162, 255, 0.22);
   border-radius: 3px;
-  color: inherit;
+  color: var(--text);
 }
 
 /* Pasos del turno, plegados en una línea */
@@ -878,7 +882,7 @@ mark {
 /* Highlight de sintaxis */
 
 .tok-comment {
-  color: #5f6873;
+  color: var(--faint);
   font-style: italic;
 }
 
@@ -1045,6 +1049,22 @@ mark {
   display: none;
 }
 
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  z-index: 30;
+  max-width: min(90vw, 480px);
+  padding: var(--s2) var(--s3);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  transform: translateX(-50%);
+}
+
 /* Mobile */
 
 @media (max-width: 760px) {
@@ -1083,5 +1103,9 @@ mark {
 
   #composer {
     padding: var(--s2) var(--s2) var(--s3);
+  }
+
+  #toast {
+    bottom: 96px;
   }
 }

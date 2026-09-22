@@ -19,6 +19,8 @@ const PATHS = {
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   logout:
     '<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   clip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
@@ -88,6 +90,7 @@ const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 document.getElementById("menu").append(icon("menu", 18));
 document.querySelector("#sidebar-search .field").prepend(icon("search", 15));
 const themeEl = document.getElementById("theme");
+const themeColor = document.querySelector('meta[name="theme-color"]');
 const sunEl = icon("sun", 18);
 const moonEl = icon("moon", 18);
 sunEl.classList.add("sun");
@@ -835,9 +838,51 @@ function renderAssistant(tab, event) {
   }
   tab.live.classList.remove("streaming");
   tab.live.innerHTML = markdown(event.text);
+  decorate(tab.live, event.text);
   tab.live = null;
   tab.steps = null;
   scroll(tab);
+}
+
+function decorate(element, text) {
+  if (!text.trim()) return;
+  for (const pre of element.querySelectorAll("pre")) {
+    const code = pre.textContent;
+    const box = document.createElement("div");
+    box.className = "code";
+    pre.replaceWith(box);
+    box.append(pre, copyButton(code, "copiar el código"));
+  }
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(copyButton(text, "copiar el mensaje"));
+  element.append(actions);
+}
+
+function copyButton(text, label) {
+  const button = document.createElement("button");
+  button.className = "copy";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  const idle = icon("copy", 14);
+  idle.classList.add("idle");
+  const done = icon("check", 14);
+  done.classList.add("done");
+  button.append(idle, done);
+  button.onclick = () => copyText(button, text);
+  return button;
+}
+
+async function copyText(button, text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    notify("no pude copiar");
+    return;
+  }
+  button.classList.add("copied");
+  clearTimeout(button.timer);
+  button.timer = setTimeout(() => button.classList.remove("copied"), 1500);
 }
 
 function renderError(tab, event) {
@@ -1198,6 +1243,7 @@ function showTheme() {
   const title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
   themeEl.title = title;
   themeEl.setAttribute("aria-label", title);
+  themeColor.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
 }
 
 themeEl.onclick = () => {

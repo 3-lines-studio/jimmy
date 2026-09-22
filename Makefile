@@ -14,4 +14,5 @@ lint:
 	cargo +nightly clippy -- -D warnings
 
 test:
+	node --test web/
 	cargo +nightly test

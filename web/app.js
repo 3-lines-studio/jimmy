@@ -90,14 +90,10 @@ themeEl.append(sunEl, moonEl);
 document.getElementById("attach").append(icon("clip", 17));
 document.querySelector("#composer .send").append(icon("up", 17));
 
-async function api(path, body) {
+async function request(path, options) {
   let response;
   try {
-    response = await fetch(path, {
-      method: body === undefined ? "GET" : "POST",
-      headers: body === undefined ? {} : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    response = await fetch(path, options);
   } catch {
     notify("no hay conexión con jimmy");
     return null;
@@ -112,6 +108,14 @@ async function api(path, body) {
     return null;
   }
   return data;
+}
+
+function api(path, body) {
+  return request(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 }
 
 let toastTimer = null;
@@ -701,16 +705,37 @@ function append(tab, element) {
 function renderUser(tab, event) {
   const element = document.createElement("div");
   element.className = "event user";
-  element.textContent = event.text;
+  if (event.text) element.textContent = event.text;
   if (event.author) {
     const author = document.createElement("div");
     author.className = "author";
     author.textContent = event.author;
     element.prepend(author);
   }
+  if (event.images && event.images.length) {
+    element.append(renderThumbs(tab, event.images));
+  }
   append(tab, element);
   tab.live = null;
   tab.steps = null;
+}
+
+function renderThumbs(tab, images) {
+  const thumbs = document.createElement("div");
+  thumbs.className = "thumbs";
+  for (const name of images || []) {
+    const url = fileUrl(tab.id, name);
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = name;
+    link.append(img);
+    thumbs.append(link);
+  }
+  return thumbs;
 }
 
 function renderDelta(tab, event) {
@@ -1307,24 +1332,26 @@ function pendingFor(id) {
   return pending.get(id) || [];
 }
 
-function readImage(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
-  });
+function fileUrl(conversation, name) {
+  return `/api/file?conversation=${encodeURIComponent(conversation)}&name=${encodeURIComponent(name)}`;
+}
+
+async function uploadImage(conversation, file) {
+  const query = `conversation=${encodeURIComponent(conversation)}&name=${encodeURIComponent(file.name || "imagen")}`;
+  const uploaded = await request(`/api/upload?${query}`, { method: "POST", body: file });
+  return uploaded ? uploaded.name : "";
 }
 
 async function attachFiles(files) {
-  if (!activeId) return;
+  const conversation = activeId;
+  if (!conversation) return;
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
-    const url = await readImage(file);
-    if (!url) continue;
-    const list = pendingFor(activeId);
-    list.push({ name: file.name || "imagen", url });
-    pending.set(activeId, list);
+    const name = await uploadImage(conversation, file);
+    if (!name) continue;
+    const list = pendingFor(conversation);
+    list.push({ name, url: fileUrl(conversation, name) });
+    pending.set(conversation, list);
   }
   renderPending();
 }
@@ -1395,7 +1422,7 @@ composerEl.onsubmit = async (formEvent) => {
   const list = pendingFor(activeId);
   const text = inputEl.value.trim();
   if (!text && !list.length) return;
-  const images = list.map((item) => item.url);
+  const images = list.map((item) => item.name);
   const sent = await api("/api/send", { conversation: activeId, text, images });
   if (!sent || !sent.started) return;
   inputEl.value = "";

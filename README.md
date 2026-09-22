@@ -140,6 +140,12 @@ and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
 the response instead, which is how it works locally and in the tests. Sessions
 live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
 
+An image attached in the composer is uploaded as it is picked (10 MB per file) to
+`$JIMMY_ROOT/chats/<key>/uploads/`, and the message carries the file name, not
+the bytes: the log keeps the name and `GET /api/file` serves the file, so the
+image is still there after a reload and on another device. A message can be just
+an image, with no text.
+
 The page is quiet on purpose: the reply is the content, and what the agent did
 on the way is one folded line per run of steps — `6 pasos · 1m 51s` — which
 opens into the individual tool calls. A tool that fails opens its group and says

@@ -35,6 +35,9 @@ pub struct Web {
     auth: Auth,
 }
 
+/// Donde viven los adjuntos de una conversación, adentro de su carpeta de chat.
+const UPLOADS: &str = "uploads";
+
 impl Web {
     pub fn new(
         root: PathBuf,
@@ -112,6 +115,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/projects") => create_project(web, &request, stream),
         ("POST", "/api/rename") => rename(web, &request, stream),
         ("POST", "/api/send") => send(web, &request, stream),
+        ("POST", "/api/upload") => upload(web, &request, stream),
+        ("GET", "/api/file") => file(web, &request, stream),
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
@@ -431,34 +436,38 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
+/// Un adjunto no puede pesar más que una foto de Telegram.
+const MAX_UPLOAD: usize = 10 * 1024 * 1024;
+
 fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
     let key = request.field("conversation").unwrap_or_default();
     let text = request.field("text").unwrap_or_default();
-    if text.trim().is_empty() {
-        return http::send_error(stream, 400, "el mensaje está vacío");
-    }
     let Ok(conversation) = writable(web, &key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     };
+    let images = match read_attachments(&conversation, &request.list("images")) {
+        Ok(images) => images,
+        Err(error) => return http::send_error(stream, 400, &error),
+    };
+    if text.trim().is_empty() && images.is_empty() {
+        return http::send_error(stream, 400, "el mensaje está vacío");
+    }
     if conversation.title.is_none()
         || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
     {
-        let _ = conversations::rename(&web.root, &key, &title_from(&text));
+        let title = if text.trim().is_empty() {
+            "imagen".to_string()
+        } else {
+            title_from(&text)
+        };
+        let _ = conversations::rename(&web.root, &key, &title);
     }
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
-    let images: Vec<axe::Image> = request
-        .list("images")
-        .into_iter()
-        .map(|url| axe::Image {
-            path: String::new(),
-            url,
-        })
-        .collect();
 
     let web = web.clone();
     std::thread::spawn(move || {
@@ -467,6 +476,113 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         }
     });
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
+}
+
+/// Los adjuntos ya subidos, leídos del disco: el mensaje viaja con los bytes del
+/// archivo, no con su nombre.
+fn read_attachments(
+    conversation: &conversations::Conversation,
+    names: &[String],
+) -> Result<Vec<axe::Image>, String> {
+    let uploads = conversation.dir.join(UPLOADS);
+    names
+        .iter()
+        .map(|name| {
+            let name = safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
+            axe::image::attach(&uploads.join(name).display().to_string())
+        })
+        .collect()
+}
+
+/// Los bytes crudos del adjunto, con el nombre aparte en la query: el cuerpo es
+/// el archivo, no lo envuelve ningún JSON.
+fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.param("conversation").unwrap_or_default();
+    let Ok(conversation) = writable(web, key) else {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    };
+    if request.body.is_empty() {
+        return http::send_error(stream, 400, "el archivo está vacío");
+    }
+    if request.body.len() > MAX_UPLOAD {
+        return http::send_error(stream, 400, "ese archivo es muy grande");
+    }
+    let dir = conversation.dir.join(UPLOADS);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return http::send_error(stream, 500, &error.to_string());
+    }
+    let name = uploaded_name(request.param("name").unwrap_or_default());
+    if let Err(error) = std::fs::write(dir.join(&name), &request.body) {
+        return http::send_error(stream, 500, &error.to_string());
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "name": name }))
+}
+
+/// Un adjunto de la conversación. Cualquiera adentro puede mirarlo: es lo que
+/// hay en el chat.
+fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let key = request.param("conversation").unwrap_or_default();
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    let Some(name) = request.param("name").and_then(safe_name) else {
+        return http::send_error(stream, 400, "ese nombre no sirve");
+    };
+    let Ok(data) = std::fs::read(conversation.dir.join(UPLOADS).join(name)) else {
+        return http::send_error(stream, 404, "no está");
+    };
+    http::respond(stream, 200, content_type(name), &[], &data)
+}
+
+/// El nombre de un archivo subido: el cliente elige la parte legible y el sello
+/// de tiempo la hace única, así dos `foto.png` no se pisan.
+fn uploaded_name(name: &str) -> String {
+    let base: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    let base = base.trim_matches('.');
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or_default();
+    if base.is_empty() {
+        return format!("{stamp}-adjunto");
+    }
+    format!("{stamp}-{base}")
+}
+
+/// Lo que llega de la query es un nombre, y nada más: sin barras, sin `..` y sin
+/// nada que `join` pueda leer como un camino.
+fn safe_name(name: &str) -> Option<&str> {
+    let clean = !name.is_empty()
+        && name.len() <= 80
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    clean.then_some(name)
+}
+
+fn content_type(name: &str) -> &'static str {
+    match name.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -666,9 +782,10 @@ done
     }
 
     fn whole(mut stream: TcpStream) -> String {
-        let mut out = String::new();
-        stream.read_to_string(&mut out).unwrap();
-        out
+        let mut out = Vec::new();
+        stream.read_to_end(&mut out).unwrap();
+        // Un adjunto vuelve como bytes, y para mirar el encabezado alcanza.
+        String::from_utf8_lossy(&out).to_string()
     }
 
     fn get(port: u16, path: &str, cookie: Option<&str>) -> String {
@@ -696,6 +813,54 @@ done
         )
         .unwrap();
         whole(stream)
+    }
+
+    /// Un cuerpo crudo, como el que manda el navegador con el archivo adjunto.
+    fn post_bytes(port: u16, path: &str, body: &[u8], cookie: Option<&str>) -> String {
+        let mut stream = connect(port);
+        let cookie = cookie
+            .map(|c| format!("Cookie: {c}\r\n"))
+            .unwrap_or_default();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: jimmy\r\n{cookie}Content-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+        whole(stream)
+    }
+
+    fn body_in(response: &str) -> String {
+        response.split("\r\n\r\n").nth(1).unwrap().to_string()
+    }
+
+    fn json_in(response: &str) -> serde_json::Value {
+        serde_json::from_str(&body_in(response)).unwrap()
+    }
+
+    fn conversation(port: u16, cookie: &str) -> String {
+        let created = post_with(
+            port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(cookie),
+        );
+        assert!(created.starts_with("HTTP/1.1 200"), "{created}");
+        json_in(&created)["key"].as_str().unwrap().to_string()
+    }
+
+    /// El log lo escribe el hilo del turno, así que hay que esperarlo.
+    fn wait_for(root: &Path, key: &str, needle: &str) -> String {
+        let path = root.join("chats").join(key).join("conversation.jsonl");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if text.contains(needle) || std::time::Instant::now() > deadline {
+                return text;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
@@ -969,6 +1134,137 @@ done
             unauthenticated.starts_with("HTTP/1.1 401"),
             "{unauthenticated}"
         );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn an_image_goes_up_as_a_name_and_comes_back_whole() {
+        let server = start("upload");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let key = conversation(server.port, &cookie);
+
+        let png = b"\x89PNG\r\n\x1a\nlos bytes que sean";
+        let uploaded = post_bytes(
+            server.port,
+            &format!("/api/upload?conversation={key}&name=foto.png"),
+            png,
+            Some(&cookie),
+        );
+        assert!(uploaded.starts_with("HTTP/1.1 200"), "{uploaded}");
+        let name = json_in(&uploaded)["name"].as_str().unwrap().to_string();
+        assert!(name.ends_with("-foto.png"), "{name}");
+
+        let served = get(
+            server.port,
+            &format!("/api/file?conversation={key}&name={name}"),
+            Some(&cookie),
+        );
+        assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+        assert!(served.contains("Content-Type: image/png"), "{served}");
+        assert!(body_in(&served).ends_with("los bytes que sean"), "{served}");
+
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"","images":["{name}"]}}"#),
+            Some(&cookie),
+        );
+        assert!(
+            sent.starts_with("HTTP/1.1 202"),
+            "una foto sin texto es un mensaje: {sent}"
+        );
+
+        let log = wait_for(&server.root, &key, "\"done\"");
+        assert!(
+            log.contains(&format!("\"images\":[\"{name}\"]")),
+            "el log guarda el nombre y no los bytes: {log}"
+        );
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(
+            state.contains("\"title\":\"imagen\""),
+            "una conversación que arranca con una foto se llama por eso: {state}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn an_upload_only_touches_its_own_conversation() {
+        let server = start("traversal");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let key = conversation(server.port, &cookie);
+
+        let uploaded = post_bytes(
+            server.port,
+            &format!("/api/upload?conversation={key}&name=../../afuera.png"),
+            b"x",
+            Some(&cookie),
+        );
+        let name = json_in(&uploaded)["name"].as_str().unwrap().to_string();
+        assert!(!name.contains('/'), "{name}");
+        assert!(
+            server
+                .root
+                .join("chats")
+                .join(&key)
+                .join("uploads")
+                .join(&name)
+                .is_file(),
+            "el adjunto queda en su carpeta"
+        );
+        assert!(
+            !server.root.join("chats/afuera.png").exists(),
+            "y no un directorio más arriba"
+        );
+
+        let traversal = get(
+            server.port,
+            &format!("/api/file?conversation={key}&name=../../meta.json"),
+            Some(&cookie),
+        );
+        assert!(traversal.starts_with("HTTP/1.1 400"), "{traversal}");
+
+        let missing = get(
+            server.port,
+            &format!("/api/file?conversation={key}&name=16-no-esta.png"),
+            Some(&cookie),
+        );
+        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+
+        let anonymous = post_bytes(
+            server.port,
+            &format!("/api/upload?conversation={key}&name=a.png"),
+            b"x",
+            None,
+        );
+        assert!(anonymous.starts_with("HTTP/1.1 401"), "{anonymous}");
+
+        let readonly = post_bytes(
+            server.port,
+            "/api/upload?conversation=7469057930&name=a.png",
+            b"x",
+            Some(&cookie),
+        );
+        assert!(readonly.starts_with("HTTP/1.1 400"), "{readonly}");
+
+        let empty = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":""}}"#),
+            Some(&cookie),
+        );
+        assert!(
+            empty.starts_with("HTTP/1.1 400"),
+            "sin texto y sin adjuntos no hay mensaje: {empty}"
+        );
+
+        let unknown = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"mirá","images":["16-no-esta.png"]}}"#),
+            Some(&cookie),
+        );
+        assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
+
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

@@ -549,7 +549,6 @@ function startTool(tab, event) {
     const output = document.createElement("pre");
     body.append(output);
     entry.output = output;
-    details.open = true;
   }
   details.append(summary, body);
   append(tab, details);

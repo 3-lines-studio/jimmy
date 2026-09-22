@@ -23,6 +23,7 @@ Messages that start with a known command are handled before they reach the
 agent:
 
 - `/status` — context used vs. the window, model, commit, workspace.
+- `/compact` — summarize the context now, without waiting for the threshold.
 - `/clear` — archive this chat's transcript so the next message starts fresh.
 - `/help`, `/start` — list the commands.
 

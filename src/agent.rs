@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const OUTPUT_RESERVE: usize = 64 * 1024;
-const HELP: &str = "Comandos:\n/status — contexto usado y versión\n/clear — borrar el contexto de este chat\n/help — esto";
+const HELP: &str = "Comandos:\n/status — contexto usado y versión\n/compact — compactar el contexto ahora\n/clear — borrar el contexto de este chat\n/help — esto";
 const CONTEXT_OPTIONS: ContextOptions = ContextOptions {
     original_task: false,
     workspace_state: true,
@@ -192,6 +192,10 @@ impl Agent {
         self.relay(transport, session, protocol::Command::Resume)
     }
 
+    pub fn compact(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
+        self.relay(transport, session, protocol::Command::Compact)
+    }
+
     fn relay(
         &self,
         transport: &dyn Transport,
@@ -255,6 +259,36 @@ impl Agent {
         entries.push(entry);
 
         self.execute(transport, session, history, entries, Some(dir))
+    }
+
+    pub(crate) fn local_compact(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+    ) -> Result<(), String> {
+        let dir = self.conversation(session).dir;
+        let mut entries = load_entries(&dir);
+        let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
+        match compact(&provider, &self.model, &mut entries) {
+            Ok(_) => {
+                save_entries(&dir, &mut entries)?;
+                let before = entries
+                    .iter()
+                    .rev()
+                    .find_map(|entry| match entry {
+                        Entry::Compaction { tokens_before, .. } => Some(*tokens_before),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let report = format!("🧹 compactado: {}K tokens", before / 1000);
+                transport.answer(session, None, &report);
+            }
+            Err(e) if e == "nothing to summarize" => {
+                transport.answer(session, None, "🧹 no había nada que compactar");
+            }
+            Err(e) => transport.fail(session, None, &format!("⚠️ no pude compactar: {e}")),
+        }
+        Ok(())
     }
 
     pub(crate) fn local_resume(

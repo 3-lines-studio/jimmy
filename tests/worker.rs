@@ -185,6 +185,38 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
 }
 
 #[test]
+fn compacting_answers_with_what_it_summarized() {
+    let root = scratch("compact");
+    let chat = root.join("chats/test");
+    let (base, _) = model_server(vec![
+        answer_chunk("uno"),
+        answer_chunk("dos"),
+        answer_chunk("tres"),
+        answer_chunk("un resumen"),
+        answer_chunk("un resumen"),
+    ]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    for text in ["uno", "dos", "tres"] {
+        worker.send(&format!("{{\"cmd\":\"prompt\",\"text\":\"{text}\"}}"));
+        worker.until_done();
+    }
+    worker.send("{\"cmd\":\"compact\"}");
+    let events = worker.until_done();
+    let done = events.last().unwrap();
+    assert!(done.contains("\"done\""), "{done}");
+    assert!(done.contains("compactado"), "{done}");
+    drop(worker);
+
+    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    assert!(
+        transcript.contains("\"type\":\"compaction\""),
+        "{transcript}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn a_tool_call_shows_up_as_events() {
     let root = scratch("tool");
     let (base, served) = model_server(vec![tool_chunk("echo hola"), answer_chunk("listo")]);

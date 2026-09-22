@@ -12,6 +12,8 @@ pub enum Command {
         images: Vec<Image>,
     },
     Resume,
+    /// Compacta el contexto ahora, sin esperar al umbral.
+    Compact,
     /// Interrumpe el turno que esté corriendo, si hay alguno.
     Cancel,
     Shutdown,

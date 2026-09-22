@@ -121,8 +121,6 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Re
         run.last_date = date.clone();
         run.done = task.when.is_some();
         eprintln!("jimmy: agenda: corriendo {}", task.name);
-        let lock = crate::chat_lock(&session.key());
-        let _guard = lock.lock().unwrap();
         if let Err(e) = agent.run_task(transport, &session, &task.prompt) {
             transport.note(&session, &format!("⚠️ la tarea {} falló: {e}", task.name));
         }

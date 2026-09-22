@@ -328,7 +328,7 @@ done
             }
         }
         assert_eq!(pool.workers.lock().unwrap().len(), 1);
-        kill_all();
+        pool.kill("test");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

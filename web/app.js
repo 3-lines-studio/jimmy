@@ -69,11 +69,13 @@ const backdrop = document.getElementById("backdrop");
 const tabActionsEl = document.getElementById("tab-actions");
 const viewersEl = document.getElementById("viewers");
 const composerEl = document.getElementById("composer");
+const typingEl = document.getElementById("typing");
 const inputEl = document.getElementById("input");
 const searchEl = document.getElementById("search");
 const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
+const onlineEl = document.getElementById("online");
 const toastEl = document.getElementById("toast");
 const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 
@@ -609,6 +611,8 @@ function renderActions() {
   tabActionsEl.hidden = !tab;
   composerEl.hidden = !tab || isReadOnly(activeId);
   cancelEl.hidden = !tab || !isRunning(activeId);
+  typingEl.hidden = !tab || !tab.typingUser;
+  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} está escribiendo…`;
   if (tab)
     viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
 }
@@ -662,6 +666,16 @@ function render(tab, event) {
       tab.viewers = event.users;
       if (tab.id === activeId) renderActions();
       break;
+    case "typing":
+      if (event.user === state.user) break;
+      tab.typingUser = event.user;
+      clearTimeout(tab.typingTimer);
+      tab.typingTimer = setTimeout(() => {
+        tab.typingUser = "";
+        renderActions();
+      }, 4000);
+      if (tab.id === activeId) renderActions();
+      break;
     case "synced":
       tab.synced = true;
       if (tab.find) findIn(tab, tab.find);
@@ -685,6 +699,12 @@ function renderUser(tab, event) {
   const element = document.createElement("div");
   element.className = "event user";
   element.textContent = event.text;
+  if (event.author) {
+    const author = document.createElement("div");
+    author.className = "author";
+    author.textContent = event.author;
+    element.prepend(author);
+  }
   append(tab, element);
   tab.live = null;
   tab.steps = null;
@@ -1343,7 +1363,19 @@ function grow() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 240) + "px";
 }
 
-inputEl.addEventListener("input", grow);
+inputEl.addEventListener("input", () => {
+  grow();
+  sayTyping();
+});
+
+function sayTyping() {
+  const tab = activeId ? tabs.get(activeId) : null;
+  if (!tab || isReadOnly(activeId)) return;
+  const now = Date.now();
+  if (now - (tab.typingSent || 0) < 2000) return;
+  tab.typingSent = now;
+  api("/api/typing", { conversation: activeId });
+}
 
 composerEl.onsubmit = async (formEvent) => {
   formEvent.preventDefault();
@@ -1425,7 +1457,17 @@ function closeSidebar() {
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
 
+function watchOnline() {
+  const source = new EventSource("/api/online");
+  source.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    if (event.event === "online")
+      onlineEl.textContent = event.users.length > 1 ? event.users.join(", ") : "";
+  };
+}
+
 async function main() {
+  watchOnline();
   await refresh();
   setInterval(refresh, 3000);
 }

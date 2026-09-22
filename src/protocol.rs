@@ -30,9 +30,19 @@ pub enum Event {
     Presence {
         users: Vec<String>,
     },
+    /// Quién está conectado, mire lo que mire. También lo dice el bus.
+    Online {
+        users: Vec<String>,
+    },
+    /// Alguien está escribiendo en esta conversación. No se guarda.
+    Typing {
+        user: String,
+    },
     /// What the user sent. The parent writes this one, nobody else.
     User {
         text: String,
+        #[serde(default)]
+        author: String,
     },
     /// Texto que va apareciendo mientras el modelo escribe. No se guarda: el
     /// mensaje terminado es el que queda en el log.
@@ -64,4 +74,24 @@ pub enum Event {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_author_is_optional_in_the_log() {
+        let old: Event = serde_json::from_str(r#"{"event":"user","text":"hola"}"#).unwrap();
+        let Event::User { author, .. } = old else {
+            panic!("esperaba un mensaje")
+        };
+        assert!(author.is_empty());
+        let new: Event =
+            serde_json::from_str(r#"{"event":"user","text":"hola","author":"berti"}"#).unwrap();
+        let Event::User { author, .. } = new else {
+            panic!("esperaba un mensaje")
+        };
+        assert_eq!(author, "berti");
+    }
 }

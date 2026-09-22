@@ -194,6 +194,17 @@ textarea:focus {
   padding: var(--s3) var(--s3) var(--s1);
 }
 
+#online {
+  flex: none;
+  padding: var(--s2) var(--s4) 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#online:empty {
+  display: none;
+}
+
 #sidebar-search .field {
   display: flex;
   align-items: center;
@@ -626,6 +637,13 @@ main {
   white-space: pre-wrap;
 }
 
+.event.user .author {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .event.assistant {
   font-size: 14.5px;
   line-height: 1.65;
@@ -989,6 +1007,18 @@ mark {
   gap: var(--s2);
   flex: none;
   padding: var(--s3) var(--s4) var(--s4);
+}
+
+#typing {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+#typing[hidden] {
+  display: none;
 }
 
 #composer .box {

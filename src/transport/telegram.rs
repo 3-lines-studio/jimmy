@@ -82,6 +82,21 @@ struct User {
     id: i64,
     #[serde(default)]
     is_bot: bool,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    username: String,
+}
+
+/// El nombre que Telegram muestra en el chat, no el que usa para filtrar.
+fn author(from: &User) -> String {
+    if !from.first_name.is_empty() {
+        return from.first_name.clone();
+    }
+    if !from.username.is_empty() {
+        return format!("@{}", from.username);
+    }
+    from.id.to_string()
 }
 
 /// Where Telegram lives. Only a test harness changes it.
@@ -443,6 +458,7 @@ impl EventSource for Updates {
             events.push(Event {
                 session: Session::channel(message.chat.id.to_string()),
                 sender: from.map(|from| from.id.to_string()).unwrap_or_default(),
+                author: from.map(author).unwrap_or_default(),
                 is_bot: from.is_some_and(|from| from.is_bot),
                 stop: false,
                 text,
@@ -524,6 +540,7 @@ fn stop_event(callback: Callback) -> Option<Event> {
     Some(Event {
         session: Session::channel(message.chat.id.to_string()),
         sender: callback.from.id.to_string(),
+        author: author(&callback.from),
         is_bot: callback.from.is_bot,
         stop: true,
         text: String::new(),
@@ -557,6 +574,18 @@ mod tests {
         }"#;
         let callback: Callback = serde_json::from_str(raw).unwrap();
         assert!(stop_event(callback).is_none());
+    }
+
+    #[test]
+    fn the_author_is_the_name_telegram_shows() {
+        let named: User =
+            serde_json::from_str(r#"{"id": 1, "first_name": "Berti", "username": "bertilxi"}"#)
+                .unwrap();
+        assert_eq!(author(&named), "Berti");
+        let handle: User = serde_json::from_str(r#"{"id": 1, "username": "bertilxi"}"#).unwrap();
+        assert_eq!(author(&handle), "@bertilxi");
+        let bare: User = serde_json::from_str(r#"{"id": 1}"#).unwrap();
+        assert_eq!(author(&bare), "1");
     }
 
     #[test]

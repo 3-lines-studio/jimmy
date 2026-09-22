@@ -31,6 +31,8 @@ pub struct Msg(pub String);
 pub struct Event {
     pub session: Session,
     pub sender: String,
+    /// Cómo se llama el que escribió, para mostrar. Vacío si no se sabe.
+    pub author: String,
     pub is_bot: bool,
     /// El usuario apretó frenar: no es un mensaje, es una orden.
     pub stop: bool,

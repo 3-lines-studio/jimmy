@@ -360,16 +360,18 @@ fn event_from_payload(value: &Value) -> Option<Event> {
                 .to_string(),
         )
     };
+    let sender = event
+        .get("user")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     Some(Event {
         session: Session {
             channel: channel.to_string(),
             thread,
         },
-        sender: event
-            .get("user")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        author: sender.clone(),
+        sender,
         is_bot: false,
         stop: false,
         text,

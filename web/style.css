@@ -93,6 +93,14 @@ textarea {
 button,
 .tab,
 .conversation,
+.result,
+#attach {
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+
 :focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 1px;
@@ -160,7 +168,16 @@ textarea:focus {
   display: flex;
 }
 
+#sidebar-search {
+  padding: var(--s3) var(--s4);
+}
 
+#sidebar-search input,
+#project-name {
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--s3);
+}
 
 #projects {
   flex: 1;
@@ -301,6 +318,34 @@ textarea:focus {
   color: var(--text);
 }
 
+/* Resultados de búsqueda */
+
+#projects .result {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+#projects .result:hover {
+  background: var(--raised);
+}
+
+.result-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-snippet {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Main */
 
 main {
@@ -394,6 +439,11 @@ main {
   flex: none;
 }
 
+#viewers {
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
 
 #tab-actions button {
   height: 28px;
@@ -771,7 +821,22 @@ mark {
   border-color: var(--line-strong);
 }
 
+#attach {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  color: var(--faint);
+  cursor: pointer;
+}
 
+#attach:hover {
+  background: var(--hover);
+  color: var(--text);
+}
 
 #composer textarea {
   flex: 1;
@@ -799,7 +864,17 @@ mark {
   color: var(--accent);
 }
 
+#pending:not([hidden]) {
+  display: flex;
+}
 
+#pending {
+  flex-wrap: wrap;
+  gap: var(--s2);
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+}
 
 .thumb {
   position: relative;
@@ -845,112 +920,8 @@ mark {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
-/* Resultados de búsqueda */
-
-#projects .result {
-  padding: var(--s2) var(--s3);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-}
-
-#projects .result:hover {
-  background: var(--raised);
-}
-
-.result-empty {
-  padding: var(--s2) var(--s3);
-  color: var(--faint);
-  font-size: 12px;
-}
-
-/* Composer, adjuntos y quién mira */
-
-/* Resultados de búsqueda */
-
-#projects .result {
-  padding: var(--s2) var(--s3);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-}
-
-#projects .result:hover {
-  background: var(--raised);
-}
-
-.result-empty {
-  padding: var(--s2) var(--s3);
-  color: var(--faint);
-  font-size: 12px;
-}
-
-/* Composer, adjuntos y quién mira */
-
-#attach {
-  transition:
-    background-color 120ms ease,
-    color 120ms ease,
-    border-color 120ms ease;
-}
-
-#sidebar-search {
-  padding: var(--s3) var(--s4);
-}
-
-#sidebar-search input {
-  width: 100%;
-  height: 30px;
-  padding: 0 var(--s3);
-}
-
-.result-title {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.result-snippet {
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#viewers {
-  color: var(--faint);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-#attach {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-sm);
-  color: var(--faint);
-  cursor: pointer;
-}
-
-#attach:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-
-#pending:not([hidden]) {
-  display: flex;
-}
-
-#pending {
-  flex-wrap: wrap;
-  gap: var(--s2);
-  width: 100%;
-  max-width: var(--measure);
-  margin: 0 auto;
+#backdrop {
+  display: none;
 }
 
 /* Mobile */
@@ -965,11 +936,11 @@ mark {
     transition: transform 0.2s ease;
   }
 
-#sidebar.open {
+  #sidebar.open {
     transform: none;
   }
 
-#backdrop:not([hidden]) {
+  #backdrop:not([hidden]) {
     display: block;
     position: fixed;
     inset: 0;
@@ -977,3 +948,19 @@ mark {
     background: rgba(0, 0, 0, 0.5);
   }
 
+  #menu {
+    display: flex;
+  }
+
+  #tabs {
+    max-width: 56vw;
+  }
+
+  .transcript {
+    padding: var(--s4) var(--s3) var(--s5);
+  }
+
+  #composer {
+    padding: var(--s2) var(--s2) var(--s3);
+  }
+}

@@ -140,6 +140,11 @@ and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
 the response instead, which is how it works locally and in the tests. Sessions
 live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
 
+The page is dark and quiet on purpose: the reply is the content, and what the
+agent did on the way is one folded line per run of steps — `6 pasos · 1m 51s` —
+which opens into the individual tool calls. A tool that fails opens its group
+and says so in red.
+
 ### Slack app
 
 The `slack` transport uses Socket Mode, so no public URL is needed. In the app:

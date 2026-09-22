@@ -22,7 +22,7 @@
           <strong>Jimmy</strong>
           <div id="header-actions">
             <button id="theme"></button>
-            <form id="logout" method="post" action="/api/logout"><button>salir</button></form>
+            <form id="logout" method="post" action="/api/logout"><button aria-label="salir" title="salir"></button></form>
           </div>
         </header>
         <div id="online"></div>
@@ -32,10 +32,15 @@
           </div>
         </div>
         <nav id="projects"></nav>
-        <div id="sidebar-actions">
-          <input id="project-name" placeholder="nombre del proyecto" spellcheck="false" />
-          <button id="new-project">agregar proyecto</button>
-        </div>
+        <form id="new-project">
+          <input
+            id="project-name"
+            placeholder="nuevo proyecto"
+            aria-label="nuevo proyecto"
+            spellcheck="false"
+          />
+          <button aria-label="agregar proyecto" title="agregar proyecto"></button>
+        </form>
       </aside>
 
       <main>

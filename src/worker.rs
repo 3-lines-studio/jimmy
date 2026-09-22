@@ -7,6 +7,7 @@
 //! working directory and its own children. The parent talks to the chat, the
 //! worker talks to the model.
 
+use crate::agent::Inflight;
 use crate::protocol::{Command, Event};
 use crate::transport::{Msg, Session, Transport};
 use crate::Config;
@@ -40,20 +41,43 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     for command in incoming {
         pipe.begin_turn();
         cancel.store(false, Ordering::SeqCst);
+        if matches!(command, Command::Shutdown) {
+            break;
+        }
+        if matches!(command, Command::Cancel) {
+            continue;
+        }
+        let dir = agent.conversation(&session).dir;
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            pipe.fail(&session, None, &format!("⚠️ {e}"));
+            continue;
+        }
+        let turn = match Inflight::acquire(&dir) {
+            Ok(turn) => turn,
+            Err(e) if matches!(command, Command::Resume) => {
+                eprintln!("jimmy: no reanudo {chat}: {e}");
+                continue;
+            }
+            Err(e) => {
+                pipe.fail(
+                    &session,
+                    None,
+                    &format!("⚠️ {e}, probá de nuevo en un minuto"),
+                );
+                continue;
+            }
+        };
         let result = match command {
-            Command::Cancel => continue,
-            Command::Shutdown => break,
             Command::Prompt {
                 text,
                 images,
                 author,
             } => agent.local_prompt(pipe.as_ref(), &session, &text, images, &author),
-            Command::Resume => {
-                let dir = agent.conversation(&session).dir;
-                agent.local_resume(pipe.as_ref(), &session, &dir)
-            }
+            Command::Resume => agent.local_resume(pipe.as_ref(), &session, &dir),
             Command::Compact => agent.local_compact(pipe.as_ref(), &session),
+            Command::Cancel | Command::Shutdown => continue,
         };
+        drop(turn);
         if let Err(error) = result {
             if !pipe.answered() {
                 pipe.fail(&session, None, &format!("⚠️ {error}"));

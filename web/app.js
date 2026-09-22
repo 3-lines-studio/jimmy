@@ -1,4 +1,49 @@
-const ICON = { read: "▤", write: "✎", edit: "±", bash: "$", search: "⌕", fetch: "↓", browse: "◇" };
+const ICON = {
+  read: "file",
+  write: "file-plus",
+  edit: "pencil",
+  bash: "terminal",
+  search: "search",
+  fetch: "download",
+  browse: "globe",
+};
+const SVG_NS = "http://www.w3.org/2000/svg";
+const PATHS = {
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  pencil:
+    '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  clip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  "file-plus":
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/>',
+  download:
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  dot: '<circle cx="12" cy="12" r="3"/>',
+};
+
+function icon(name, size = 16) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = PATHS[name];
+  return svg;
+}
 const NOUN = {
   read: ["archivo", "archivos"],
   write: ["archivo", "archivos"],
@@ -31,6 +76,17 @@ const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
 const toastEl = document.getElementById("toast");
 const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
+
+document.getElementById("menu").append(icon("menu", 18));
+document.querySelector("#sidebar-search .field").prepend(icon("search", 15));
+const themeEl = document.getElementById("theme");
+const sunEl = icon("sun", 18);
+const moonEl = icon("moon", 18);
+sunEl.classList.add("sun");
+moonEl.classList.add("moon");
+themeEl.append(sunEl, moonEl);
+document.getElementById("attach").append(icon("clip", 17));
+document.querySelector("#composer .send").append(icon("up", 17));
 
 async function api(path, body) {
   let response;
@@ -133,13 +189,15 @@ function projectEl(project) {
   header.onclick = () => toggleProject(group.project.name);
   const caret = document.createElement("span");
   caret.className = "caret";
-  caret.textContent = "▾";
+  caret.append(icon("down", 14));
   group.name.className = "name";
-  const remove = iconButton("×", "quitar proyecto", () => deleteProject(group.project), "danger");
+  const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
   header.append(caret, group.name, remove);
   group.create = document.createElement("div");
   group.create.className = "conversation create";
-  group.create.textContent = "+ conversación";
+  const label = document.createElement("span");
+  label.textContent = "conversación";
+  group.create.append(icon("plus", 15), label);
   group.create.onclick = async () => {
     const made = await api("/api/conversations", { project: group.project.name });
     await refresh();
@@ -150,11 +208,12 @@ function projectEl(project) {
   return group;
 }
 
-function iconButton(label, title, action, kind = "") {
+function iconButton(name, title, action, kind = "") {
   const button = document.createElement("button");
   button.className = "icon-btn" + (kind ? " " + kind : "");
-  button.textContent = label;
+  button.append(icon(name, 15));
   button.title = title;
+  button.setAttribute("aria-label", title);
   button.onclick = (event) => {
     event.stopPropagation();
     action();
@@ -185,8 +244,8 @@ function conversationEl(conversation) {
       rename(item);
     };
     item.el.append(
-      iconButton("✎", "renombrar", () => rename(item)),
-      iconButton("×", "borrar conversación", () => deleteConversation(item.conversation), "danger"),
+      iconButton("pencil", "renombrar", () => rename(item)),
+      iconButton("close", "borrar conversación", () => deleteConversation(item.conversation), "danger"),
     );
   }
   return item;
@@ -526,8 +585,9 @@ function tabEl(tab) {
   item.title.className = "title";
   const close = document.createElement("button");
   close.className = "close";
-  close.textContent = "×";
+  close.append(icon("close", 15));
   close.title = "cerrar pestaña";
+  close.setAttribute("aria-label", "cerrar pestaña");
   close.onclick = (event) => {
     event.stopPropagation();
     closeTab(tab.id);
@@ -676,9 +736,9 @@ function startTool(tab, event) {
   details.dataset.tool = event.name;
   const summary = document.createElement("summary");
 
-  const icon = document.createElement("span");
-  icon.className = "icon";
-  icon.textContent = ICON[event.name] || "•";
+  const mark = document.createElement("span");
+  mark.className = "icon";
+  mark.append(icon(ICON[event.name] || "dot", 13));
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = event.name;
@@ -688,7 +748,7 @@ function startTool(tab, event) {
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = "…";
-  summary.append(icon, name, detail, meta);
+  summary.append(mark, name, detail, meta);
 
   const body = document.createElement("div");
   body.className = "body";
@@ -1259,7 +1319,8 @@ function renderPending() {
     img.src = item.url;
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "×";
+    remove.append(icon("close", 12));
+    remove.setAttribute("aria-label", "quitar adjunto");
     remove.onclick = () => {
       list.splice(index, 1);
       renderPending();
@@ -1331,13 +1392,13 @@ document.getElementById("new-project").onclick = async () => {
 
 /* Tema */
 
-const themeEl = document.getElementById("theme");
 const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
 function showTheme() {
   const dark = document.documentElement.dataset.theme !== "light";
-  themeEl.textContent = dark ? "☀" : "☾";
-  themeEl.title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
+  const title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
+  themeEl.title = title;
+  themeEl.setAttribute("aria-label", title);
 }
 
 themeEl.onclick = () => {

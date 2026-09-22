@@ -1177,4 +1177,76 @@ done
         assert!(live.starts_with("data: "), "{live}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
+
+    fn variable(css: &str, name: &str) -> String {
+        let prefix = format!("--{name}:");
+        css.lines()
+            .filter_map(|line| line.trim().strip_prefix(&prefix))
+            .map(|value| value.trim().trim_end_matches(';').to_string())
+            .next()
+            .unwrap_or_else(|| panic!("falta la variable --{name} en el css"))
+    }
+
+    fn channel(color: &str) -> f64 {
+        let value = u8::from_str_radix(color, 16).expect("color no hexadecimal") as f64 / 255.0;
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: &str) -> f64 {
+        let color = color.trim_start_matches('#');
+        assert_eq!(color.len(), 6, "esperaba un color de seis dígitos: {color}");
+        0.2126 * channel(&color[0..2])
+            + 0.7152 * channel(&color[2..4])
+            + 0.0722 * channel(&color[4..6])
+    }
+
+    fn contrast(one: &str, other: &str) -> f64 {
+        let (one, other) = (relative_luminance(one), relative_luminance(other));
+        let (high, low) = if one > other {
+            (one, other)
+        } else {
+            (other, one)
+        };
+        (high + 0.05) / (low + 0.05)
+    }
+
+    #[test]
+    fn the_dark_theme_keeps_its_text_readable() {
+        let css = STYLE;
+        let at = |name: &str| variable(css, name);
+        let (bg, panel, raised) = (at("bg"), at("panel"), at("raised"));
+        let (text, muted, faint) = (at("text"), at("muted"), at("faint"));
+        let (accent, ok, err) = (at("accent"), at("ok"), at("err"));
+        let line = at("line-strong");
+
+        let readable = [
+            ("text", &text),
+            ("muted", &muted),
+            ("faint", &faint),
+            ("accent", &accent),
+            ("ok", &ok),
+            ("err", &err),
+        ];
+        for (name, color) in readable {
+            for (fondo, base) in [("bg", &bg), ("panel", &panel), ("raised", &raised)] {
+                let ratio = contrast(color, base);
+                assert!(
+                    ratio >= 4.5,
+                    "{name} sobre {fondo} da {ratio:.2}, por debajo de 4.5:1 de AA"
+                );
+            }
+        }
+
+        for (fondo, base) in [("bg", &bg), ("panel", &panel)] {
+            let ratio = contrast(&line, base);
+            assert!(
+                ratio >= 3.0,
+                "el borde de los campos (#{line}) sobre {fondo} da {ratio:.2}, por debajo de 3:1"
+            );
+        }
+    }
 }

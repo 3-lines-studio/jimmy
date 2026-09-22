@@ -1339,9 +1339,9 @@ done
 
         let seen: Vec<String> = live
             .iter()
-            .take(4)
+            .take(5)
             .map(|event| serde_json::to_string(&event).unwrap())
-            .filter(|line| !line.contains("\"presence\""))
+            .filter(|line| !line.contains("\"presence\"") && !line.contains("\"online\""))
             .collect();
         assert!(seen[0].contains("\"user\""), "{seen:?}");
         assert!(seen[0].contains("hola"), "{seen:?}");

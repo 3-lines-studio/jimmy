@@ -1263,18 +1263,36 @@ showTheme();
 
 /* Sidebar drawer */
 
-function openSidebar() {
-  sidebar.classList.add("open");
-  backdrop.hidden = false;
-}
+let drawerInHistory = false;
 
-function closeSidebar() {
+function hideSidebar() {
   sidebar.classList.remove("open");
   backdrop.hidden = true;
 }
 
+function openSidebar() {
+  sidebar.classList.add("open");
+  backdrop.hidden = false;
+  if (drawerInHistory) return;
+  history.pushState({ drawer: true }, "", location.href);
+  drawerInHistory = true;
+}
+
+function closeSidebar() {
+  hideSidebar();
+  if (!drawerInHistory) return;
+  drawerInHistory = false;
+  history.back();
+}
+
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
+
+addEventListener("popstate", () => {
+  if (!drawerInHistory) return;
+  drawerInHistory = false;
+  hideSidebar();
+});
 
 addEventListener("hashchange", () => {
   const id = decodeURIComponent(location.hash.slice(1));

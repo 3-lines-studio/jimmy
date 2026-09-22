@@ -177,6 +177,7 @@ impl Agent {
         session: &Session,
         text: &str,
         images: Vec<Image>,
+        author: &str,
     ) -> Result<(), String> {
         self.relay(
             transport,
@@ -185,15 +186,16 @@ impl Agent {
                 text: text.to_string(),
                 images,
             },
+            author,
         )
     }
 
     pub fn resume(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
-        self.relay(transport, session, protocol::Command::Resume)
+        self.relay(transport, session, protocol::Command::Resume, "")
     }
 
     pub fn compact(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
-        self.relay(transport, session, protocol::Command::Compact)
+        self.relay(transport, session, protocol::Command::Compact, "")
     }
 
     fn relay(
@@ -201,6 +203,7 @@ impl Agent {
         transport: &dyn Transport,
         session: &Session,
         command: protocol::Command,
+        author: &str,
     ) -> Result<(), String> {
         let status = transport.progress(session);
         let mut live = Live::new(transport, session, status);
@@ -208,8 +211,14 @@ impl Agent {
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
         if let protocol::Command::Prompt { text, .. } = &command {
-            self.bus
-                .publish(&conversation.key, &log, &Event::User { text: text.clone() });
+            self.bus.publish(
+                &conversation.key,
+                &log,
+                &Event::User {
+                    text: text.clone(),
+                    author: author.to_string(),
+                },
+            );
         }
         let turn = self
             .pool
@@ -1207,7 +1216,7 @@ done
         ));
         let fake = Fake::default();
         agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
             .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
@@ -1244,7 +1253,7 @@ done
         let (_backlog, live) = agent.bus().attach("x", &log, "berti");
         let fake = Fake::default();
         agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
             .unwrap();
 
         let seen: Vec<String> = live
@@ -1255,6 +1264,7 @@ done
             .collect();
         assert!(seen[0].contains("\"user\""), "{seen:?}");
         assert!(seen[0].contains("hola"), "{seen:?}");
+        assert!(seen[0].contains("berti"), "{seen:?}");
         assert!(seen[1].contains("\"assistant\""), "{seen:?}");
         assert!(seen[2].contains("\"done\""), "{seen:?}");
         std::fs::remove_dir_all(&root).unwrap();
@@ -1266,7 +1276,7 @@ done
         agent.use_worker_exe(worker_script("dead.sh", "exit 0\n"));
         let fake = Fake::default();
         assert!(agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new())
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
             .is_err());
         let failures = fake.failures.lock().unwrap();
         assert_eq!(failures.len(), 1);

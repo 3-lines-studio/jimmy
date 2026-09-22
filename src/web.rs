@@ -426,9 +426,9 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 }
 
 fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if web.user(request).is_none() {
+    let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
-    }
+    };
     let key = request.field("conversation").unwrap_or_default();
     let text = request.field("text").unwrap_or_default();
     if text.trim().is_empty() {
@@ -458,7 +458,7 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     std::thread::spawn(move || {
         let lock = crate::chat_lock(&session.key());
         let _guard = lock.lock().unwrap();
-        if let Err(error) = web.agent.respond(&Silent, &session, &text, images) {
+        if let Err(error) = web.agent.respond(&Silent, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
     });
@@ -878,6 +878,10 @@ done
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
+        assert!(
+            text.contains("\"author\":\"berti\""),
+            "el mensaje dice quién lo mandó: {text}"
+        );
         assert!(text.contains("\"done\""), "{text}");
 
         let fresh = post_with(

@@ -685,6 +685,12 @@ function renderUser(tab, event) {
   const element = document.createElement("div");
   element.className = "event user";
   element.textContent = event.text;
+  if (event.author) {
+    const author = document.createElement("div");
+    author.className = "author";
+    author.textContent = event.author;
+    element.prepend(author);
+  }
   append(tab, element);
   tab.live = null;
   tab.steps = null;

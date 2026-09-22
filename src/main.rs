@@ -206,6 +206,7 @@ fn main() {
             std::thread::spawn(move || {
                 let Event {
                     session,
+                    author,
                     text,
                     image,
                     voice,
@@ -254,7 +255,8 @@ fn main() {
                     },
                     None => Vec::new(),
                 };
-                if let Err(e) = agent.respond(transport.as_ref(), &session, &text, images) {
+                if let Err(e) = agent.respond(transport.as_ref(), &session, &text, images, &author)
+                {
                     eprintln!("jimmy: {} falló: {e}", session.channel);
                 }
             });

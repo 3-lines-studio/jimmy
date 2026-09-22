@@ -626,6 +626,13 @@ main {
   white-space: pre-wrap;
 }
 
+.event.user .author {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .event.assistant {
   font-size: 14.5px;
   line-height: 1.65;

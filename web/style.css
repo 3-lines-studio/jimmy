@@ -738,6 +738,7 @@ main {
 
 .event.assistant .actions {
   display: flex;
+  justify-content: flex-end;
   gap: var(--s1);
   margin-top: var(--s2);
 }
@@ -1431,5 +1432,15 @@ mark {
   #composer .send {
     width: 36px;
     height: 36px;
+  }
+
+  .thumb button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .thumb button svg {
+    width: 15px;
+    height: 15px;
   }
 }

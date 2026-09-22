@@ -456,8 +456,6 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
     let web = web.clone();
     std::thread::spawn(move || {
-        let lock = crate::chat_lock(&session.key());
-        let _guard = lock.lock().unwrap();
         if let Err(error) = web.agent.respond(&Silent, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }

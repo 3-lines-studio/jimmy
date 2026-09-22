@@ -8,10 +8,11 @@ use crate::worker::Pipe;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const OUTPUT_RESERVE: usize = 64 * 1024;
@@ -34,6 +35,8 @@ pub struct Agent {
     context: String,
     pool: Arc<Pool>,
     bus: Arc<Bus>,
+    /// Un candado por conversación: un turno a la vez, el que llega espera.
+    turns: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pipe: Option<Arc<Pipe>>,
     cancel: Arc<AtomicBool>,
 }
@@ -66,6 +69,7 @@ impl Agent {
             context,
             pool,
             bus: Bus::new(),
+            turns: Arc::new(Mutex::new(HashMap::new())),
             pipe: None,
             cancel: Arc::new(AtomicBool::new(false)),
         }
@@ -171,6 +175,9 @@ impl Agent {
     }
 
     /// Hand the turn to this conversation's worker and relay what it answers.
+    ///
+    /// El mensaje queda en el log antes de esperar el turno, así que el que
+    /// mira lo ve aunque el turno anterior siga corriendo.
     pub fn respond(
         &self,
         transport: &dyn Transport,
@@ -179,6 +186,9 @@ impl Agent {
         images: Vec<Image>,
         author: &str,
     ) -> Result<(), String> {
+        self.announce(session, text, author);
+        let turn = self.wait_turn(session);
+        let _guard = turn.lock().unwrap();
         self.relay(
             transport,
             session,
@@ -186,16 +196,45 @@ impl Agent {
                 text: text.to_string(),
                 images,
             },
-            author,
         )
     }
 
     pub fn resume(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
-        self.relay(transport, session, protocol::Command::Resume, "")
+        let turn = self.wait_turn(session);
+        let _guard = turn.lock().unwrap();
+        self.relay(transport, session, protocol::Command::Resume)
     }
 
     pub fn compact(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
-        self.relay(transport, session, protocol::Command::Compact, "")
+        let turn = self.wait_turn(session);
+        let _guard = turn.lock().unwrap();
+        self.relay(transport, session, protocol::Command::Compact)
+    }
+
+    /// Deja el mensaje escrito en el log sin esperar turno: es lo que ven los
+    /// demás apenas alguien aprieta enviar.
+    pub fn announce(&self, session: &Session, text: &str, author: &str) {
+        let conversation = self.conversation(session);
+        let _ = std::fs::create_dir_all(&conversation.dir);
+        let log = Log::in_dir(&conversation.dir);
+        self.bus.publish(
+            &conversation.key,
+            &log,
+            &Event::User {
+                text: text.to_string(),
+                author: author.to_string(),
+            },
+        );
+    }
+
+    /// Un turno por conversación: el que llega segundo espera.
+    fn wait_turn(&self, session: &Session) -> Arc<Mutex<()>> {
+        self.turns
+            .lock()
+            .unwrap()
+            .entry(session.key())
+            .or_default()
+            .clone()
     }
 
     fn relay(
@@ -203,23 +242,12 @@ impl Agent {
         transport: &dyn Transport,
         session: &Session,
         command: protocol::Command,
-        author: &str,
     ) -> Result<(), String> {
         let status = transport.progress(session);
         let mut live = Live::new(transport, session, status);
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
-        if let protocol::Command::Prompt { text, .. } = &command {
-            self.bus.publish(
-                &conversation.key,
-                &log,
-                &Event::User {
-                    text: text.clone(),
-                    author: author.to_string(),
-                },
-            );
-        }
         let turn = self
             .pool
             .turn(session, &conversation, command, &mut |event| {
@@ -336,6 +364,8 @@ impl Agent {
         session: &Session,
         prompt: &str,
     ) -> Result<(), String> {
+        let turn = self.wait_turn(session);
+        let _guard = turn.lock().unwrap();
         let user = Message {
             role: "user".into(),
             content: prompt.to_string(),
@@ -476,6 +506,8 @@ impl Agent {
         }
     }
     pub fn command(&self, session: &Session, text: &str) -> Option<String> {
+        let turn = self.wait_turn(session);
+        let _guard = turn.lock().unwrap();
         match text.split_whitespace().next()? {
             "/start" | "/help" => Some(HELP.into()),
             "/status" => Some(self.status(session)),
@@ -1232,6 +1264,55 @@ done
         assert!(lines[2].contains("\"tool_start\""), "{log}");
         assert!(lines[3].contains("\"tool_result\""), "{log}");
         assert!(lines[4].contains("\"done\""), "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_message_shows_up_before_the_turn_ends() {
+        let root = resume_dir("announce");
+        let go = root.join("go");
+        let mut agent = agent_in(&root);
+        agent.use_worker_exe(worker_script(
+            "slow.sh",
+            &format!(
+                "echo '{{\"event\":\"ready\"}}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  while [ ! -f {} ]; do sleep 0.05; done
+  echo '{{\"event\":\"done\",\"text\":\"eco\"}}'
+done
+",
+                go.display()
+            ),
+        ));
+        let log = root.join("chats/x/conversation.jsonl");
+        let running = agent.clone();
+        let handle = std::thread::spawn(move || {
+            running
+                .respond(
+                    &Fake::default(),
+                    &Session::channel("x"),
+                    "hola",
+                    Vec::new(),
+                    "ana",
+                )
+                .unwrap();
+        });
+        let mut text = String::new();
+        for _ in 0..400 {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("\"user\"") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(text.contains("\"author\":\"ana\""), "{text}");
+        assert!(!text.contains("\"done\""), "el turno sigue: {text}");
+
+        std::fs::write(&go, "anda").unwrap();
+        handle.join().unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("\"done\""), "{text}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

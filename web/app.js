@@ -28,6 +28,8 @@ const PATHS = {
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
+  folder:
+    '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
 };
 
 function icon(name, size = 16) {
@@ -861,7 +863,14 @@ function startTool(tab, event) {
   name.textContent = event.name;
   const detail = document.createElement("span");
   detail.className = "detail";
-  detail.textContent = toolDetail(event.name, event.args);
+  const described = describeTool(event.name, event.args, state.workspace);
+  if (described.dir) {
+    const dir = document.createElement("span");
+    dir.className = "dir";
+    dir.append(icon("folder", 12), document.createTextNode(described.dir));
+    detail.append(dir);
+  }
+  detail.append(described.text);
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = "…";
@@ -984,25 +993,6 @@ function finishTool(tab, event) {
     }
   }
   scroll(tab);
-}
-
-function toolDetail(name, raw) {
-  const args = parseArgs(raw);
-  if (!args) return raw;
-  if (name === "bash") return args.command || "";
-  if (name === "read" || name === "write" || name === "edit") return args.path || "";
-  if (name === "search") return args.query || "";
-  if (name === "fetch") return args.url || "";
-  if (name === "browse") return args.url || `${(args.steps || []).length} pasos`;
-  return JSON.stringify(args);
-}
-
-function parseArgs(raw) {
-  try {
-    return JSON.parse(raw || "{}");
-  } catch {
-    return null;
-  }
 }
 
 function diffNodes(raw) {

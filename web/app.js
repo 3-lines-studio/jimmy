@@ -123,9 +123,11 @@ function projectEl(project) {
     el: document.createElement("div"),
     project,
     name: document.createElement("span"),
+    list: document.createElement("div"),
     conversations: new Map(),
   };
   group.el.className = "group";
+  group.list.className = "threads";
   const header = document.createElement("div");
   header.className = "project toggle";
   header.onclick = () => toggleProject(group.project.name);
@@ -144,7 +146,7 @@ function projectEl(project) {
     if (made && made.key) openTab(made.key);
     closeSidebar();
   };
-  group.el.append(header);
+  group.el.append(header, group.list);
   return group;
 }
 
@@ -233,7 +235,7 @@ function renderSidebar() {
         group.conversations.set(conversation.key, item);
       }
       refreshConversation(item, conversation);
-      place(group.el, item.el, lastItem);
+      place(group.list, item.el, lastItem);
       lastItem = item.el;
     }
     for (const [key, item] of group.conversations) {
@@ -241,7 +243,7 @@ function renderSidebar() {
       item.el.remove();
       group.conversations.delete(key);
     }
-    place(group.el, group.create, lastItem);
+    place(group.list, group.create, lastItem);
     place(projectsEl, group.el, lastGroup);
     lastGroup = group.el;
   }

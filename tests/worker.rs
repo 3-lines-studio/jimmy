@@ -4,6 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -160,6 +161,70 @@ fn resumes_a_turn_that_was_cut_short() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Takes the turn of that chat the way another instance would: the same
+/// `inflight` file, locked until the returned handle goes away.
+fn hold_the_turn(chat: &Path) -> std::fs::File {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(chat.join("inflight"))
+        .unwrap();
+    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(taken, 0, "no pude tomar el turno");
+    file
+}
+
+#[test]
+fn a_resume_that_another_instance_owns_stays_quiet() {
+    let root = scratch("locked-resume");
+    let chat = root.join("chats/test");
+    std::fs::write(chat.join("transcript.jsonl"), "").unwrap();
+    let held = hold_the_turn(&chat);
+
+    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));
+    worker.send("{\"cmd\":\"resume\"}");
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\"}");
+    let events = worker.until_done();
+    let first = events.first().unwrap();
+    assert!(
+        first.contains("otra instancia"),
+        "el resume tenía que quedarse callado y el prompt avisar: {events:?}"
+    );
+    drop(worker);
+    drop(held);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
+    let root = scratch("locked-prompt");
+    let chat = root.join("chats/test");
+    let (base, served) = model_server(vec![answer_chunk("segundo")]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    let held = hold_the_turn(&chat);
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"primero\"}");
+    let refused = worker.until_done();
+    assert!(
+        refused.last().unwrap().contains("otra instancia"),
+        "{refused:?}"
+    );
+    drop(held);
+
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"segundo\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("segundo"), "{events:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1, "solo el segundo turno");
+    drop(worker);
+
+    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    assert!(!transcript.contains("primero"), "{transcript}");
+    assert!(transcript.contains("segundo"), "{transcript}");
+    assert!(!chat.join("inflight").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     let root = scratch("prompt");
@@ -242,6 +307,49 @@ fn a_tool_call_shows_up_as_events() {
     let done = events.last().unwrap();
     assert!(done.contains("\"done\""), "{done}");
     assert!(done.contains("listo"), "{done}");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Two tool calls in one assistant message: they run in parallel and each
+/// result lands when it is ready, not in call order.
+fn parallel_tool_chunk(first: &str, second: &str) -> String {
+    let args = |command: &str| serde_json::json!({"command": command}).to_string();
+    let calls = serde_json::json!({
+        "choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "function": {"name": "bash", "arguments": args(first)}},
+            {"index": 1, "id": "call_2", "function": {"name": "bash", "arguments": args(second)}}
+        ]}}]
+    });
+    format!(
+        "data: {calls}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
+/// Whatever the order they finish in, the results stay with the call that
+/// asked for them: the provider rejects anything else.
+#[test]
+fn a_parallel_batch_lands_next_to_its_call() {
+    let root = scratch("batch");
+    let chat = root.join("chats/test");
+    let (base, _) = model_server(vec![
+        parallel_tool_chunk("sleep 2", "echo rapido"),
+        answer_chunk("listo"),
+    ]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"dos cosas\"}");
+    worker.until_done();
+    drop(worker);
+
+    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let roles: Vec<String> = transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|entry| Some(entry.get("message")?.get("Role")?.as_str()?.to_string()))
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "tool", "assistant"]);
     std::fs::remove_dir_all(&root).unwrap();
 }
 

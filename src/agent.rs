@@ -11,6 +11,7 @@ use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
 use std::collections::HashMap;
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -416,7 +417,6 @@ impl Agent {
         mut entries: Vec<Entry>,
         dir: Option<PathBuf>,
     ) -> Result<(), String> {
-        let _inflight = dir.as_ref().map(|d| Inflight::new(d));
         let mut tools = axe::tui::build_tools(&self.cwd);
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
@@ -732,19 +732,36 @@ struct EventSink {
     pipe: Option<Arc<Pipe>>,
 }
 
-struct Inflight(PathBuf);
+pub(crate) struct Inflight {
+    path: PathBuf,
+    _file: std::fs::File,
+}
 
 impl Inflight {
-    fn new(dir: &Path) -> Self {
+    /// Toma el turno de esta conversación: mientras este guard viva, ningún
+    /// otro proceso escribe el transcript. El marcador que ya existía es el
+    /// mismo archivo; lo que suma es el lock, que ningún deploy ve, así que
+    /// una instancia que arranca no reanuda un turno que la otra está
+    /// corriendo.
+    pub(crate) fn acquire(dir: &Path) -> Result<Self, String> {
         let path = dir.join("inflight");
-        let _ = std::fs::write(&path, b"");
-        Self(path)
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if taken != 0 {
+            return Err("el chat lo está corriendo otra instancia".into());
+        }
+        Ok(Self { path, _file: file })
     }
 }
 
 impl Drop for Inflight {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 

@@ -39,7 +39,6 @@ BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
 say "preparo el root"
 mkdir -p "$WORK/root/prompts" "$WORK/root/workspace/projects/ken"
 echo "sos jimmy, un ayudante." >"$WORK/root/prompts/jimmy.md"
-echo 'clave' | JIMMY_ROOT="$WORK/root" "$BIN" user add berti >/dev/null || exit 1
 
 free_port() {
     python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1])"
@@ -69,6 +68,8 @@ env \
     JIMMY_WORKSPACE="$WORK/root/workspace" \
     JIMMY_PROMPT=jimmy \
     JIMMY_WEB_PORT="$WEB_PORT" \
+    JIMMY_WEB_EMAILS=berti@ejemplo.com \
+    JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \
     AXE_BASE="http://127.0.0.1:$MODEL_PORT/v1" \
     AXE_MODEL=fake \
     OPENAI_API_KEY=test \
@@ -82,7 +83,7 @@ printf '%s\n' '{"update_id":1,"message":{"message_id":7,"chat":{"id":999},"from"
 sleep 9
 
 say "el estado y el stream, con la conversación ya existiendo"
-python3 "$HERE/sse.py" "$WEB_PORT" berti clave 999 25 >"$WORK/sse.log" 2>&1 &
+python3 "$HERE/sse.py" "$WEB_PORT" berti@ejemplo.com 999 25 >"$WORK/sse.log" 2>&1 &
 SSE_PID=$!
 PIDS+=($SSE_PID)
 sleep 2

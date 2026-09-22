@@ -1,21 +1,34 @@
 """Se loguea, mira el estado y se queda escuchando el stream de una
 conversación, imprimiendo cada evento. Lo usa run.sh."""
 
-import json, socket, sys, time, urllib.request
+import json, socket, sys, time, urllib.error, urllib.request
 
 BASE = "http://127.0.0.1:%s" % sys.argv[1]
-USER = sys.argv[2]
-PASSWORD = sys.argv[3]
-CONVERSATION = sys.argv[4]
-SECONDS = float(sys.argv[5])
+EMAIL = sys.argv[2]
+CONVERSATION = sys.argv[3]
+SECONDS = float(sys.argv[4])
 
-body = json.dumps({"user": USER, "password": PASSWORD}).encode()
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+body = json.dumps({"email": EMAIL}).encode()
 request = urllib.request.Request(
     BASE + "/api/login", data=body, headers={"Content-Type": "application/json"}
 )
-response = urllib.request.urlopen(request)
-cookie = response.headers.get("Set-Cookie").split(";")[0]
-print("LOGIN %d" % response.status, flush=True)
+link = json.load(urllib.request.urlopen(request))["link"]
+print("LINK " + link.split("token=")[0] + "token=...", flush=True)
+
+opener = urllib.request.build_opener(NoRedirect)
+try:
+    opener.open(link)
+    raise SystemExit("esperaba el redirect del link")
+except urllib.error.HTTPError as e:
+    assert e.code == 303, e.code
+    cookie = e.headers.get("Set-Cookie").split(";")[0]
+print("LOGIN 303", flush=True)
 
 request = urllib.request.Request(BASE + "/api/state", headers={"Cookie": cookie})
 print("STATE " + json.dumps(json.load(urllib.request.urlopen(request))), flush=True)

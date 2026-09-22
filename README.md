@@ -106,6 +106,11 @@ appends a block. The tick picks it up without a restart.
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | directory with Agent Skills (see below) |
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
+| `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
+| `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
+| `RESEND_API_KEY` | empty | Resend key that sends the link; empty shows the link on screen |
+| `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>` |
+| `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
@@ -119,6 +124,16 @@ Set `JIMMY_ALLOWED_USER_IDS` before exposing the bot. Empty means any user who
 finds the bot gets shell access to the machine. To find your own id, put any
 placeholder in the list, send the bot a message and read the
 `jimmy: ignoré un mensaje de <id>` line it logs.
+
+### Web
+
+With `JIMMY_WEB_PORT` set, Jimmy also serves the same conversations the
+transports have, plus the ones created in the browser. There are no passwords:
+whoever is in `JIMMY_WEB_EMAILS` asks for a link, the link arrives by mail
+(Resend, with `RESEND_API_KEY` and `JIMMY_WEB_FROM`) and lasts fifteen minutes
+and one use. Without a key the link comes back on screen, which is how it works
+locally. Sessions live in `$JIMMY_ROOT/sessions.json`, so a redeploy does not log
+anyone out. Conversations that come from a transport show up read-only.
 
 ### Slack app
 

@@ -82,35 +82,52 @@
         color: var(--err);
         font-size: 12px;
       }
+
+      .ok {
+        color: var(--muted);
+        font-size: 12px;
+      }
     </style>
   </head>
   <body>
     <form id="login">
       <h1>Jimmy</h1>
-      <input id="user" placeholder="usuario" autocomplete="username" autofocus />
-      <input
-        id="password"
-        type="password"
-        placeholder="contraseña"
-        autocomplete="current-password"
-      />
-      <span class="error" id="error" hidden>usuario o contraseña incorrectos</span>
-      <button type="submit">entrar</button>
+      <input id="email" type="email" placeholder="tu mail" autocomplete="email" autofocus />
+      <span class="ok" id="ok" hidden>si tu mail está en la lista, te llegó un link</span>
+      <span class="error" id="error" hidden>el link venció o ya se usó, pedí otro</span>
+      <button type="submit">mandame el link</button>
     </form>
     <script>
       const error = document.getElementById("error");
+      const ok = document.getElementById("ok");
+      if (new URLSearchParams(location.search).has("error")) error.hidden = false;
       document.getElementById("login").onsubmit = async (event) => {
         event.preventDefault();
-        const response = await fetch("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            user: document.getElementById("user").value,
-            password: document.getElementById("password").value,
-          }),
-        });
-        if (response.ok) location.href = "/";
-        else error.hidden = false;
+        ok.hidden = true;
+        error.hidden = true;
+        let response;
+        try {
+          response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: document.getElementById("email").value }),
+          });
+        } catch {
+          error.textContent = "no hay conexión";
+          error.hidden = false;
+          return;
+        }
+        if (!response.ok) {
+          error.textContent = "no se pudo mandar el mail, probá de nuevo";
+          error.hidden = false;
+          return;
+        }
+        const body = await response.json();
+        if (body.link) {
+          location.href = body.link;
+          return;
+        }
+        ok.hidden = false;
       };
     </script>
   </body>

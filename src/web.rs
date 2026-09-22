@@ -924,6 +924,8 @@ done
         assert!(manifest.contains("application/manifest+json"), "{manifest}");
         assert!(manifest.contains("\"standalone\""), "{manifest}");
         assert!(manifest.contains("icon-512.png"), "{manifest}");
+        assert!(manifest.contains("\"share_target\""), "{manifest}");
+        assert!(manifest.contains("\"method\": \"GET\""), "{manifest}");
 
         for size in [192, 512] {
             let png = get(server.port, &format!("/icon-{size}.png"), None);

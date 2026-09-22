@@ -132,6 +132,10 @@ fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     };
     let link = format!("{}/auth?token={token}", web.base_url(request));
     let Some(mail) = &web.auth.mail else {
+        if !web.auth.dev {
+            eprintln!("jimmy web: sin proveedor de mail, no puedo mandarle el link a {email}");
+            return http::send_json(stream, 200, &sent);
+        }
         eprintln!("jimmy web: sin proveedor de mail, el link para {email} es {link}");
         let body = serde_json::json!({ "sent": true, "link": link });
         return http::send_json(stream, 200, &body);
@@ -158,7 +162,11 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         );
     };
     let session = web.auth.open_session(&email);
-    let cookie = format!("{}={session}; Path=/; HttpOnly; SameSite=Lax", auth::COOKIE);
+    let cookie = format!(
+        "{}={session}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age={}",
+        auth::COOKIE,
+        auth::SESSION_TTL
+    );
     let headers = [("Set-Cookie", cookie.as_str()), ("Location", "/")];
     http::respond(stream, 303, "text/plain", &headers, b"")
 }
@@ -167,7 +175,10 @@ fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if let Some(token) = request.cookie(auth::COOKIE) {
         web.auth.close_session(&token);
     }
-    let cookie = format!("{}=; Path=/; Max-Age=0", auth::COOKIE);
+    let cookie = format!(
+        "{}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0",
+        auth::COOKIE
+    );
     http::respond(
         stream,
         200,
@@ -548,6 +559,10 @@ mod tests {
     }
 
     fn start(tag: &str) -> Server {
+        start_with(tag, true)
+    }
+
+    fn start_with(tag: &str, dev: bool) -> Server {
         use std::os::unix::fs::PermissionsExt;
 
         let base = std::env::temp_dir().join(format!("jimmy-web-{}-{tag}", std::process::id()));
@@ -592,7 +607,7 @@ done
         agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None);
+        let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None, dev);
         let web = Web::new(root.clone(), workspace.clone(), bus.clone(), agent, auth);
         let listener = listen(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -702,6 +717,55 @@ done
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("<div id=\"panes\">"), "{page}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn without_the_dev_flag_the_link_stays_out_of_the_response() {
+        let server = start_with("plain", false);
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"berti@ejemplo.com"}"#,
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(
+            !answer.contains("link"),
+            "sin proveedor y sin flag, el link no sale de la respuesta: {answer}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_session_cookie_is_http_only_secure_and_lasts_a_month() {
+        let server = start("cookie");
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"berti@ejemplo.com"}"#,
+        );
+        let magic = link_in(&answer).rsplit('=').next().unwrap().to_string();
+        let followed = get(server.port, &format!("/auth?token={magic}"), None);
+        let set = followed
+            .lines()
+            .find(|line| line.starts_with("Set-Cookie"))
+            .expect("esperaba la cookie");
+        assert!(set.contains("HttpOnly"), "{set}");
+        assert!(set.contains("SameSite=Lax"), "{set}");
+        assert!(set.contains("Secure"), "{set}");
+        assert!(
+            set.contains(&format!("Max-Age={}", auth::SESSION_TTL)),
+            "{set}"
+        );
+
+        let cookie = format!("jimmy_session={}", token(&followed));
+        let out = post_with(server.port, "/api/logout", "{}", Some(&cookie));
+        let gone = out
+            .lines()
+            .find(|line| line.starts_with("Set-Cookie"))
+            .expect("esperaba la cookie de salida");
+        assert!(gone.contains("Max-Age=0"), "{gone}");
+        assert!(gone.contains("HttpOnly"), "{gone}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

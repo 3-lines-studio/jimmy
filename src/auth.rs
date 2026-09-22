@@ -13,8 +13,16 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const COOKIE: &str = "jimmy_session";
+pub const SESSION_TTL: u64 = 30 * 24 * 60 * 60;
 const TTL: Duration = Duration::from_secs(15 * 60);
 const COOLDOWN: Duration = Duration::from_secs(60);
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
 
 struct Link {
     email: String,
@@ -27,11 +35,12 @@ pub struct Auth {
     links: Mutex<HashMap<String, Link>>,
     sessions: Sessions,
     pub mail: Option<Mail>,
+    pub dev: bool,
 }
 
 impl Auth {
     /// `allowed` es la lista de mails autorizados, separados por coma.
-    pub fn new(allowed: &str, root: &Path, mail: Option<Mail>) -> Auth {
+    pub fn new(allowed: &str, root: &Path, mail: Option<Mail>, dev: bool) -> Auth {
         let allowed = allowed
             .split(',')
             .map(|email| email.trim().to_lowercase())
@@ -42,6 +51,7 @@ impl Auth {
             links: Mutex::new(HashMap::new()),
             sessions: Sessions::load(root),
             mail,
+            dev,
         }
     }
 
@@ -103,12 +113,18 @@ impl Auth {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct Session {
+    email: String,
+    expires: u64,
+}
+
 #[derive(Serialize, Deserialize, Default)]
-struct Tokens(HashMap<String, String>);
+struct Tokens(HashMap<String, Session>);
 
 struct Sessions {
     path: PathBuf,
-    tokens: Mutex<HashMap<String, String>>,
+    tokens: Mutex<HashMap<String, Session>>,
 }
 
 impl Sessions {
@@ -119,6 +135,7 @@ impl Sessions {
             .and_then(|text| serde_json::from_str::<Tokens>(&text).ok())
             .map(|tokens| tokens.0)
             .unwrap_or_default();
+        let tokens = live(tokens);
         Sessions {
             path,
             tokens: Mutex::new(tokens),
@@ -127,8 +144,13 @@ impl Sessions {
 
     fn open(&self, email: &str) -> String {
         let token = random::hex(32);
+        let session = Session {
+            email: email.to_string(),
+            expires: now() + SESSION_TTL,
+        };
         let mut tokens = self.tokens.lock().unwrap();
-        tokens.insert(token.clone(), email.to_string());
+        *tokens = live(std::mem::take(&mut *tokens));
+        tokens.insert(token.clone(), session);
         self.save(&tokens);
         token
     }
@@ -140,13 +162,54 @@ impl Sessions {
     }
 
     fn user(&self, token: &str) -> Option<String> {
-        self.tokens.lock().unwrap().get(token).cloned()
+        let tokens = self.tokens.lock().unwrap();
+        let session = tokens.get(token)?;
+        (session.expires > now()).then(|| session.email.clone())
     }
 
-    fn save(&self, tokens: &HashMap<String, String>) {
+    fn save(&self, tokens: &HashMap<String, Session>) {
         let text = serde_json::to_string_pretty(&Tokens(tokens.clone())).unwrap_or_default();
         let _ = axe::atomic_write(&self.path, text.as_bytes());
     }
+}
+
+fn live(tokens: HashMap<String, Session>) -> HashMap<String, Session> {
+    let now = now();
+    tokens
+        .into_iter()
+        .filter(|(_, session)| session.expires > now)
+        .collect()
+}
+
+#[test]
+fn a_session_that_expired_does_not_let_anyone_in() {
+    let root = std::env::temp_dir().join(format!("jimmy-auth-{}-expired", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let expires = now();
+    let old = expires.saturating_sub(1);
+    let fresh = expires + 60;
+    std::fs::write(
+        root.join("sessions.json"),
+        format!(
+            r#"{{"vieja":{{"email":"berti@ejemplo.com","expires":{old}}},
+                 "nueva":{{"email":"berti@ejemplo.com","expires":{fresh}}}}}"#
+        ),
+    )
+    .unwrap();
+
+    let auth = Auth::new("berti@ejemplo.com", &root, None, false);
+    assert!(auth.user("vieja").is_none(), "la vieja ya venció");
+    assert_eq!(auth.user("nueva").as_deref(), Some("berti@ejemplo.com"));
+
+    let opened = auth.open_session("berti@ejemplo.com");
+    assert!(auth.user(&opened).is_some());
+    let saved = std::fs::read_to_string(root.join("sessions.json")).unwrap();
+    assert!(
+        !saved.contains("vieja"),
+        "al abrir una sesión se limpian las vencidas"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[cfg(test)]
@@ -157,7 +220,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("jimmy-auth-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let auth = Auth::new(emails, &root, None);
+        let auth = Auth::new(emails, &root, None, true);
         (auth, root)
     }
 

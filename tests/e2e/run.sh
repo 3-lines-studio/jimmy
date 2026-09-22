@@ -68,7 +68,7 @@ env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
     JIMMY_WORKSPACE="$WORK/root/workspace" \
     JIMMY_PROMPT=jimmy \
     JIMMY_WEB_PORT="$WEB_PORT" \
-    JIMMY_WEB_EMAILS=berti@ejemplo.com \
+    JIMMY_WEB_EMAILS=berti@ejemplo.com JIMMY_WEB_DEV=1 \
     JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \
     AXE_BASE="http://127.0.0.1:$MODEL_PORT/v1" \
     AXE_MODEL=fake \

@@ -630,7 +630,8 @@ main {
   word-break: break-word;
 }
 
-.event.user {
+.event.user,
+.event.image {
   padding: 11px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -776,18 +777,26 @@ main {
   font-size: 13px;
 }
 
-.event.user .thumbs {
+.event .thumbs {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2);
   margin-top: var(--s2);
 }
 
-.event.user .thumbs img {
+.event .thumbs img {
   display: block;
   max-width: 200px;
   max-height: 200px;
   border-radius: var(--r-sm);
+}
+
+.event.image .thumbs {
+  margin-top: 0;
+}
+
+.event.image .caption {
+  margin-top: var(--s2);
 }
 
 mark {

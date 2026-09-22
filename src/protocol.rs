@@ -55,6 +55,13 @@ pub enum Event {
         #[serde(default)]
         images: Vec<String>,
     },
+    /// Una imagen que el asistente manda al chat, como las que sube el usuario:
+    /// el nombre del archivo en `uploads/` de la conversación.
+    Image {
+        name: String,
+        #[serde(default)]
+        caption: String,
+    },
     /// Texto que va apareciendo mientras el modelo escribe. No se guarda: el
     /// mensaje terminado es el que queda en el log.
     Delta {

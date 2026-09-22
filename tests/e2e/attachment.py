@@ -1,15 +1,22 @@
-"""Sube una imagen por la web, la manda sin texto y la vuelve a bajar. Lo usa
-run.sh: el adjunto tiene que quedar en el log como nombre y volver entero."""
+"""Sube una imagen por la web, la manda sin texto y la vuelve a bajar. Después
+manda una con `jimmy send`, como haría el asistente, y espera a que se vea en el
+log. Lo usa run.sh."""
 
 import base64
 import json
+import os
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:%s" % sys.argv[1]
 EMAIL = sys.argv[2]
 PROJECT = sys.argv[3]
+BIN = sys.argv[4]
+ROOT = sys.argv[5]
+PNG_PATH = sys.argv[6]
 
 # Un PNG de 1x1 rojo.
 PNG = base64.b64decode(
@@ -75,3 +82,32 @@ print("FILE %s %s %s" % (served.headers.get("Content-Type"), len(bytes_back), na
 sent = call("/api/send", {"conversation": key, "text": "", "images": [name]}, cookie)
 assert sent.status == 202, sent.status
 print("SEND %s" % sent.status, flush=True)
+
+with open(PNG_PATH, "wb") as file:
+    file.write(PNG)
+
+env = dict(os.environ, JIMMY_ROOT=ROOT, JIMMY_WORKSPACE=os.path.join(ROOT, "workspace"))
+command = [BIN, "send", PNG_PATH, "--target", key, "--caption", "el círculo"]
+assistant = subprocess.run(command, env=env, capture_output=True, text=True)
+assert assistant.returncode == 0, assistant.stderr
+kept = assistant.stdout.strip()
+print("SENT-CLI %s" % kept, flush=True)
+
+log = os.path.join(ROOT, "chats", key, "conversation.jsonl")
+call("/api/send", {"conversation": key, "text": "¿y eso?"}, cookie)
+deadline = time.time() + 30
+written = ""
+while time.time() < deadline:
+    written = open(log).read() if os.path.exists(log) else ""
+    if '"event":"image"' in written:
+        break
+    time.sleep(0.2)
+assert '"event":"image"' in written, written
+assert '"caption":"el círculo"' in written, written
+print("LOG image %s" % kept, flush=True)
+
+served = call("/api/file?conversation=%s&name=%s" % (key, kept), cookie=cookie)
+assert served.status == 200, served.status
+bytes_back = served.read()
+assert bytes_back == PNG, "la imagen del asistente volvió cambiada"
+print("FILE2 %s %s" % (served.headers.get("Content-Type"), len(bytes_back)), flush=True)

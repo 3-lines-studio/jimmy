@@ -112,7 +112,7 @@ rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
 say "un adjunto por la web"
-python3 "$HERE/attachment.py" "$WEB_PORT" berti@ejemplo.com ken >"$WORK/attachment.log" 2>&1
+python3 "$HERE/attachment.py" "$WEB_PORT" berti@ejemplo.com ken "$BIN" "$WORK/root" "$WORK/asistente.png" >"$WORK/attachment.log" 2>&1
 cat "$WORK/attachment.log"
 ATTACH_KEY=$(rg -o '^KEY \S+' "$WORK/attachment.log" | cut -d' ' -f2)
 ATTACH_NAME=$(rg -o '^NAME \S+' "$WORK/attachment.log" | cut -d' ' -f2)
@@ -123,6 +123,12 @@ rg -qF "\"images\":[\"$ATTACH_NAME\"]" "$WORK/root/chats/$ATTACH_KEY/conversatio
 check "el log guarda el nombre del adjunto y no sus bytes" $?
 rg -qF '"title": "imagen"' "$WORK/root/chats/$ATTACH_KEY/meta.json"
 check "la conversación se llama por su primera imagen" $?
+rg -q '^SENT-CLI ' "$WORK/attachment.log"
+check "jimmy send a una conversación de la web guarda la imagen" $?
+rg -q '^LOG image ' "$WORK/attachment.log"
+check "y el log la muestra al terminar el turno" $?
+rg -q '^FILE2 image/png ' "$WORK/attachment.log"
+check "la imagen del asistente también se sirve" $?
 
 say "el comando de compactar, por Telegram"
 printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"/compact"}}' >>"$WORK/inbox.jsonl"

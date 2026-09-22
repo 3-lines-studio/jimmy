@@ -10,6 +10,9 @@ pub enum Command {
         text: String,
         #[serde(default)]
         images: Vec<Image>,
+        /// Quién lo escribió, para que el modelo sepa a quién le contesta.
+        #[serde(default)]
+        author: String,
     },
     Resume,
     /// Compacta el contexto ahora, sin esperar al umbral.

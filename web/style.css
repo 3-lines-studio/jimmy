@@ -160,10 +160,13 @@ textarea:focus {
 }
 
 #logout button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
   height: 28px;
-  padding: 0 var(--s2);
+  padding: 0;
   color: var(--muted);
-  font-size: 13px;
 }
 
 #theme {
@@ -356,7 +359,7 @@ textarea:focus {
 
 .dot.running {
   background: transparent;
-  border-color: var(--text);
+  border-color: var(--accent);
   border-top-color: transparent;
   animation: spin 1s linear infinite;
 }
@@ -412,36 +415,41 @@ textarea:focus {
   padding: 0 var(--s2);
 }
 
-#sidebar-actions {
+#new-project {
   display: flex;
-  flex-direction: column;
   gap: var(--s2);
   flex: none;
   padding: var(--s3) var(--s3) var(--s4);
   border-top: 1px solid var(--line);
 }
 
-#sidebar-actions input,
-#sidebar-actions button {
-  width: 100%;
+#new-project input,
+#new-project button {
   height: 34px;
-  padding: 0 var(--s3);
   border-radius: var(--r-md);
 }
 
-#sidebar-actions input {
+#new-project input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 var(--s3);
   background: var(--raised);
   border-color: transparent;
 }
 
-#sidebar-actions button {
+#new-project button {
+  display: flex;
+  align-items: center;
   justify-content: center;
+  flex: none;
+  width: 34px;
+  padding: 0;
   background: var(--raised);
   border-color: transparent;
   color: var(--muted);
 }
 
-#sidebar-actions button:hover {
+#new-project button:hover {
   background: var(--hover);
   color: var(--text);
 }
@@ -1316,6 +1324,7 @@ mark {
   }
 
   #theme,
+  #logout button,
   #menu {
     width: 38px;
     height: 38px;
@@ -1330,9 +1339,13 @@ mark {
     height: 40px;
   }
 
-  #sidebar-actions input,
-  #sidebar-actions button {
+  #new-project input,
+  #new-project button {
     height: 40px;
+  }
+
+  #new-project button {
+    width: 40px;
   }
 
   #attach,

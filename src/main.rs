@@ -21,9 +21,8 @@ mod web;
 mod worker;
 
 use agent::Agent;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use transport::slack;
 use transport::telegram;
@@ -212,8 +211,6 @@ fn main() {
                     voice,
                     ..
                 } = event;
-                let lock = chat_lock(&session.key());
-                let _guard = lock.lock().unwrap();
                 let mut text = text;
                 if let Some((file_id, duration)) = voice {
                     match transcribe_voice(
@@ -590,8 +587,6 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
         let agent = agent.clone();
         let transport = transport.clone();
         std::thread::spawn(move || {
-            let lock = chat_lock(&session.key());
-            let _guard = lock.lock().unwrap();
             if let Err(e) = agent.resume(transport.as_ref(), &session) {
                 eprintln!("jimmy: no pude reanudar {key}: {e}");
             }
@@ -634,15 +629,6 @@ extern "C" fn handle_sigterm(_: libc::c_int) {
     pool::kill_all();
     axe::tools::kill_children();
     unsafe { libc::_exit(0) };
-}
-
-fn chat_lock(key: &str) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
-    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = locks.lock().unwrap();
-    map.entry(key.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
 }
 
 fn clamp(s: &str, max: usize) -> String {

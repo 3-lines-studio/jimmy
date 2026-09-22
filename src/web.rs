@@ -10,6 +10,7 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::http::{self, Request};
 use crate::log::Log;
+use crate::protocol::Event;
 use crate::transport::{Msg, Session, Transport};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -105,11 +106,13 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
         ("GET", "/api/stream") => events(web, &request, stream),
+        ("GET", "/api/online") => online(web, &request, stream),
         ("GET", "/api/search") => search(web, &request, stream),
         ("POST", "/api/conversations") => create(web, &request, stream),
         ("POST", "/api/projects") => create_project(web, &request, stream),
         ("POST", "/api/rename") => rename(web, &request, stream),
         ("POST", "/api/send") => send(web, &request, stream),
+        ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
@@ -456,13 +459,23 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
     let web = web.clone();
     std::thread::spawn(move || {
-        let lock = crate::chat_lock(&session.key());
-        let _guard = lock.lock().unwrap();
         if let Err(error) = web.agent.respond(&Silent, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
     });
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
+}
+
+fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(user) = web.user(request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let key = request.field("conversation").unwrap_or_default();
+    if writable(web, &key).is_err() {
+        return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
+    }
+    web.bus.show(&key, &Event::Typing { user });
+    http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
 /// The answer of a web conversation is its own log, which the browser is
@@ -531,6 +544,16 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let (backlog, live) = web.bus.attach(key, &log, &user);
     let result = follow(stream, &backlog, &live);
     web.bus.detach(key, &user);
+    result
+}
+
+fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(user) = web.user(request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let live = web.bus.watch(&user);
+    let result = follow(stream, &[], &live);
+    web.bus.detach_watch(&user);
     result
 }
 
@@ -970,6 +993,98 @@ done
             "esperaba quién está mirando: {seen:?}"
         );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_online_stream_knows_everyone_connected() {
+        let server = start("online");
+        let berti = login(server.port, "berti@ejemplo.com");
+
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "GET /api/online HTTP/1.1\r\nHost: jimmy\r\nCookie: {berti}\r\n\r\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        assert!(next_data(&mut lines, "\"online\"").contains("berti"));
+
+        let ana = login(server.port, "ana@ejemplo.com");
+        let mut second = connect(server.port);
+        write!(
+            second,
+            "GET /api/online HTTP/1.1\r\nHost: jimmy\r\nCookie: {ana}\r\n\r\n"
+        )
+        .unwrap();
+        let seen = next_data(&mut lines, "\"online\"");
+        assert!(seen.contains("ana") && seen.contains("berti"), "{seen}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn typing_goes_live_but_is_not_written_down() {
+        let server = start("typing");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(created.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let key = body["key"].as_str().unwrap().to_string();
+
+        let without = post(
+            server.port,
+            "/api/typing",
+            &format!(r#"{{"conversation":"{key}"}}"#),
+        );
+        assert!(without.starts_with("HTTP/1.1 401"), "{without}");
+        let readonly = post_with(
+            server.port,
+            "/api/typing",
+            r#"{"conversation":"7469057930"}"#,
+            Some(&cookie),
+        );
+        assert!(readonly.starts_with("HTTP/1.1 400"), "{readonly}");
+
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "GET /api/stream?conversation={key} HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        assert!(next_data(&mut lines, "\"synced\"").contains("synced"));
+
+        let sent = post_with(
+            server.port,
+            "/api/typing",
+            &format!(r#"{{"conversation":"{key}"}}"#),
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 200"), "{sent}");
+        let seen = next_data(&mut lines, "\"typing\"");
+        assert!(seen.contains("berti"), "{seen}");
+
+        let log = server
+            .root
+            .join("chats")
+            .join(&key)
+            .join("conversation.jsonl");
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!text.contains("typing"), "{text}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    fn next_data(lines: &mut std::io::Lines<BufReader<TcpStream>>, needle: &str) -> String {
+        lines
+            .by_ref()
+            .take(200)
+            .filter_map(Result::ok)
+            .find(|line| line.starts_with("data: ") && line.contains(needle))
+            .unwrap_or_default()
     }
 
     #[test]

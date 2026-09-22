@@ -1,4 +1,4 @@
-//! Who is watching a conversation right now.
+//! Who is connected, and who is watching what.
 //!
 //! The log on disk is the backlog; the bus is what is happening while somebody
 //! is connected. Writing an event and telling the watchers happen under the
@@ -7,71 +7,117 @@
 
 use crate::log::Log;
 use crate::protocol::Event;
-use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-struct Watcher {
+struct Connection {
     user: String,
+    /// La conversación que mira, o nada si sólo quiere saber quién está.
+    topic: Option<String>,
     sender: Sender<Event>,
 }
 
 pub struct Bus {
-    watchers: Mutex<HashMap<String, Vec<Watcher>>>,
+    connections: Mutex<Vec<Connection>>,
 }
 
 impl Bus {
     pub fn new() -> Arc<Bus> {
         Arc::new(Bus {
-            watchers: Mutex::new(HashMap::new()),
+            connections: Mutex::new(Vec::new()),
         })
     }
 
     /// The events so far and everything from here on.
     pub fn attach(&self, key: &str, log: &Log, user: &str) -> (Vec<Event>, Receiver<Event>) {
-        let mut watchers = self.watchers.lock().unwrap();
+        let mut connections = self.connections.lock().unwrap();
         let backlog = log.events();
         let (sender, receiver) = mpsc::channel();
-        watchers.entry(key.to_string()).or_default().push(Watcher {
+        connections.push(Connection {
             user: user.to_string(),
+            topic: Some(key.to_string()),
             sender,
         });
-        self.tell_who_is_watching(&mut watchers, key);
+        tell_who_is_watching(&mut connections, key);
+        tell_who_is_online(&mut connections);
         (backlog, receiver)
     }
 
+    /// Una conexión que sólo espera la presencia: quién está conectado.
+    pub fn watch(&self, user: &str) -> Receiver<Event> {
+        let mut connections = self.connections.lock().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        connections.push(Connection {
+            user: user.to_string(),
+            topic: None,
+            sender,
+        });
+        tell_who_is_online(&mut connections);
+        receiver
+    }
+
     pub fn detach(&self, key: &str, user: &str) {
-        let mut watchers = self.watchers.lock().unwrap();
-        if let Some(list) = watchers.get_mut(key) {
-            if let Some(index) = list.iter().position(|watcher| watcher.user == user) {
-                list.remove(index);
-            }
-        }
-        self.tell_who_is_watching(&mut watchers, key);
+        let mut connections = self.connections.lock().unwrap();
+        connections.retain(|watch| !(watch.topic.as_deref() == Some(key) && watch.user == user));
+        tell_who_is_watching(&mut connections, key);
+        tell_who_is_online(&mut connections);
+    }
+
+    pub fn detach_watch(&self, user: &str) {
+        let mut connections = self.connections.lock().unwrap();
+        connections.retain(|watch| !(watch.topic.is_none() && watch.user == user));
+        tell_who_is_online(&mut connections);
     }
 
     pub fn publish(&self, key: &str, log: &Log, event: &Event) {
-        let mut watchers = self.watchers.lock().unwrap();
+        let mut connections = self.connections.lock().unwrap();
         if !matches!(
             event,
-            Event::Delta { .. } | Event::ToolDelta { .. } | Event::Presence { .. }
+            Event::Delta { .. }
+                | Event::ToolDelta { .. }
+                | Event::Presence { .. }
+                | Event::Online { .. }
+                | Event::Typing { .. }
         ) {
             log.append(event);
         }
-        let Some(list) = watchers.get_mut(key) else {
-            return;
-        };
-        list.retain(|watcher| watcher.sender.send(event.clone()).is_ok());
+        send(&mut connections, key, event);
     }
 
-    fn tell_who_is_watching(&self, watchers: &mut HashMap<String, Vec<Watcher>>, key: &str) {
-        let Some(list) = watchers.get_mut(key) else {
-            return;
-        };
-        let mut users: Vec<String> = list.iter().map(|watcher| watcher.user.clone()).collect();
-        users.sort();
-        users.dedup();
-        let event = Event::Presence { users };
-        list.retain(|watcher| watcher.sender.send(event.clone()).is_ok());
+    /// Un evento que no queda guardado: lo ven los que están mirando ahora.
+    pub fn show(&self, key: &str, event: &Event) {
+        let mut connections = self.connections.lock().unwrap();
+        send(&mut connections, key, event);
     }
+}
+
+fn send(connections: &mut Vec<Connection>, key: &str, event: &Event) {
+    connections.retain(|watch| {
+        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+    });
+}
+
+fn tell_who_is_watching(connections: &mut Vec<Connection>, key: &str) {
+    let users = names(
+        connections
+            .iter()
+            .filter(|watch| watch.topic.as_deref() == Some(key)),
+    );
+    let event = Event::Presence { users };
+    connections.retain(|watch| {
+        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+    });
+}
+
+fn tell_who_is_online(connections: &mut Vec<Connection>) {
+    let users = names(connections.iter());
+    let event = Event::Online { users };
+    connections.retain(|watch| watch.sender.send(event.clone()).is_ok());
+}
+
+fn names<'a>(connections: impl Iterator<Item = &'a Connection>) -> Vec<String> {
+    let mut users: Vec<String> = connections.map(|watch| watch.user.clone()).collect();
+    users.sort();
+    users.dedup();
+    users
 }

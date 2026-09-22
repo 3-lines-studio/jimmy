@@ -132,10 +132,15 @@ function notify(text) {
   toastEl.textContent = text;
   toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastEl.hidden = true;
-  }, 6000);
+  toastTimer = setTimeout(hideToast, 6000);
 }
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  toastEl.hidden = true;
+}
+
+toastEl.onclick = hideToast;
 
 function conversationById(id) {
   for (const project of state.projects) {

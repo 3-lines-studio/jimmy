@@ -12,8 +12,8 @@ En el repo de jimmy hay dos ramas de deploy: `dev` es la mía y `main` es produc
 Flujo para un repo:
 
 1. Reusá el clon si existe. Si no: `git clone https://github.com/<owner>/<nombre> projects/<nombre>`.
-2. Dejalo limpio y basado en la última base (en jimmy, `dev`): `git fetch origin && git checkout dev && git reset --hard origin/dev && git clean -fd`, adentro de `projects/<nombre>`.
-3. Rama nueva desde la última base: `git checkout -b <tema> origin/dev`.
+2. Antes de **cada** rama, no una vez por sesión: `git fetch origin && git checkout dev && git reset --hard origin/dev && git clean -fd`, adentro de `projects/<nombre>`. El clon queda viejo entre tareas y una rama que sale de un `dev` viejo nace con conflictos.
+3. Rama nueva desde la última base: `git checkout -b <tema> origin/dev`, nunca desde la rama del PR anterior.
 4. Un cambio lógico por rama. Commits chicos, en imperativo y en inglés, como los del repo.
 5. Probá y formateá antes de pushear: `cargo +nightly fmt`, `cargo +nightly clippy -- -D warnings`, `cargo +nightly test`. O `make fmt lint test`.
 6. `git status` para revisar. No commitees secretos ni artefactos (`target/`, `.env`, `data/`).

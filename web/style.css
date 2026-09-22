@@ -336,6 +336,10 @@ textarea:focus {
 
 .icon-btn:hover {
   background: transparent;
+  color: var(--text);
+}
+
+.icon-btn.danger:hover {
   color: var(--err);
 }
 
@@ -1045,6 +1049,22 @@ mark {
   display: none;
 }
 
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  z-index: 30;
+  max-width: min(90vw, 480px);
+  padding: var(--s2) var(--s3);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  transform: translateX(-50%);
+}
+
 /* Mobile */
 
 @media (max-width: 760px) {
@@ -1083,5 +1103,9 @@ mark {
 
   #composer {
     padding: var(--s2) var(--s2) var(--s3);
+  }
+
+  #toast {
+    bottom: 96px;
   }
 }

@@ -1309,10 +1309,28 @@ function watchOnline() {
   };
 }
 
+function receiveShared() {
+  if (!location.search) return;
+  const query = new URLSearchParams(location.search);
+  const text = (query.get("text") || "").trim();
+  const url = (query.get("url") || "").trim();
+  history.replaceState(null, "", location.pathname + location.hash);
+  const parts = text.includes(url) ? [text] : [text, url];
+  const shared = parts.filter((part) => part).join("\n");
+  if (!shared) return;
+  if (!activeId || isReadOnly(activeId)) {
+    notify("compartiste algo: abrí una conversación y pegalo");
+    return;
+  }
+  inputEl.value = shared;
+  grow();
+}
+
 async function main() {
   watchOnline();
   await refresh();
   restore();
+  receiveShared();
   setInterval(refresh, 3000);
 }
 

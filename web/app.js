@@ -30,6 +30,7 @@ const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
 const toastEl = document.getElementById("toast");
+const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 
 async function api(path, body) {
   let response;
@@ -485,7 +486,7 @@ function activate(id) {
   renderActions();
   renderPending();
   updateTitle();
-  inputEl.focus();
+  if (finePointer.matches) inputEl.focus();
 }
 
 function closeTab(id) {

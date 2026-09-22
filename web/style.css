@@ -1077,10 +1077,52 @@ mark {
   }
 
   #composer {
-    padding: var(--s2) var(--s2) var(--s3);
+    padding: var(--s2) var(--s2) calc(var(--s3) + env(safe-area-inset-bottom));
+  }
+
+  #sidebar {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  #menu {
+    margin-left: env(safe-area-inset-left);
+  }
+
+  input,
+  textarea {
+    font-size: 16px;
   }
 
   #toast {
-    bottom: 96px;
+    bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Sin mouse */
+
+@media (hover: none) {
+  .icon-btn,
+  .tab .close {
+    visibility: visible;
+    width: 28px;
+    height: 28px;
+  }
+
+  .conversation {
+    height: 38px;
+  }
+
+  .tab {
+    height: 34px;
+  }
+
+  #sidebar-actions button,
+  #attach,
+  #composer .send {
+    height: 36px;
+  }
+
+  #composer .send {
+    width: 36px;
   }
 }

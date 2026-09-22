@@ -39,7 +39,12 @@
   --scroll: #3a3a44;
   --scroll-hover: #4c4c58;
 
-  --shadow: rgba(0, 0, 0, 0.45);
+  --ring: rgba(138, 180, 255, 0.45);
+  --accent-fg: #0e0e11;
+  --accent-hover: #a3c4ff;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
   --backdrop: rgba(0, 0, 0, 0.5);
   --thumb-close: rgba(0, 0, 0, 0.65);
 
@@ -51,6 +56,7 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
+  --r-full: 999px;
 
   --measure: 720px;
 
@@ -103,7 +109,12 @@
   --scroll: #c2c2ca;
   --scroll-hover: #a8a8b2;
 
-  --shadow: rgba(15, 23, 42, 0.16);
+  --ring: rgba(17, 85, 204, 0.35);
+  --accent-fg: #ffffff;
+  --accent-hover: #0b47ab;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.14);
   --backdrop: rgba(15, 23, 42, 0.35);
   --thumb-close: rgba(0, 0, 0, 0.6);
 }

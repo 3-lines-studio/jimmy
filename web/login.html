@@ -20,7 +20,7 @@
       body {
         display: grid;
         place-items: center;
-        height: 100dvh;
+        min-height: 100dvh;
         margin: 0;
         background: var(--bg);
         color: var(--text);
@@ -31,25 +31,30 @@
       form {
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        width: 264px;
+        gap: var(--s2);
+        width: 300px;
+        padding: var(--s5);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-md);
       }
 
       h1 {
-        margin: 0 0 16px;
+        margin: 0 0 var(--s3);
         font-size: 15px;
         font-weight: 600;
-        letter-spacing: 0.01em;
       }
 
       input,
       button {
         font: inherit;
         color: var(--text);
-        background: var(--panel);
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-        padding: 8px 12px;
+        background: var(--raised);
+        border: 1px solid transparent;
+        border-radius: var(--r-md);
+        padding: 0 var(--s3);
+        height: 36px;
       }
 
       input::placeholder {
@@ -58,18 +63,20 @@
 
       input:focus {
         outline: none;
+        background: var(--bg);
         border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--ring);
       }
 
       button {
-        margin-top: 8px;
-        color: var(--muted);
+        margin-top: var(--s1);
+        background: var(--accent);
+        color: var(--accent-fg);
         cursor: pointer;
       }
 
       button:hover {
-        border-color: var(--accent);
-        color: var(--text);
+        background: var(--accent-hover);
       }
 
       .error {
@@ -80,6 +87,23 @@
       .ok {
         color: var(--muted);
         font-size: 12px;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          padding: var(--s4);
+        }
+
+        form {
+          width: 100%;
+          max-width: 380px;
+        }
+
+        input,
+        button {
+          height: 44px;
+          font-size: 16px;
+        }
       }
     </style>
   </head>

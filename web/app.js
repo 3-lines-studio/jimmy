@@ -191,19 +191,14 @@ function projectEl(project) {
   caret.className = "caret";
   caret.append(icon("down", 14));
   group.name.className = "name";
-  const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
-  header.append(caret, group.name, remove);
-  group.create = document.createElement("div");
-  group.create.className = "conversation create";
-  const label = document.createElement("span");
-  label.textContent = "conversación";
-  group.create.append(icon("plus", 15), label);
-  group.create.onclick = async () => {
+  const add = iconButton("plus", "nueva conversación", async () => {
     const made = await api("/api/conversations", { project: group.project.name });
     await refresh();
     if (made && made.key) openTab(made.key);
     closeSidebar();
-  };
+  });
+  const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
+  header.append(caret, group.name, add, remove);
   group.el.append(header, group.list);
   return group;
 }
@@ -302,7 +297,6 @@ function renderSidebar() {
       item.el.remove();
       group.conversations.delete(key);
     }
-    place(group.list, group.create, lastItem);
     place(projectsEl, group.el, lastGroup);
     lastGroup = group.el;
   }

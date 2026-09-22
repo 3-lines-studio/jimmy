@@ -716,6 +716,75 @@ main {
   font-size: 12.5px;
 }
 
+.event.assistant .code {
+  position: relative;
+  margin: 0 0 var(--s3);
+}
+
+.event.assistant .code pre {
+  margin: 0;
+}
+
+.event.assistant .actions {
+  display: flex;
+  gap: var(--s1);
+  margin-top: var(--s2);
+}
+
+.copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--faint);
+  opacity: 0.5;
+}
+
+.copy:hover {
+  background: var(--hover);
+  color: var(--text);
+  opacity: 1;
+}
+
+.copy.copied {
+  color: var(--ok);
+  opacity: 1;
+}
+
+.copy svg.done {
+  display: none;
+}
+
+.copy.copied svg.idle {
+  display: none;
+}
+
+.copy.copied svg.done {
+  display: block;
+}
+
+.event.assistant .code .copy {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  background: var(--code-bg);
+  opacity: 0;
+}
+
+.event.assistant .code:hover .copy,
+.event.assistant .code .copy:focus-visible,
+.event.assistant .code .copy.copied {
+  opacity: 1;
+}
+
+.event.assistant .code .copy:hover {
+  background: var(--hover);
+}
+
 .event.assistant .table-wrap {
   margin: 0 0 var(--s3);
   overflow-x: auto;
@@ -1298,6 +1367,13 @@ mark {
   .icon-btn {
     width: 32px;
     height: 32px;
+  }
+
+  .copy,
+  .event.assistant .code .copy {
+    width: 32px;
+    height: 32px;
+    opacity: 1;
   }
 
   .icon-btn svg {

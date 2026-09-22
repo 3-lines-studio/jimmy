@@ -119,7 +119,17 @@ fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
     if web.user(request).is_none() {
         return http::respond(stream, 303, "text/plain", &[("Location", "/login")], b"");
     }
-    http::send_text(stream, 200, HTML, INDEX)
+    http::send_text(stream, 200, HTML, &versioned(INDEX))
+}
+
+/// Los assets llevan la versión en la URL: cada deploy cambia la URL, así que ni
+/// un proxy ni el navegador pueden seguir sirviendo los viejos.
+fn versioned(page: &str) -> String {
+    let version = crate::env("JIMMY_COMMIT_SHA")
+        .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
+        .unwrap_or_default();
+    page.replace("/app.js", &format!("/app.js?v={version}"))
+        .replace("/style.css", &format!("/style.css?v={version}"))
 }
 
 /// Pedir el link. La respuesta es siempre la misma, esté o no el mail en la
@@ -706,6 +716,8 @@ done
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("<div id=\"panes\">"), "{page}");
+        assert!(page.contains("/app.js?v="), "{page}");
+        assert!(page.contains("/style.css?v="), "{page}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

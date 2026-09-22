@@ -1,8 +1,9 @@
-const ICON = { read: "▤", write: "✎", edit: "±", bash: "$", search: "⌕", fetch: "⇩" };
+const ICON = { read: "▤", write: "✎", edit: "±", bash: "$" };
 
 let state = { projects: [] };
 const tabs = new Map();
-let activeKey = null;
+let activeId = null;
+let pending = new Map();
 
 const projectsEl = document.getElementById("projects");
 const tabsEl = document.getElementById("tabs");
@@ -10,16 +11,13 @@ const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
 const sidebar = document.getElementById("sidebar");
 const backdrop = document.getElementById("backdrop");
-const composerEl = document.getElementById("composer");
-const inputEl = document.getElementById("input");
 const tabActionsEl = document.getElementById("tab-actions");
 const viewersEl = document.getElementById("viewers");
-const cancelEl = document.getElementById("cancel");
+const composerEl = document.getElementById("composer");
+const inputEl = document.getElementById("input");
+const searchEl = document.getElementById("search");
 const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
-const searchEl = document.getElementById("search");
-let pending = new Map();
-let searchTimer = null;
 
 async function api(path, body) {
   let response;
@@ -39,19 +37,28 @@ async function api(path, body) {
   return response.json().catch(() => null);
 }
 
-function conversationByKey(key) {
+function conversationById(id) {
   for (const project of state.projects) {
     for (const conversation of project.conversations) {
-      if (conversation.key === key) return conversation;
+      if (conversation.key === id) return conversation;
     }
   }
   return null;
 }
 
-function titleOf(key) {
-  const conversation = conversationByKey(key);
-  if (!conversation) return key;
-  return conversation.title || conversation.key;
+function titleOf(id) {
+  const conversation = conversationById(id);
+  return conversation ? conversation.title || conversation.key : id;
+}
+
+function isRunning(id) {
+  const conversation = conversationById(id);
+  return conversation ? conversation.running : false;
+}
+
+function isReadOnly(id) {
+  const conversation = conversationById(id);
+  return conversation ? conversation.read_only : false;
 }
 
 async function refresh() {
@@ -62,14 +69,16 @@ async function refresh() {
   for (const project of state.projects) {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
-  for (const key of [...tabs.keys()]) {
-    if (!live.has(key)) closeTab(key);
+  for (const id of [...tabs.keys()]) {
+    if (!live.has(id)) closeTab(id);
   }
   if (searchEl.value.trim().length < 2) renderSidebar();
   renderTabs();
   renderActions();
   updateTitle();
 }
+
+/* Sidebar */
 
 function renderSidebar() {
   projectsEl.replaceChildren();
@@ -80,50 +89,49 @@ function renderSidebar() {
     name.className = "name";
     name.textContent = project.name;
     name.title = project.path;
-    header.append(name);
-    if (project.name !== "general") {
-      const remove = document.createElement("button");
-      remove.className = "icon-btn";
-      remove.textContent = "×";
-      remove.title = "borrar proyecto";
-      remove.onclick = (event) => {
-        event.stopPropagation();
-        deleteProject(project);
-      };
-      header.append(remove);
-    }
+    const remove = document.createElement("button");
+    remove.className = "icon-btn";
+    remove.textContent = "×";
+    remove.title = "quitar proyecto";
+    remove.onclick = () => deleteProject(project);
+    header.append(name, remove);
     projectsEl.append(header);
 
     for (const conversation of project.conversations) {
       const item = document.createElement("div");
-      item.className = "conversation" + (conversation.key === activeKey ? " active" : "");
+      item.className = "conversation" + (conversation.key === activeId ? " active" : "");
       item.dataset.conversation = conversation.key;
       const dot = document.createElement("span");
       dot.className = "dot" + (conversation.running ? " running" : "");
       const title = document.createElement("span");
       title.className = "title";
       title.textContent = conversation.title || conversation.key;
-      item.append(dot, title);
-      if (!conversation.read_only) {
-        const renameBtn = document.createElement("button");
-        renameBtn.className = "icon-btn";
-        renameBtn.dataset.action = "rename";
-        renameBtn.textContent = "✎";
-        renameBtn.title = "renombrar";
-        renameBtn.onclick = (event) => {
-          event.stopPropagation();
-          rename(title, conversation);
-        };
-        const remove = document.createElement("button");
-        remove.className = "icon-btn";
-        remove.dataset.action = "delete";
-        remove.textContent = "×";
-        remove.title = "borrar conversación";
-        remove.onclick = (event) => {
-          event.stopPropagation();
-          deleteConversation(conversation);
-        };
-        item.append(renameBtn, remove);
+      title.ondblclick = (event) => {
+        event.stopPropagation();
+        rename(title, conversation);
+      };
+      const renameBtn = document.createElement("button");
+      renameBtn.className = "icon-btn";
+      renameBtn.dataset.action = "rename";
+      renameBtn.textContent = "✎";
+      renameBtn.title = "renombrar";
+      renameBtn.onclick = (event) => {
+        event.stopPropagation();
+        rename(title, conversation);
+      };
+      const remove = document.createElement("button");
+      remove.className = "icon-btn";
+      remove.dataset.action = "delete";
+      remove.textContent = "×";
+      remove.title = "borrar conversación";
+      remove.onclick = (event) => {
+        event.stopPropagation();
+        deleteConversation(conversation);
+      };
+      if (conversation.read_only) {
+        item.append(dot, title);
+      } else {
+        item.append(dot, title, renameBtn, remove);
       }
       item.onclick = () => {
         openTab(conversation.key);
@@ -132,97 +140,16 @@ function renderSidebar() {
       projectsEl.append(item);
     }
 
-    if (project.name !== "general") {
-      const create = document.createElement("div");
-      create.className = "conversation create";
-      create.textContent = "+ conversación";
-      create.onclick = async () => {
-        const made = await api("/api/conversations", { project: project.name });
-        await refresh();
-        if (made && made.key) openTab(made.key);
-        closeSidebar();
-      };
-      projectsEl.append(create);
-    }
-  }
-
-  const createProject = document.createElement("div");
-  createProject.className = "conversation create";
-  createProject.id = "new-project";
-  createProject.textContent = "+ proyecto";
-  createProject.onclick = async () => {
-    const name = prompt("Nombre del proyecto (una carpeta nueva en el workspace):");
-    if (!name) return;
-    const made = await api("/api/projects", { name });
-    if (!made || made.error) alert(made ? made.error : "no pude crear el proyecto");
-    await refresh();
-  };
-  projectsEl.append(createProject);
-}
-
-async function deleteConversation(conversation) {
-  const name = conversation.title || conversation.key;
-  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
-  const done = await api("/api/delete-conversation", { conversation: conversation.key });
-  if (!done || done.error) {
-    alert(done && done.error ? done.error : "no pude borrarla");
-    return;
-  }
-  closeTab(conversation.key);
-  await refresh();
-}
-
-async function deleteProject(project) {
-  if (!confirm(`¿Borrar el proyecto "${project.name}"?`)) return;
-  const done = await api("/api/delete-project", { project: project.name });
-  if (!done || done.error) {
-    alert(done && done.error ? done.error : "no pude borrarlo");
-    return;
-  }
-  await refresh();
-}
-
-/* Buscar en el historial */
-
-searchEl.addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(runSearch, 250);
-});
-
-async function runSearch() {
-  const query = searchEl.value.trim();
-  if (query.length < 2) {
-    renderSidebar();
-    return;
-  }
-  const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
-  renderResults((data && data.results) || []);
-}
-
-function renderResults(results) {
-  projectsEl.replaceChildren();
-  if (!results.length) {
-    const empty = document.createElement("div");
-    empty.className = "result-empty";
-    empty.textContent = "nada encontrado";
-    projectsEl.append(empty);
-    return;
-  }
-  for (const hit of results) {
-    const item = document.createElement("div");
-    item.className = "result";
-    const title = document.createElement("div");
-    title.className = "result-title";
-    title.textContent = `${hit.title} · ${hit.project}`;
-    const snippet = document.createElement("div");
-    snippet.className = "result-snippet";
-    snippet.textContent = `${hit.role === "user" ? "vos" : "jimmy"}: ${hit.snippet}`;
-    item.append(title, snippet);
-    item.onclick = () => {
-      openTab(hit.conversation);
+    const create = document.createElement("div");
+    create.className = "conversation create";
+    create.textContent = "+ conversación";
+    create.onclick = async () => {
+      const made = await api("/api/conversations", { project: project.name });
+      await refresh();
+      if (made && made.key) openTab(made.key);
       closeSidebar();
     };
-    projectsEl.append(item);
+    projectsEl.append(create);
   }
 }
 
@@ -252,12 +179,110 @@ function rename(title, conversation) {
   };
 }
 
-function openTab(key) {
-  if (!tabs.has(key)) createTab(key);
-  activate(key);
+async function deleteConversation(conversation) {
+  if (!confirm(`¿Borrar la conversación "${conversation.title}"? Se pierde el historial.`)) return;
+  await api("/api/delete-conversation", { conversation: conversation.key });
+  closeTab(conversation.key);
+  await refresh();
 }
 
-function createTab(key) {
+async function deleteProject(project) {
+  if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
+  for (const conversation of project.conversations) closeTab(conversation.key);
+  await api("/api/delete-project", { project: project.name });
+  await refresh();
+}
+
+/* Search */
+
+let searchTimer = null;
+
+searchEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 250);
+});
+
+async function runSearch() {
+  const query = searchEl.value.trim();
+  if (query.length < 2) {
+    renderSidebar();
+    return;
+  }
+  const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
+  renderResults(query, data && data.results ? data.results : []);
+}
+
+function renderResults(query, results) {
+  projectsEl.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "project";
+  header.textContent = results.length ? `${results.length} resultados` : "sin resultados";
+  projectsEl.append(header);
+  for (const result of results) {
+    const item = document.createElement("div");
+    item.className = "result";
+    const title = document.createElement("div");
+    title.className = "result-title";
+    title.textContent = result.title;
+    const body = document.createElement("div");
+    body.className = "result-snippet";
+    body.textContent = result.snippet;
+    item.append(title, body);
+    item.onclick = () => {
+      const tab = tabs.get(result.conversation) || createTab(result.conversation);
+      tab.find = query;
+      activate(result.conversation);
+      if (tab.synced) findIn(tab, query);
+    };
+    projectsEl.append(item);
+  }
+}
+
+function findIn(tab, query) {
+  clearMarks(tab.transcript);
+  const needle = query.toLowerCase();
+  if (needle.length < 2) return;
+  const walker = document.createTreeWalker(tab.transcript, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let first = null;
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const lower = text.toLowerCase();
+    if (!lower.includes(needle)) continue;
+    const fragment = document.createDocumentFragment();
+    let index = 0;
+    let at = lower.indexOf(needle);
+    while (at !== -1) {
+      fragment.append(document.createTextNode(text.slice(index, at)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(at, at + needle.length);
+      fragment.append(mark);
+      if (!first) first = mark;
+      index = at + needle.length;
+      at = lower.indexOf(needle, index);
+    }
+    fragment.append(document.createTextNode(text.slice(index)));
+    node.replaceWith(fragment);
+  }
+  if (first) first.scrollIntoView({ block: "center" });
+}
+
+function clearMarks(root) {
+  for (const mark of root.querySelectorAll("mark")) {
+    mark.replaceWith(document.createTextNode(mark.textContent));
+  }
+  root.normalize();
+}
+
+/* Tabs */
+
+function openTab(id) {
+  if (!tabs.has(id)) createTab(id);
+  activate(id);
+}
+
+function createTab(id) {
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -270,8 +295,7 @@ function createTab(key) {
   panesEl.append(pane);
 
   const tab = {
-    key,
-    viewers: [],
+    id,
     pane,
     transcript,
     jump,
@@ -279,10 +303,12 @@ function createTab(key) {
     live: null,
     tools: {},
     follow: true,
+    viewers: [],
+    find: null,
     synced: false,
     attention: null,
   };
-  tabs.set(key, tab);
+  tabs.set(id, tab);
 
   transcript.addEventListener("scroll", () => {
     tab.follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 120;
@@ -300,7 +326,7 @@ function createTab(key) {
 
 function subscribe(tab) {
   if (tab.stream) tab.stream.close();
-  tab.stream = new EventSource(`/api/stream?conversation=${encodeURIComponent(tab.key)}`);
+  tab.stream = new EventSource(`/api/stream?conversation=${encodeURIComponent(tab.id)}`);
   tab.stream.onopen = () => {
     tab.transcript.replaceChildren();
     tab.live = null;
@@ -310,13 +336,13 @@ function subscribe(tab) {
   tab.stream.onmessage = (message) => render(tab, JSON.parse(message.data));
 }
 
-function activate(key) {
-  activeKey = key;
-  for (const tab of tabs.values()) tab.pane.hidden = tab.key !== key;
+function activate(id) {
+  activeId = id;
+  for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   placeholderEl.hidden = tabs.size > 0;
-  const tab = tabs.get(key);
+  const tab = tabs.get(id);
   if (tab) tab.attention = null;
-  renderSidebar();
+  if (searchEl.value.trim().length < 2) renderSidebar();
   renderTabs();
   renderActions();
   renderPending();
@@ -324,13 +350,13 @@ function activate(key) {
   inputEl.focus();
 }
 
-function closeTab(key) {
-  const tab = tabs.get(key);
+function closeTab(id) {
+  const tab = tabs.get(id);
   if (!tab) return;
   if (tab.stream) tab.stream.close();
   tab.pane.remove();
-  tabs.delete(key);
-  if (activeKey !== key) {
+  tabs.delete(id);
+  if (activeId !== id) {
     renderTabs();
     return;
   }
@@ -338,7 +364,7 @@ function closeTab(key) {
   if (next) {
     activate(next);
   } else {
-    activeKey = null;
+    activeId = null;
     placeholderEl.hidden = false;
     renderTabs();
     renderActions();
@@ -349,43 +375,41 @@ function renderTabs() {
   tabsEl.replaceChildren();
   for (const tab of tabs.values()) {
     const item = document.createElement("div");
-    item.className = "tab" + (tab.key === activeKey ? " active" : "");
+    item.className = "tab" + (tab.id === activeId ? " active" : "");
     const dot = document.createElement("span");
-    const conversation = conversationByKey(tab.key);
-    const status = conversation && conversation.running ? "running" : tab.attention || "";
+    const status = isRunning(tab.id) ? "running" : tab.attention || "";
     dot.className = "dot" + (status ? " " + status : "");
     const title = document.createElement("span");
     title.className = "title";
-    title.textContent = titleOf(tab.key);
+    title.textContent = titleOf(tab.id);
     const close = document.createElement("button");
     close.className = "close";
     close.textContent = "×";
     close.title = "cerrar pestaña";
     close.onclick = (event) => {
       event.stopPropagation();
-      closeTab(tab.key);
+      closeTab(tab.id);
     };
     item.append(dot, title, close);
-    item.onclick = () => activate(tab.key);
+    item.onclick = () => activate(tab.id);
     tabsEl.append(item);
   }
 }
 
 function renderActions() {
-  const tab = activeKey ? tabs.get(activeKey) : null;
-  const conversation = activeKey ? conversationByKey(activeKey) : null;
+  const tab = activeId ? tabs.get(activeId) : null;
   tabActionsEl.hidden = !tab;
-  composerEl.hidden = !conversation || conversation.read_only;
-  if (!tab || !conversation) return;
-  viewersEl.textContent =
-    tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
-  cancelEl.hidden = !conversation.running;
+  composerEl.hidden = !tab || isReadOnly(activeId);
+  if (tab)
+    viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
 }
 
 function updateTitle() {
   const count = [...tabs.values()].filter((tab) => tab.attention).length;
   document.title = count ? `(${count}) Jimmy` : "Jimmy";
 }
+
+/* Rendering */
 
 function render(tab, event) {
   switch (event.event) {
@@ -409,25 +433,26 @@ function render(tab, event) {
       break;
     case "error":
       renderError(tab, event);
-      if (tab.key !== activeKey) {
+      if (tab.id !== activeId) {
         tab.attention = "error";
         renderTabs();
         updateTitle();
       }
       break;
     case "done":
-      if (tab.key !== activeKey) {
+      if (tab.id !== activeId) {
         tab.attention = "done";
         renderTabs();
         updateTitle();
       }
       break;
     case "presence":
-      tab.viewers = event.users || [];
-      if (tab.key === activeKey) renderActions();
+      tab.viewers = event.users;
+      if (tab.id === activeId) renderActions();
       break;
     case "synced":
       tab.synced = true;
+      if (tab.find) findIn(tab, tab.find);
       break;
     default:
       break;
@@ -449,7 +474,7 @@ function renderUser(tab, event) {
   element.className = "event user";
   const who = document.createElement("span");
   who.className = "who";
-  who.textContent = "vos";
+  who.textContent = event.author || "vos";
   element.append(who, document.createTextNode(event.text));
   append(tab, element);
   tab.live = null;
@@ -965,6 +990,70 @@ function markdown(source) {
 
 /* Attachments */
 
+function pendingFor(id) {
+  return pending.get(id) || [];
+}
+
+function readImage(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function attachFiles(files) {
+  if (!activeId) return;
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    const url = await readImage(file);
+    if (!url) continue;
+    const list = pendingFor(activeId);
+    list.push({ name: file.name || "imagen", url });
+    pending.set(activeId, list);
+  }
+  renderPending();
+}
+
+function clearPending() {
+  pending.delete(activeId);
+  renderPending();
+}
+
+function renderPending() {
+  const list = pendingFor(activeId);
+  pendingEl.hidden = list.length === 0;
+  pendingEl.replaceChildren();
+  list.forEach((item, index) => {
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const img = document.createElement("img");
+    img.src = item.url;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.onclick = () => {
+      list.splice(index, 1);
+      renderPending();
+    };
+    thumb.append(img, remove);
+    pendingEl.append(thumb);
+  });
+}
+
+fileEl.addEventListener("change", async () => {
+  await attachFiles([...fileEl.files]);
+  fileEl.value = "";
+});
+
+inputEl.addEventListener("paste", async (event) => {
+  const files = [...(event.clipboardData ? event.clipboardData.files : [])];
+  if (!files.length) return;
+  event.preventDefault();
+  await attachFiles(files);
+});
+
 /* Composer */
 
 function grow() {
@@ -974,99 +1063,44 @@ function grow() {
 
 inputEl.addEventListener("input", grow);
 
-composerEl.onsubmit = async (event) => {
-  event.preventDefault();
-  if (!activeKey) return;
-  const list = pendingFor(activeKey);
+composerEl.onsubmit = async (formEvent) => {
+  formEvent.preventDefault();
+  if (!activeId) return;
+  const list = pendingFor(activeId);
   const text = inputEl.value.trim();
   if (!text && !list.length) return;
   const images = list.map((item) => item.url);
+  const sent = await api("/api/send", { conversation: activeId, text, images });
+  if (!sent || !sent.started) return;
   inputEl.value = "";
   grow();
   clearPending();
-  const tab = tabs.get(activeKey);
+  const tab = tabs.get(activeId);
   if (tab) tab.follow = true;
-  await api("/api/send", { conversation: activeKey, text, images });
 };
 
-inputEl.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
+inputEl.addEventListener("keydown", (keyEvent) => {
+  if (keyEvent.key === "Enter" && !keyEvent.shiftKey) {
+    keyEvent.preventDefault();
     composerEl.requestSubmit();
   }
 });
 
-/* Adjuntos */
-
-function pendingFor(key) {
-  return pending.get(key) || [];
-}
-
-function readAsDataURL(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(file);
-  });
-}
-
-async function attachFiles(files) {
-  if (!activeKey) return;
-  for (const file of files) {
-    if (!file.type.startsWith("image/")) continue;
-    const url = await readAsDataURL(file);
-    const list = pendingFor(activeKey);
-    list.push({ url, preview: URL.createObjectURL(file) });
-    pending.set(activeKey, list);
-  }
-  renderPending();
-}
-
-function clearPending() {
-  for (const item of pendingFor(activeKey)) URL.revokeObjectURL(item.preview);
-  pending.delete(activeKey);
-  renderPending();
-}
-
-function renderPending() {
-  const list = pendingFor(activeKey);
-  pendingEl.hidden = list.length === 0;
-  pendingEl.replaceChildren();
-  list.forEach((item, index) => {
-    const thumb = document.createElement("div");
-    thumb.className = "thumb";
-    const img = document.createElement("img");
-    img.src = item.preview;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "×";
-    remove.onclick = () => {
-      URL.revokeObjectURL(item.preview);
-      list.splice(index, 1);
-      renderPending();
-    };
-    thumb.append(img, remove);
-    pendingEl.append(thumb);
-  });
-}
-
-fileEl.onchange = async () => {
-  await attachFiles([...fileEl.files]);
-  fileEl.value = "";
+document.getElementById("cancel").onclick = () => {
+  if (activeId) api("/api/cancel", { conversation: activeId });
 };
 
-inputEl.addEventListener("paste", async (event) => {
-  const files = [...(event.clipboardData ? event.clipboardData.files : [])];
-  if (!files.length) return;
-  event.preventDefault();
-  await attachFiles(files);
-});
+/* Proyectos */
 
-cancelEl.onclick = async () => {
-  if (!activeKey) return;
-  await api("/api/cancel", { conversation: activeKey });
+document.getElementById("new-project").onclick = async () => {
+  const field = document.getElementById("project-name");
+  const name = field.value.trim();
+  if (!name) return;
+  const made = await api("/api/projects", { name });
+  if (!made || made.error) return;
+  field.value = "";
+  await refresh();
 };
-
 /* Sidebar drawer */
 
 function openSidebar() {
@@ -1082,15 +1116,9 @@ function closeSidebar() {
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
 
-document.getElementById("logout").onsubmit = async (event) => {
-  event.preventDefault();
-  await fetch("/api/logout", { method: "POST" });
-  location.href = "/login";
-};
-
 async function main() {
   await refresh();
-  setInterval(refresh, 2000);
+  setInterval(refresh, 3000);
 }
 
 main();

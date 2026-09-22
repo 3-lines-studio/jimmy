@@ -60,7 +60,7 @@ if [ -z "$TG_PORT" ] || [ -z "$MODEL_PORT" ]; then
 fi
 
 say "levanto jimmy (transport=telegram, con la web adentro)"
-env \
+env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
     TELEGRAM_API_BASE="http://127.0.0.1:$TG_PORT" \
     TELEGRAM_BOT_TOKEN=test \
     TELEGRAM_ALLOWED_USER_IDS=999 \

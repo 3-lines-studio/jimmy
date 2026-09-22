@@ -694,6 +694,10 @@ done
         assert!(app.starts_with("HTTP/1.1 200"), "{app}");
         assert!(app.contains("javascript"), "{app}");
         assert!(app.contains("EventSource"), "{app}");
+        assert!(
+            app.contains("Cache-Control: no-store"),
+            "sin esto un proxy le pone su propio max-age y sirve la UI vieja: {app}"
+        );
 
         let style = get(server.port, "/style.css", None);
         assert!(style.contains("text/css"), "{style}");

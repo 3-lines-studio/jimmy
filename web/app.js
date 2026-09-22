@@ -30,6 +30,7 @@ const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
 const toastEl = document.getElementById("toast");
+const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 
 async function api(path, body) {
   let response;
@@ -93,6 +94,7 @@ function isReadOnly(id) {
 async function refresh() {
   const data = await api("/api/state");
   if (!data) return;
+  const before = JSON.stringify(state.projects);
   state = data;
   const live = new Set();
   for (const project of state.projects) {
@@ -101,7 +103,12 @@ async function refresh() {
   for (const id of [...tabs.keys()]) {
     if (!live.has(id)) closeTab(id);
   }
-  if (searchEl.value.trim().length < 2) renderSidebar();
+  if (searchEl.value.trim().length < 2) {
+    renderSidebar();
+  } else if (searchDirty || JSON.stringify(state.projects) !== before) {
+    searchDirty = false;
+    runSearch();
+  }
   renderTabs();
   renderActions();
   updateTitle();
@@ -299,20 +306,43 @@ async function deleteProject(project) {
 /* Search */
 
 let searchTimer = null;
+let searchDirty = false;
 
 searchEl.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 250);
 });
 
+searchEl.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  searchEl.value = "";
+  clearFind();
+  renderSidebar();
+});
+
 async function runSearch() {
   const query = searchEl.value.trim();
   if (query.length < 2) {
+    clearFind();
     renderSidebar();
     return;
   }
   const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
   renderResults(query, data && data.results ? data.results : []);
+}
+
+function clearFind() {
+  for (const tab of tabs.values()) {
+    tab.find = null;
+    clearMarks(tab.transcript);
+  }
+}
+
+function openResult(conversation, query) {
+  const tab = tabs.get(conversation) || createTab(conversation);
+  tab.find = query;
+  activate(conversation);
+  if (tab.synced) findIn(tab, query);
 }
 
 function renderResults(query, results) {
@@ -322,23 +352,25 @@ function renderResults(query, results) {
   header.className = "project";
   header.textContent = results.length ? `${results.length} resultados` : "sin resultados";
   projectsEl.append(header);
+  let current = null;
+  let group = null;
   for (const result of results) {
-    const item = document.createElement("div");
-    item.className = "result";
-    const title = document.createElement("div");
-    title.className = "result-title";
-    title.textContent = result.title;
-    const body = document.createElement("div");
-    body.className = "result-snippet";
-    body.textContent = result.snippet;
-    item.append(title, body);
-    item.onclick = () => {
-      const tab = tabs.get(result.conversation) || createTab(result.conversation);
-      tab.find = query;
-      activate(result.conversation);
-      if (tab.synced) findIn(tab, query);
-    };
-    projectsEl.append(item);
+    if (result.conversation !== current) {
+      current = result.conversation;
+      group = document.createElement("div");
+      group.className = "result-group";
+      const title = document.createElement("div");
+      title.className = "result-title";
+      title.textContent = result.title || result.conversation;
+      title.onclick = () => openResult(result.conversation, query);
+      group.append(title);
+      projectsEl.append(group);
+    }
+    const snippet = document.createElement("div");
+    snippet.className = "result-snippet";
+    snippet.textContent = result.snippet;
+    snippet.onclick = () => openResult(result.conversation, query);
+    group.append(snippet);
   }
 }
 
@@ -454,7 +486,7 @@ function activate(id) {
   renderActions();
   renderPending();
   updateTitle();
-  inputEl.focus();
+  if (finePointer.matches) inputEl.focus();
 }
 
 function closeTab(id) {
@@ -554,6 +586,7 @@ function render(tab, event) {
       break;
     case "error":
       renderError(tab, event);
+      searchDirty = true;
       if (tab.id !== activeId) {
         tab.attention = "error";
         renderTabs();
@@ -562,6 +595,7 @@ function render(tab, event) {
       break;
     case "done":
       tab.steps = null;
+      searchDirty = true;
       if (tab.id !== activeId) {
         tab.attention = "done";
         renderTabs();
@@ -1292,6 +1326,33 @@ document.getElementById("new-project").onclick = async () => {
   field.value = "";
   await refresh();
 };
+
+/* Tema */
+
+const themeEl = document.getElementById("theme");
+const lightQuery = matchMedia("(prefers-color-scheme: light)");
+
+function showTheme() {
+  const dark = document.documentElement.dataset.theme !== "light";
+  themeEl.textContent = dark ? "☀" : "☾";
+  themeEl.title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
+}
+
+themeEl.onclick = () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("jimmy-theme", theme);
+  showTheme();
+};
+
+lightQuery.addEventListener("change", () => {
+  if (localStorage.getItem("jimmy-theme")) return;
+  document.documentElement.dataset.theme = lightQuery.matches ? "light" : "dark";
+  showTheme();
+});
+
+showTheme();
+
 /* Sidebar drawer */
 
 function openSidebar() {

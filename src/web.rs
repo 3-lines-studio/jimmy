@@ -22,6 +22,7 @@ const SYNCED: &str = r#"{"event":"synced"}"#;
 
 const INDEX: &str = include_str!("../web/index.html");
 const LOGIN: &str = include_str!("../web/login.html");
+const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 
@@ -93,7 +94,10 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => app_page(web, &request, stream),
-        ("GET", "/login") => http::send_text(stream, 200, HTML, LOGIN),
+        ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
+        ("GET", "/theme.css") => {
+            http::send_text(stream, 200, "text/css; charset=utf-8", &versioned(THEME))
+        }
         ("GET", "/style.css") => http::send_text(stream, 200, "text/css; charset=utf-8", STYLE),
         ("GET", "/app.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", APP),
         ("POST", "/api/login") => login(web, &request, stream),
@@ -129,6 +133,7 @@ fn versioned(page: &str) -> String {
         .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
+        .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
 }
 
@@ -727,11 +732,15 @@ done
         let style = get(server.port, "/style.css", None);
         assert!(style.contains("text/css"), "{style}");
 
+        let theme = get(server.port, "/theme.css", None);
+        assert!(theme.contains("text/css"), "{theme}");
+
         let cookie = login(server.port, "berti@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("<div id=\"panes\">"), "{page}");
         assert!(page.contains("/app.js?v="), "{page}");
+        assert!(page.contains("/theme.css?v="), "{page}");
         assert!(page.contains("/style.css?v="), "{page}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
@@ -1214,39 +1223,63 @@ done
         (high + 0.05) / (low + 0.05)
     }
 
-    #[test]
-    fn the_dark_theme_keeps_its_text_readable() {
-        let css = STYLE;
-        let at = |name: &str| variable(css, name);
-        let (bg, panel, raised) = (at("bg"), at("panel"), at("raised"));
-        let (text, muted, faint) = (at("text"), at("muted"), at("faint"));
-        let (accent, ok, err) = (at("accent"), at("ok"), at("err"));
-        let line = at("line-strong");
+    fn block_of(css: &str, selector: &str) -> String {
+        let start = css
+            .find(selector)
+            .unwrap_or_else(|| panic!("falta el bloque {selector}"))
+            + selector.len();
+        let end = css[start..]
+            .find("\n}")
+            .unwrap_or_else(|| panic!("el bloque {selector} no cierra"))
+            + start;
+        css[start..end].to_string()
+    }
 
-        let readable = [
-            ("text", &text),
-            ("muted", &muted),
-            ("faint", &faint),
-            ("accent", &accent),
-            ("ok", &ok),
-            ("err", &err),
+    #[test]
+    fn both_themes_keep_their_text_readable() {
+        let themes = [
+            ("oscuro", ":root {"),
+            ("claro", ":root[data-theme=\"light\"] {"),
         ];
-        for (name, color) in readable {
-            for (fondo, base) in [("bg", &bg), ("panel", &panel), ("raised", &raised)] {
-                let ratio = contrast(color, base);
+        for (theme, selector) in themes {
+            let block = block_of(THEME, selector);
+            let at = |name: &str| variable(&block, name);
+            let backgrounds = [
+                ("bg", at("bg")),
+                ("panel", at("panel")),
+                ("raised", at("raised")),
+            ];
+
+            let readable = ["text", "muted", "faint", "accent", "ok", "warn", "err"];
+            let in_code = [
+                "code",
+                "tok-comment",
+                "tok-string",
+                "tok-keyword",
+                "tok-number",
+                "tok-add",
+                "tok-del",
+                "tok-meta",
+            ];
+            for name in readable.into_iter().chain(in_code) {
+                let color = at(name);
+                for (fondo, base) in &backgrounds {
+                    let ratio = contrast(&color, base);
+                    assert!(
+                        ratio >= 4.5,
+                        "tema {theme}: {name} sobre {fondo} da {ratio:.2}, por debajo de 4.5:1 de AA"
+                    );
+                }
+            }
+
+            for (fondo, base) in &backgrounds[0..2] {
+                let border = at("line-strong");
+                let ratio = contrast(&border, base);
                 assert!(
-                    ratio >= 4.5,
-                    "{name} sobre {fondo} da {ratio:.2}, por debajo de 4.5:1 de AA"
+                    ratio >= 3.0,
+                    "tema {theme}: el borde de los campos (#{border}) sobre {fondo} da {ratio:.2}, por debajo de 3:1"
                 );
             }
-        }
-
-        for (fondo, base) in [("bg", &bg), ("panel", &panel)] {
-            let ratio = contrast(&line, base);
-            assert!(
-                ratio >= 3.0,
-                "el borde de los campos (#{line}) sobre {fondo} da {ratio:.2}, por debajo de 3:1"
-            );
         }
     }
 }

@@ -4,21 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Jimmy</title>
+    <link rel="stylesheet" href="/theme.css" />
+    <script>
+      (() => {
+        const saved = localStorage.getItem("jimmy-theme");
+        document.documentElement.dataset.theme =
+          saved || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      })();
+    </script>
     <style>
-      :root {
-        color-scheme: dark;
-        --bg: #0a0b0d;
-        --panel: #101215;
-        --line: #1c2026;
-        --line-strong: #272c34;
-        --text: #e7e9ec;
-        --muted: #8b929d;
-        --faint: #59616c;
-        --err: #f0736b;
-        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono",
-          "Roboto Mono", monospace;
-      }
-
       * {
         box-sizing: border-box;
       }
@@ -53,7 +47,7 @@
         font: inherit;
         color: var(--text);
         background: var(--panel);
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
         padding: 8px 12px;
       }
@@ -64,7 +58,7 @@
 
       input:focus {
         outline: none;
-        border-color: var(--line-strong);
+        border-color: var(--accent);
       }
 
       button {
@@ -74,7 +68,7 @@
       }
 
       button:hover {
-        border-color: var(--line-strong);
+        border-color: var(--accent);
         color: var(--text);
       }
 

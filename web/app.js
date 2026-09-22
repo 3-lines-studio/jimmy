@@ -1292,6 +1292,33 @@ document.getElementById("new-project").onclick = async () => {
   field.value = "";
   await refresh();
 };
+
+/* Tema */
+
+const themeEl = document.getElementById("theme");
+const lightQuery = matchMedia("(prefers-color-scheme: light)");
+
+function showTheme() {
+  const dark = document.documentElement.dataset.theme !== "light";
+  themeEl.textContent = dark ? "☀" : "☾";
+  themeEl.title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
+}
+
+themeEl.onclick = () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("jimmy-theme", theme);
+  showTheme();
+};
+
+lightQuery.addEventListener("change", () => {
+  if (localStorage.getItem("jimmy-theme")) return;
+  document.documentElement.dataset.theme = lightQuery.matches ? "light" : "dark";
+  showTheme();
+});
+
+showTheme();
+
 /* Sidebar drawer */
 
 function openSidebar() {

@@ -27,6 +27,7 @@ const LOGIN: &str = include_str!("../web/login.html");
 const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
+const MARKDOWN: &str = include_str!("../web/markdown.js");
 
 pub struct Web {
     root: PathBuf,
@@ -102,6 +103,9 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         }
         ("GET", "/style.css") => http::send_text(stream, 200, "text/css; charset=utf-8", STYLE),
         ("GET", "/app.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", APP),
+        ("GET", "/markdown.js") => {
+            http::send_text(stream, 200, "text/javascript; charset=utf-8", MARKDOWN)
+        }
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -139,6 +143,7 @@ fn versioned(page: &str) -> String {
         .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
+        .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
 }
@@ -877,11 +882,20 @@ done
         let theme = get(server.port, "/theme.css", None);
         assert!(theme.contains("text/css"), "{theme}");
 
+        let markdown = get(server.port, "/markdown.js", None);
+        assert!(markdown.starts_with("HTTP/1.1 200"), "{markdown}");
+        assert!(markdown.contains("function markdown"), "{markdown}");
+
         let cookie = login(server.port, "berti@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("<div id=\"panes\">"), "{page}");
+        assert!(page.contains("/markdown.js?v="), "{page}");
         assert!(page.contains("/app.js?v="), "{page}");
+        assert!(
+            page.find("/markdown.js?v=") < page.find("/app.js?v="),
+            "el markdown se carga antes que la app: {page}"
+        );
         assert!(page.contains("/theme.css?v="), "{page}");
         assert!(page.contains("/style.css?v="), "{page}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());

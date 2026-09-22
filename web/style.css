@@ -774,6 +774,18 @@ main {
   color: var(--muted);
 }
 
+.event.assistant hr {
+  margin: var(--s4) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.event.assistant input[type="checkbox"] {
+  margin: 0 4px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+}
+
 .event.assistant.streaming::after {
   content: "▍";
   color: var(--accent);

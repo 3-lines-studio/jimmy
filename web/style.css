@@ -1,23 +1,25 @@
 :root {
   color-scheme: dark;
 
-  --bg: #0a0b0d;
-  --panel: #101215;
-  --raised: #171a1f;
-  --hover: #1b1f25;
+  --bg: #0e0e11;
+  --panel: #141418;
+  --raised: #1c1c22;
+  --hover: #1f1f26;
 
-  --line: #1c2026;
-  --line-strong: #272c34;
+  --line: #26262c;
+  --line-strong: #34343c;
 
-  --text: #e7e9ec;
-  --muted: #8b929d;
-  --faint: #59616c;
+  --text: #ececf1;
+  --muted: #9b9ba4;
+  --faint: #6c6c76;
 
-  --accent: #6aa2ff;
-  --ok: #4cc38a;
-  --warn: #d9a05b;
-  --err: #f0736b;
+  --accent: #8ab4ff;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --err: #f87171;
 
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono",
     "Roboto Mono", monospace;
 
@@ -25,7 +27,7 @@
   --r-md: 10px;
   --r-lg: 14px;
 
-  --measure: 780px;
+  --measure: 720px;
 
   --s1: 4px;
   --s2: 8px;
@@ -48,13 +50,22 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.6 var(--mono);
+  font: 14px/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
 ::selection {
-  background: rgba(106, 162, 255, 0.25);
+  background: rgba(138, 180, 255, 0.25);
+}
+
+code,
+pre,
+.tool pre,
+.diff-path,
+.diff-line,
+.diff-result {
+  font-family: var(--mono);
 }
 
 * {
@@ -189,13 +200,12 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--s1);
-  height: 28px;
+  height: 26px;
   padding: 0 var(--s2) 0 var(--s3);
-  margin-top: var(--s2);
+  margin-top: var(--s3);
   color: var(--faint);
-  font-size: 10.5px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
 }
 
 .project .name {
@@ -214,6 +224,7 @@ textarea:focus {
 }
 
 .project .caret {
+  font-size: 9px;
   transition: transform 120ms ease;
 }
 
@@ -229,7 +240,7 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  height: 30px;
+  height: 32px;
   padding: 0 var(--s2) 0 var(--s3);
   border-radius: var(--r-sm);
   color: var(--muted);
@@ -238,13 +249,17 @@ textarea:focus {
 }
 
 .conversation:hover {
-  background: var(--raised);
+  background: var(--hover);
   color: var(--text);
 }
 
 .conversation.active {
   background: var(--raised);
   color: var(--text);
+}
+
+.conversation.active .title {
+  font-weight: 500;
 }
 
 .conversation .title {
@@ -262,24 +277,34 @@ textarea:focus {
 }
 
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 50%;
-  background: #333a43;
+  border: 1.5px solid var(--faint);
 }
 
 .dot.running {
-  background: var(--warn);
-  animation: pulse 1.4s ease-in-out infinite;
+  background: transparent;
+  border-color: var(--text);
+  border-top-color: transparent;
+  animation: spin 1s linear infinite;
 }
 
 .dot.done {
   background: var(--ok);
+  border-color: var(--ok);
 }
 
 .dot.error {
   background: var(--err);
+  border-color: var(--err);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes pulse {
@@ -522,23 +547,16 @@ main {
 }
 
 .event.user {
-  padding: var(--s3) var(--s4);
-  background: var(--panel);
+  padding: 11px 14px;
+  border: 1px solid var(--line);
   border-radius: var(--r-md);
   white-space: pre-wrap;
 }
 
-.who {
-  display: block;
-  margin-bottom: var(--s1);
-  color: var(--faint);
-  font-size: 10.5px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
 .event.assistant {
-  color: #dcdfe4;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: #e3e3e8;
 }
 
 .event.assistant :where(p, ul, ol, pre, blockquote) {
@@ -550,9 +568,13 @@ main {
 }
 
 .event.assistant :where(h2, h3, h4) {
-  margin: 0 0 var(--s2);
-  font-size: 13px;
+  margin: var(--s4) 0 var(--s2);
+  font-size: 14.5px;
   font-weight: 600;
+}
+
+.event.assistant :where(h2, h3, h4):first-child {
+  margin-top: 0;
 }
 
 .event.assistant ul,
@@ -679,12 +701,69 @@ mark {
   color: inherit;
 }
 
+/* Pasos del turno, plegados en una línea */
+
+.steps {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.steps > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 2px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.steps > summary:hover .label {
+  color: var(--text);
+}
+
+.steps .caret {
+  color: var(--faint);
+  font-size: 9px;
+  transition: transform 120ms ease;
+}
+
+.steps[open] .caret {
+  transform: rotate(90deg);
+}
+
+.steps .elapsed {
+  color: var(--faint);
+}
+
+.steps.failed .label,
+.steps.failed .elapsed {
+  color: var(--err);
+}
+
+.steps .list {
+  display: flex;
+  flex-direction: column;
+  margin: var(--s1) 0 var(--s2) 6px;
+  padding-left: var(--s3);
+  border-left: 1px solid var(--line);
+}
+
 /* Tools */
 
 .tool {
   background: var(--panel);
   border-radius: var(--r-md);
   overflow: hidden;
+}
+
+.steps .tool {
+  background: transparent;
+  border-radius: var(--r-sm);
+  overflow: visible;
 }
 
 .tool > summary {
@@ -695,6 +774,17 @@ mark {
   padding: 0 var(--s4);
   cursor: pointer;
   list-style: none;
+}
+
+.steps .tool > summary {
+  height: 26px;
+  padding: 0 var(--s2);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.steps .tool > summary:hover {
+  background: var(--hover);
 }
 
 .tool > summary::-webkit-details-marker {
@@ -738,6 +828,11 @@ mark {
 .tool .body {
   padding: var(--s3) var(--s4) var(--s4);
   border-top: 1px solid var(--line);
+}
+
+.steps .tool .body {
+  padding: var(--s2) var(--s2) var(--s3) var(--s3);
+  border-top: 0;
 }
 
 .tool pre {
@@ -873,15 +968,21 @@ mark {
 }
 
 #composer .send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  width: 28px;
   height: 28px;
-  padding: 0 var(--s2);
-  color: var(--accent);
+  padding: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
 }
 
 #composer .send:hover {
-  background: rgba(106, 162, 255, 0.1);
-  color: var(--accent);
+  background: #ffffff;
+  color: var(--bg);
 }
 
 #pending:not([hidden]) {

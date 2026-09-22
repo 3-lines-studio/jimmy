@@ -1,4 +1,13 @@
 const ICON = { read: "▤", write: "✎", edit: "±", bash: "$" };
+const NOUN = {
+  read: ["archivo", "archivos"],
+  write: ["archivo", "archivos"],
+  edit: ["edición", "ediciones"],
+  bash: ["comando", "comandos"],
+  search: ["búsqueda", "búsquedas"],
+  fetch: ["página", "páginas"],
+  browse: ["página", "páginas"],
+};
 
 let state = { projects: [] };
 const tabs = new Map();
@@ -19,6 +28,7 @@ const inputEl = document.getElementById("input");
 const searchEl = document.getElementById("search");
 const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
+const cancelEl = document.getElementById("cancel");
 
 async function api(path, body) {
   let response;
@@ -318,6 +328,7 @@ function createTab(id) {
     jump,
     stream: null,
     live: null,
+    steps: null,
     tools: {},
     follow: true,
     viewers: [],
@@ -347,6 +358,7 @@ function subscribe(tab) {
   tab.stream.onopen = () => {
     tab.transcript.replaceChildren();
     tab.live = null;
+    tab.steps = null;
     tab.tools = {};
     tab.synced = false;
   };
@@ -417,6 +429,7 @@ function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   tabActionsEl.hidden = !tab;
   composerEl.hidden = !tab || isReadOnly(activeId);
+  cancelEl.hidden = !tab || !isRunning(activeId);
   if (tab)
     viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
 }
@@ -457,6 +470,7 @@ function render(tab, event) {
       }
       break;
     case "done":
+      tab.steps = null;
       if (tab.id !== activeId) {
         tab.attention = "done";
         renderTabs();
@@ -489,12 +503,10 @@ function append(tab, element) {
 function renderUser(tab, event) {
   const element = document.createElement("div");
   element.className = "event user";
-  const who = document.createElement("span");
-  who.className = "who";
-  who.textContent = event.author || "vos";
-  element.append(who, document.createTextNode(event.text));
+  element.textContent = event.text;
   append(tab, element);
   tab.live = null;
+  tab.steps = null;
 }
 
 function renderDelta(tab, event) {
@@ -518,6 +530,7 @@ function renderAssistant(tab, event) {
   tab.live.classList.remove("streaming");
   tab.live.innerHTML = markdown(event.text);
   tab.live = null;
+  tab.steps = null;
   scroll(tab);
 }
 
@@ -527,6 +540,7 @@ function renderError(tab, event) {
   element.textContent = event.message;
   append(tab, element);
   tab.live = null;
+  tab.steps = null;
 }
 
 function startTool(tab, event) {
@@ -551,7 +565,7 @@ function startTool(tab, event) {
 
   const body = document.createElement("div");
   body.className = "body";
-  const entry = { details, body, meta, output: null, stat: "" };
+  const entry = { details, body, meta, output: null, stat: "", group: null };
   if (event.name === "edit") {
     const diff = diffNodes(event.args);
     body.append(...diff.nodes);
@@ -568,9 +582,68 @@ function startTool(tab, event) {
     entry.output = output;
   }
   details.append(summary, body);
-  append(tab, details);
+  const group = steps(tab, event.name);
+  entry.group = group;
+  group.list.append(details);
   tab.tools[event.id] = entry;
   tab.live = null;
+  scroll(tab);
+}
+
+/** Los pasos seguidos van en la misma línea, hasta que el agente dice algo. */
+function steps(tab, name) {
+  if (tab.steps) {
+    tab.steps.names.push(name);
+    tab.steps.label.textContent = stepsLabel(tab.steps.names);
+    return tab.steps;
+  }
+  const details = document.createElement("details");
+  details.className = "steps";
+  const summary = document.createElement("summary");
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  caret.textContent = "▶";
+  const label = document.createElement("span");
+  label.className = "label";
+  const elapsed = document.createElement("span");
+  elapsed.className = "elapsed";
+  summary.append(caret, label, elapsed);
+  const list = document.createElement("div");
+  list.className = "list";
+  details.append(summary, list);
+  append(tab, details);
+  tab.steps = {
+    details,
+    list,
+    label,
+    elapsed,
+    names: [name],
+    ms: 0,
+  };
+  tab.steps.label.textContent = stepsLabel(tab.steps.names);
+  return tab.steps;
+}
+
+function stepsLabel(names) {
+  const counts = new Map();
+  for (const name of names) {
+    const [one, many] = NOUN[name] || [name, name];
+    const noun = counts.get(one) || { many, count: 0 };
+    noun.count += 1;
+    counts.set(one, noun);
+  }
+  const parts = [...counts].map(
+    ([one, { many, count }]) => `${count} ${count === 1 ? one : many}`,
+  );
+  if (parts.length === 1) return parts[0];
+  return parts.slice(0, -1).join(", ") + " y " + parts[parts.length - 1];
+}
+
+function elapsed(ms) {
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1).replace(".", ",")} s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
 function streamTool(tab, event) {
@@ -598,6 +671,14 @@ function finishTool(tab, event) {
     tool.body.append(result);
   }
   if (event.failed) tool.details.open = true;
+  if (tool.group) {
+    tool.group.ms += event.ms;
+    tool.group.elapsed.textContent = tool.group.ms ? `· ${elapsed(tool.group.ms)}` : "";
+    if (event.failed) {
+      tool.group.details.classList.add("failed");
+      tool.group.details.open = true;
+    }
+  }
   scroll(tab);
 }
 

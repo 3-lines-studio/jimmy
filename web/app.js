@@ -653,6 +653,9 @@ function render(tab, event) {
         updateTitle();
       }
       break;
+    case "stopped":
+      renderStopped(tab, event);
+      break;
     case "done":
       tab.steps = null;
       searchDirty = true;
@@ -739,6 +742,15 @@ function renderError(tab, event) {
   const element = document.createElement("div");
   element.className = "event error";
   element.textContent = event.message;
+  append(tab, element);
+  tab.live = null;
+  tab.steps = null;
+}
+
+function renderStopped(tab, event) {
+  const element = document.createElement("div");
+  element.className = "event stopped";
+  element.textContent = `${event.author} frenó el turno`;
   append(tab, element);
   tab.live = null;
   tab.steps = null;

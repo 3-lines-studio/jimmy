@@ -771,6 +771,11 @@ main {
   white-space: pre-wrap;
 }
 
+.event.stopped {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .event.user .thumbs {
   display: flex;
   flex-wrap: wrap;

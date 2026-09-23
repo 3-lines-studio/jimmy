@@ -1457,8 +1457,7 @@ while read -r line; do
 done
 ",
         ));
-        let log = Log::in_dir(&root.join("chats/x"));
-        let (_backlog, live) = agent.bus().attach("x", &log, "berti");
+        let live = agent.bus().attach("x", "berti");
         let fake = Fake::default();
         agent
             .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")

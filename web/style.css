@@ -1294,6 +1294,20 @@ mark {
   box-shadow: var(--shadow-md);
 }
 
+.earlier {
+  position: absolute;
+  top: var(--s3);
+  left: 50%;
+  transform: translateX(-50%);
+  height: 32px;
+  padding: 0 var(--s4);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  color: var(--accent);
+  box-shadow: var(--shadow-md);
+}
+
 #backdrop {
   display: none;
 }

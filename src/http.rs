@@ -52,6 +52,12 @@ impl Request {
             .map(|value| value.to_string())
     }
 
+    pub fn flag(&self, name: &str) -> bool {
+        self.json()
+            .and_then(|json| json.get(name).and_then(|value| value.as_bool()))
+            .unwrap_or(false)
+    }
+
     pub fn list(&self, name: &str) -> Vec<String> {
         self.json()
             .and_then(|json| json.get(name).and_then(|value| value.as_array()).cloned())

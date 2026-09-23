@@ -415,8 +415,14 @@ async function deleteConversation(conversation) {
 
 async function deleteProject(project) {
   if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
+  const body = { project: project.name };
+  if (project.unversioned) {
+    const warn = `"${project.name}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
+    if (!confirm(`${warn} ¿Lo borro igual?`)) return;
+    body.force = true;
+  }
   for (const conversation of project.conversations) closeTab(conversation.key);
-  await api("/api/delete-project", { project: project.name });
+  await api("/api/delete-project", body);
   await refresh();
 }
 

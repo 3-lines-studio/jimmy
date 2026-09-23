@@ -9,7 +9,7 @@ use crate::auth::{self, Auth};
 use crate::bus::Bus;
 use crate::conversations;
 use crate::http::{self, Request};
-use crate::log::Log;
+use crate::log::{Log, Window};
 use crate::media;
 use crate::protocol::Event;
 use crate::transport::{Msg, Session, Transport};
@@ -22,8 +22,8 @@ use std::time::Duration;
 /// El final del backlog: lo de antes ya está en pantalla. Lleva cuántos eventos
 /// tiene el log, para que el que mira guarde el número y al volver a la
 /// conversación pida desde ahí en vez de bajar todo de nuevo.
-fn synced(total: usize) -> String {
-    format!(r#"{{"event":"synced","count":{total}}}"#)
+fn synced(total: usize, first: usize) -> String {
+    format!(r#"{{"event":"synced","count":{total},"first":{first}}}"#)
 }
 
 const INDEX: &str = include_str!("../web/index.html");
@@ -125,6 +125,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
         ("GET", "/api/stream") => events(web, &request, stream),
+        ("GET", "/api/history") => history(web, &request, stream),
         ("GET", "/api/online") => online(web, &request, stream),
         ("GET", "/api/search") => search(web, &request, stream),
         ("POST", "/api/conversations") => create(web, &request, stream),
@@ -671,15 +672,40 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if !conversation.dir.is_dir() {
         return http::send_error(stream, 404, "esa conversación no existe");
     }
-    let log = Log::in_dir(&conversation.dir);
     let since = request
         .param("since")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let (backlog, live) = web.bus.attach(key, &log, &user);
-    let result = follow(stream, &backlog, since, &live);
+    let window = Log::in_dir(&conversation.dir).window(usize::MAX);
+    let live = web.bus.attach(key, &user);
+    let result = follow(stream, &window, since, &live);
     web.bus.detach(key, &user);
     result
+}
+
+/// Los eventos anteriores al tramo que el cliente tiene: con eso se desplaza
+/// hacia arriba en el hilo sin volver a bajar lo que ya vio.
+fn history(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(key) = request.param("conversation") else {
+        return http::send_error(stream, 400, "falta conversation");
+    };
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    if !conversation.dir.is_dir() {
+        return http::send_error(stream, 404, "esa conversación no existe");
+    }
+    let before = request
+        .param("before")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let window = Log::in_dir(&conversation.dir).window(before);
+    http::send_json(
+        stream,
+        200,
+        &serde_json::json!({ "events": window.events, "first": window.first }),
+    )
 }
 
 fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -687,24 +713,28 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let live = web.bus.watch(&user);
-    let result = follow(stream, &[], 0, &live);
+    let result = follow(stream, &Window::default(), 0, &live);
     web.bus.detach_watch(&user);
     result
 }
 
 fn follow(
     stream: &mut TcpStream,
-    backlog: &[crate::protocol::Event],
+    window: &Window,
     since: usize,
     live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
 ) -> std::io::Result<()> {
     http::sse_open(stream)?;
-    for event in backlog.iter().skip(since) {
+    for event in window
+        .events
+        .iter()
+        .skip(since.saturating_sub(window.first))
+    {
         if let Ok(json) = serde_json::to_string(event) {
             http::sse_data(stream, &json)?;
         }
     }
-    http::sse_data(stream, &synced(backlog.len()))?;
+    http::sse_data(stream, &synced(window.total, window.first))?;
     loop {
         match live.recv_timeout(Duration::from_secs(25)) {
             Ok(event) => {
@@ -1445,6 +1475,75 @@ done
             .filter_map(Result::ok)
             .find(|line| line.starts_with("data: ") && line.contains(needle))
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_stream_opens_at_a_turn_and_the_history_goes_back() {
+        let server = start("history");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let mut log = String::new();
+        for turn in 0..300 {
+            log.push_str(&format!(
+                "{{\"event\":\"user\",\"text\":\"{turn}\"}}\n{{\"event\":\"tool_start\",\"id\":\"{turn}\",\"name\":\"read\",\"args\":\"{{}}\"}}\n{{\"event\":\"done\",\"text\":\"{turn}\"}}\n"
+            ));
+        }
+        std::fs::write(
+            server.root.join("chats/7469057930/conversation.jsonl"),
+            &log,
+        )
+        .unwrap();
+
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "GET /api/stream?conversation=7469057930&since=0 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        let mut events: Vec<serde_json::Value> = Vec::new();
+        loop {
+            let line = lines.next().unwrap().unwrap();
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let event: serde_json::Value = serde_json::from_str(data).unwrap();
+            if event["event"] == "synced" {
+                let synced = event;
+                assert_eq!(synced["count"], 900);
+                let first = synced["first"].as_u64().unwrap();
+                assert!(first > 0, "un log largo no entra entero: {synced}");
+                assert_eq!(first + events.len() as u64, 900);
+                assert_eq!(events[0]["event"], "user", "el tramo arranca en un turno");
+                break;
+            }
+            events.push(event);
+        }
+        assert!(events.len() <= crate::log::REPLAY);
+
+        let body = get(
+            server.port,
+            "/api/history?conversation=7469057930&before=702",
+            Some(&cookie),
+        );
+        let earlier: serde_json::Value =
+            serde_json::from_str(body.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let events = earlier["events"].as_array().unwrap();
+        assert_eq!(events[0]["event"], "user");
+        assert_eq!(
+            earlier["first"].as_u64().unwrap() + events.len() as u64,
+            702
+        );
+
+        let empty = get(
+            server.port,
+            "/api/history?conversation=7469057930&before=0",
+            Some(&cookie),
+        );
+        let empty: serde_json::Value =
+            serde_json::from_str(empty.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(empty["first"], 0);
+        assert!(empty["events"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]

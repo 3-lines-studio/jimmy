@@ -581,7 +581,11 @@ function createTab(id) {
   jump.className = "jump";
   jump.textContent = "ir al final ↓";
   jump.hidden = true;
-  pane.append(transcript, jump);
+  const earlier = document.createElement("button");
+  earlier.className = "earlier";
+  earlier.textContent = "ver anteriores ↑";
+  earlier.hidden = true;
+  pane.append(transcript, earlier, jump);
   panesEl.append(pane);
 
   const tab = {
@@ -589,6 +593,10 @@ function createTab(id) {
     pane,
     transcript,
     jump,
+    earlier,
+    first: 0,
+    loading: false,
+    prepending: false,
     stream: null,
     live: null,
     steps: null,
@@ -611,6 +619,7 @@ function createTab(id) {
     jump.hidden = true;
     transcript.scrollTop = transcript.scrollHeight;
   };
+  earlier.onclick = () => loadEarlier(tab);
 
   return tab;
 }
@@ -632,6 +641,43 @@ function subscribe(tab) {
   stream.onmessage = (message) => render(tab, JSON.parse(message.data));
 }
 
+function renderEarlier(tab) {
+  tab.earlier.hidden = tab.first <= 0;
+  tab.earlier.textContent = tab.loading ? "trayendo…" : "ver anteriores ↑";
+}
+
+async function loadEarlier(tab) {
+  if (tab.loading || tab.first <= 0) return;
+  tab.loading = true;
+  renderEarlier(tab);
+  const data = await api(
+    `/api/history?conversation=${encodeURIComponent(tab.id)}&before=${tab.first}`,
+  );
+  tab.loading = false;
+  if (!data || !data.events.length) {
+    tab.first = 0;
+    renderEarlier(tab);
+    return;
+  }
+  prepend(tab, data.events);
+  tab.first = data.first;
+  renderEarlier(tab);
+}
+
+/// Los eventos viejos van arriba, en orden, y la vista se queda donde estaba:
+/// el alto que creció arriba es el que se suma al scroll.
+function prepend(tab, events) {
+  const state = { live: tab.live, steps: tab.steps, tools: tab.tools };
+  const height = tab.transcript.scrollHeight;
+  tab.prepending = true;
+  for (const event of [...events].reverse()) render(tab, event);
+  tab.prepending = false;
+  tab.live = state.live;
+  tab.steps = state.steps;
+  tab.tools = state.tools;
+  tab.transcript.scrollTop += tab.transcript.scrollHeight - height;
+}
+
 function unsubscribe(tab) {
   if (!tab.stream) return;
   tab.stream.close();
@@ -644,7 +690,9 @@ function clearTab(tab) {
   tab.steps = null;
   tab.tools = {};
   tab.count = 0;
+  tab.first = 0;
   tab.synced = false;
+  renderEarlier(tab);
 }
 
 function activate(id) {
@@ -752,7 +800,7 @@ function updateTitle() {
 const NOT_LOGGED = new Set(["delta", "tool_delta", "typing", "presence", "online", "synced"]);
 
 function render(tab, event) {
-  if (!NOT_LOGGED.has(event.event)) tab.count++;
+  if (!NOT_LOGGED.has(event.event) && !tab.prepending) tab.count++;
   switch (event.event) {
     case "user":
       renderUser(tab, event);
@@ -817,7 +865,9 @@ function render(tab, event) {
         break;
       }
       tab.count = event.count || 0;
+      tab.first = event.first || 0;
       tab.synced = true;
+      renderEarlier(tab);
       if (tab.find) findIn(tab, tab.find);
       break;
     default:
@@ -831,6 +881,10 @@ function scroll(tab) {
 }
 
 function append(tab, element) {
+  if (tab.prepending) {
+    tab.transcript.prepend(element);
+    return;
+  }
   tab.transcript.append(element);
   scroll(tab);
 }

@@ -1120,12 +1120,55 @@ async function uploadImage(conversation, file) {
   return uploaded ? uploaded.name : "";
 }
 
+const SHRINK_OVER = 1024 * 1024;
+const MAX_SIDE = 1600;
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("no pude leer la imagen"));
+    };
+    image.src = url;
+  });
+}
+
+function toBlob(canvas, type) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, 0.85));
+}
+
+async function shrink(file) {
+  if (file.size < SHRINK_OVER) return file;
+  try {
+    const image = await loadImage(file);
+    const scale = Math.min(1, MAX_SIDE / Math.max(image.width, image.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const png = file.type === "image/png";
+    const blob = await toBlob(canvas, png ? "image/png" : "image/jpeg");
+    if (!blob || blob.size >= file.size) return file;
+    const name = png ? file.name : file.name.replace(/\.[^.]+$/, "") + ".jpg";
+    return new File([blob], name, { type: blob.type });
+  } catch {
+    return file;
+  }
+}
+
 async function attachFiles(files) {
   const conversation = activeId;
   if (!conversation) return;
+  if (files.some((file) => !file.type.startsWith("image/"))) notify("por ahora sólo imágenes");
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
-    const name = await uploadImage(conversation, file);
+    const name = await uploadImage(conversation, await shrink(file));
     if (!name) continue;
     const list = pendingFor(conversation);
     list.push({ name, url: fileUrl(conversation, name) });
@@ -1263,18 +1306,36 @@ showTheme();
 
 /* Sidebar drawer */
 
-function openSidebar() {
-  sidebar.classList.add("open");
-  backdrop.hidden = false;
-}
+let drawerInHistory = false;
 
-function closeSidebar() {
+function hideSidebar() {
   sidebar.classList.remove("open");
   backdrop.hidden = true;
 }
 
+function openSidebar() {
+  sidebar.classList.add("open");
+  backdrop.hidden = false;
+  if (drawerInHistory) return;
+  history.pushState({ drawer: true }, "", location.href);
+  drawerInHistory = true;
+}
+
+function closeSidebar() {
+  hideSidebar();
+  if (!drawerInHistory) return;
+  drawerInHistory = false;
+  history.back();
+}
+
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
+
+addEventListener("popstate", () => {
+  if (!drawerInHistory) return;
+  drawerInHistory = false;
+  hideSidebar();
+});
 
 addEventListener("hashchange", () => {
   const id = decodeURIComponent(location.hash.slice(1));
@@ -1291,10 +1352,28 @@ function watchOnline() {
   };
 }
 
+function receiveShared() {
+  if (!location.search) return;
+  const query = new URLSearchParams(location.search);
+  const text = (query.get("text") || "").trim();
+  const url = (query.get("url") || "").trim();
+  history.replaceState(null, "", location.pathname + location.hash);
+  const parts = text.includes(url) ? [text] : [text, url];
+  const shared = parts.filter((part) => part).join("\n");
+  if (!shared) return;
+  if (!activeId || isReadOnly(activeId)) {
+    notify("compartiste algo: abrí una conversación y pegalo");
+    return;
+  }
+  inputEl.value = shared;
+  grow();
+}
+
 async function main() {
   watchOnline();
   await refresh();
   restore();
+  receiveShared();
   setInterval(refresh, 3000);
 }
 

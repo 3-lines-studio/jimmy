@@ -9,6 +9,7 @@
 html,
 body {
   height: 100%;
+  overscroll-behavior-y: none;
 }
 
 body {
@@ -247,6 +248,7 @@ textarea:focus {
 #projects {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--s2) var(--s2) var(--s3);
 }
 
@@ -633,6 +635,7 @@ main {
 .transcript {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--s5) var(--s5) var(--s6);
 }
 
@@ -735,6 +738,7 @@ main {
 
 .event.assistant .actions {
   display: flex;
+  justify-content: flex-end;
   gap: var(--s1);
   margin-top: var(--s2);
 }
@@ -1428,5 +1432,15 @@ mark {
   #composer .send {
     width: 36px;
     height: 36px;
+  }
+
+  .thumb button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .thumb button svg {
+    width: 15px;
+    height: 15px;
   }
 }

@@ -28,10 +28,9 @@ impl Bus {
         })
     }
 
-    /// The events so far and everything from here on.
-    pub fn attach(&self, key: &str, log: &Log, user: &str) -> (Vec<Event>, Receiver<Event>) {
+    /// Everything from here on, for a reader that already read its own backlog.
+    pub fn attach(&self, key: &str, user: &str) -> Receiver<Event> {
         let mut connections = self.connections.lock().unwrap();
-        let backlog = log.events();
         let (sender, receiver) = mpsc::channel();
         connections.push(Connection {
             user: user.to_string(),
@@ -40,7 +39,7 @@ impl Bus {
         });
         tell_who_is_watching(&mut connections, key);
         tell_who_is_online(&mut connections);
-        (backlog, receiver)
+        receiver
     }
 
     /// Una conexión que sólo espera la presencia: quién está conectado.

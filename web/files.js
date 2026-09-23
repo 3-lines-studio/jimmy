@@ -31,7 +31,7 @@ function createFilesTab(id) {
   body.className = "files-body";
   body.append(note("Elegí un archivo para leerlo."));
   view.append(head, body);
-  pane.append(tree, view);
+  pane.append(view, tree);
   panesEl.append(pane);
 
   const tab = {

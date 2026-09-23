@@ -175,11 +175,31 @@ function isReadOnly(id) {
   return conversation ? conversation.read_only : false;
 }
 
+function runningKeys(state) {
+  const keys = new Set();
+  for (const project of state.projects) {
+    for (const conversation of project.conversations) {
+      if (conversation.running) keys.add(conversation.key);
+    }
+  }
+  return keys;
+}
+
 async function refresh() {
   const data = await api("/api/state");
   if (!data) return;
   const before = JSON.stringify(state.projects);
+  const wasRunning = runningKeys(state);
   state = data;
+  for (const project of data.projects) {
+    for (const conversation of project.conversations) {
+      if (conversation.running || !wasRunning.has(conversation.key)) continue;
+      const tab = tabs.get(conversation.key);
+      if (!tab || tab.id === activeId) continue;
+      tab.attention = "done";
+      searchDirty = true;
+    }
+  }
   const live = new Set();
   for (const project of state.projects) {
     for (const conversation of project.conversations) live.add(conversation.key);
@@ -572,10 +592,10 @@ function createTab(id) {
     find: null,
     synced: false,
     attention: null,
+    count: 0,
   };
   tab.item = tabEl(tab);
   tabs.set(id, tab);
-
   transcript.addEventListener("scroll", () => {
     tab.follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 120;
     jump.hidden = tab.follow;
@@ -586,28 +606,50 @@ function createTab(id) {
     transcript.scrollTop = transcript.scrollHeight;
   };
 
-  subscribe(tab);
   return tab;
 }
 
 function subscribe(tab) {
   if (tab.stream) tab.stream.close();
-  tab.stream = new EventSource(`/api/stream?conversation=${encodeURIComponent(tab.id)}`);
-  tab.stream.onopen = () => {
-    tab.transcript.replaceChildren();
-    tab.live = null;
-    tab.steps = null;
-    tab.tools = {};
+  const stream = new EventSource(
+    `/api/stream?conversation=${encodeURIComponent(tab.id)}&since=${tab.count}`,
+  );
+  tab.stream = stream;
+  stream.onopen = () => {
+    if (stream.reconnected) {
+      clearTab(tab);
+      subscribe(tab);
+      return;
+    }
+    stream.reconnected = true;
     tab.synced = false;
   };
-  tab.stream.onmessage = (message) => render(tab, JSON.parse(message.data));
+  stream.onmessage = (message) => render(tab, JSON.parse(message.data));
+}
+
+function unsubscribe(tab) {
+  if (!tab.stream) return;
+  tab.stream.close();
+  tab.stream = null;
+}
+
+function clearTab(tab) {
+  tab.transcript.replaceChildren();
+  tab.live = null;
+  tab.steps = null;
+  tab.tools = {};
+  tab.count = 0;
+  tab.synced = false;
 }
 
 function activate(id) {
+  const previous = activeId ? tabs.get(activeId) : null;
+  if (previous && previous.id !== id) unsubscribe(previous);
   activeId = id;
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   placeholderEl.hidden = tabs.size > 0;
   const tab = tabs.get(id);
+  if (tab && !tab.stream) subscribe(tab);
   if (tab) tab.attention = null;
   if (searchEl.value.trim().length < 2) renderSidebar();
   renderTabs();
@@ -622,7 +664,7 @@ function activate(id) {
 function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
-  if (tab.stream) tab.stream.close();
+  unsubscribe(tab);
   tab.pane.remove();
   tab.item.el.remove();
   pending.delete(id);
@@ -702,7 +744,10 @@ function updateTitle() {
 
 /* Rendering */
 
+const NOT_LOGGED = new Set(["delta", "tool_delta", "typing", "presence", "online", "synced"]);
+
 function render(tab, event) {
+  if (!NOT_LOGGED.has(event.event)) tab.count++;
   switch (event.event) {
     case "user":
       renderUser(tab, event);
@@ -761,6 +806,7 @@ function render(tab, event) {
       if (tab.id === activeId) renderActions();
       break;
     case "synced":
+      tab.count = event.count || 0;
       tab.synced = true;
       if (tab.find) findIn(tab, tab.find);
       break;

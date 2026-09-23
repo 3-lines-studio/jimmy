@@ -24,6 +24,7 @@ const PATHS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   clip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  stop: '<rect width="13" height="13" x="5.5" y="5.5" rx="2"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
   "file-plus":
@@ -99,7 +100,12 @@ themeEl.append(sunEl, moonEl);
 document.getElementById("attach").append(icon("clip", 17));
 document.querySelector("#logout button").append(icon("logout", 18));
 document.querySelector("#new-project button").append(icon("plus", 17));
-document.querySelector("#composer .send").append(icon("up", 17));
+const sendEl = document.querySelector("#composer .send");
+const sendIcon = icon("up", 17);
+const stopIcon = icon("stop", 15);
+sendIcon.classList.add("send-icon");
+stopIcon.classList.add("stop-icon");
+sendEl.append(sendIcon, stopIcon);
 
 async function request(path, options) {
   let response;
@@ -609,6 +615,7 @@ function activate(id) {
   renderPending();
   updateTitle();
   remember();
+  if (tab) tab.item.el.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (finePointer.matches) inputEl.focus();
 }
 
@@ -676,9 +683,12 @@ function renderTabs() {
 
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
+  const running = Boolean(tab) && isRunning(activeId);
   tabActionsEl.hidden = !tab;
   composerEl.hidden = !tab || isReadOnly(activeId);
-  cancelEl.hidden = !tab || !isRunning(activeId);
+  cancelEl.hidden = !running || !composerEl.hidden;
+  sendEl.classList.toggle("stop", running && !composerEl.hidden);
+  sendEl.setAttribute("aria-label", running ? "frenar el turno" : "enviar");
   typingEl.hidden = !tab || !tab.typingUser;
   if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} está escribiendo…`;
   if (tab)
@@ -1251,6 +1261,7 @@ composerEl.onsubmit = async (formEvent) => {
   clearPending();
   const tab = tabs.get(activeId);
   if (tab) tab.follow = true;
+  refresh();
 };
 
 inputEl.addEventListener("keydown", (keyEvent) => {
@@ -1260,9 +1271,18 @@ inputEl.addEventListener("keydown", (keyEvent) => {
   }
 });
 
-document.getElementById("cancel").onclick = () => {
-  if (activeId) api("/api/cancel", { conversation: activeId });
+function cancelTurn() {
+  if (!activeId) return;
+  api("/api/cancel", { conversation: activeId }).then(refresh);
+}
+
+sendEl.onclick = (event) => {
+  if (!sendEl.classList.contains("stop")) return;
+  event.preventDefault();
+  cancelTurn();
 };
+
+document.getElementById("cancel").onclick = cancelTurn;
 
 /* Proyectos */
 

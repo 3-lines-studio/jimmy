@@ -1643,7 +1643,7 @@ mark {
   .files-tree {
     flex: none;
     width: 280px;
-    border-right: 1px solid var(--line);
+    border-left: 1px solid var(--line);
   }
 
   .files.showing .files-tree {

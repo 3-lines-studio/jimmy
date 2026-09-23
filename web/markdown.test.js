@@ -146,3 +146,23 @@ test("el HTML del texto se escapa", () => {
 test("un link con esquema peligroso queda literal", () => {
   assert.equal(inline("[a](javascript:alert(1))"), "[a](javascript:alert(1))");
 });
+
+test("en Rust una vida no se come el resto de la línea como texto", () => {
+  const html = markdown("```rust\nfn uno(nota: &'static str) -> u8 { 1 }\n```");
+  assert.ok(!html.includes("tok-string"), `la vida no es un texto: ${html}`);
+});
+
+test("un carácter de Rust sí es un texto, con o sin escape", () => {
+  const html = markdown("```rust\nlet barra = '/'; let salto = '\\n';\n```");
+  assert.equal((html.match(/tok-string/g) || []).length, 2, html);
+});
+
+test("en Python el apóstrofo sigue abriendo un texto", () => {
+  const html = markdown("```python\nsaludo = 'hola'\n```");
+  assert.ok(html.includes(`<span class="tok-string">&#39;hola&#39;</span>`), html);
+});
+
+test("en JavaScript el apóstrofo también", () => {
+  const html = markdown("```js\nconst saludo = 'hola';\n```");
+  assert.ok(html.includes(`<span class="tok-string">&#39;hola&#39;</span>`), html);
+});

@@ -470,7 +470,7 @@ const KEYWORDS = {
 const SPECS = new Map(
   [
     ["js", { line: ["//"], block: [["/*", "*/"]], strings: ["'", '"', "`"], keywords: KEYWORDS.js }],
-    ["rust", { line: ["//"], block: [["/*", "*/"]], keywords: KEYWORDS.rust }],
+    ["rust", { line: ["//"], block: [["/*", "*/"]], keywords: KEYWORDS.rust, chars: true }],
     ["go", { line: ["//"], block: [["/*", "*/"]], strings: ['"', "'", "`"], keywords: KEYWORDS.go }],
     ["python", { line: ["#"], strings: ['"', "'"], keywords: KEYWORDS.python }],
     ["bash", { line: ["#"], keywords: KEYWORDS.bash }],
@@ -486,6 +486,7 @@ const SPECS = new Map(
       line: spec.line || [],
       block: spec.block || [],
       strings: spec.strings || ['"', "'"],
+      chars: spec.chars || false,
       keywords: new Set((spec.keywords || "").split(" ").filter(Boolean)),
     },
   ]),
@@ -499,6 +500,7 @@ const ALIASES = {
   tsx: "js",
   mjs: "js",
   json5: "json",
+  jsonl: "json",
   rs: "rust",
   py: "python",
   sh: "bash",
@@ -512,6 +514,12 @@ const ALIASES = {
 
 function token(kind, text) {
   return `<span class="tok-${kind}">${escapeHtml(text)}</span>`;
+}
+
+/// Un `'` en Rust o Go abre un carácter —`'/'`, `'\n'`— y no un texto, así que el
+/// que cierra lejos es una vida (`'static`) y va sin color.
+function isChar(code, i) {
+  return code[i + 1] === "\\" ? code[i + 3] === "'" : code[i + 2] === "'";
 }
 
 function highlight(code, language) {
@@ -546,7 +554,7 @@ function highlight(code, language) {
     }
 
     const char = code[i];
-    if (spec.strings.includes(char)) {
+    if (spec.strings.includes(char) && (char !== "'" || !spec.chars || isChar(code, i))) {
       let j = i + 1;
       while (j < n) {
         if (code[j] === "\\") {

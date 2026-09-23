@@ -107,23 +107,18 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => app_page(web, &request, stream),
         ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
-        ("GET", "/theme.css") => {
-            http::send_text(stream, 200, "text/css; charset=utf-8", &versioned(THEME))
-        }
-        ("GET", "/style.css") => http::send_text(stream, 200, "text/css; charset=utf-8", STYLE),
-        ("GET", "/app.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", APP),
-        ("GET", "/markdown.js") => {
-            http::send_text(stream, 200, "text/javascript; charset=utf-8", MARKDOWN)
-        }
-        ("GET", "/tool.js") => http::send_text(stream, 200, "text/javascript; charset=utf-8", TOOL),
-        ("GET", "/icon.svg") => http::send_text(stream, 200, "image/svg+xml", ICON),
+        ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
+        ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
+        ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
+        ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
+        ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
+        ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
         ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
-        ("GET", "/manifest.webmanifest") => http::send_text(
+        ("GET", "/manifest.webmanifest") => asset(
             stream,
-            200,
             "application/manifest+json",
-            &versioned(MANIFEST),
+            versioned(MANIFEST).as_bytes(),
         ),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
@@ -147,6 +142,22 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 const HTML: &str = "text/html; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+const JS: &str = "text/javascript; charset=utf-8";
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+
+/// El HTML y los íconos se piden por su nombre pelado, así que revalidan siempre.
+/// Todo lo que sale con la versión en la URL se puede guardar para siempre: un
+/// deploy cambia la versión y con ella la URL.
+fn asset(stream: &mut TcpStream, content_type: &str, body: &[u8]) -> std::io::Result<()> {
+    http::respond(
+        stream,
+        200,
+        content_type,
+        &[("Cache-Control", IMMUTABLE)],
+        body,
+    )
+}
 
 fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
@@ -695,7 +706,7 @@ fn follow(
     }
     http::sse_data(stream, &synced(backlog.len()))?;
     loop {
-        match live.recv_timeout(Duration::from_secs(5)) {
+        match live.recv_timeout(Duration::from_secs(25)) {
             Ok(event) => {
                 if let Ok(json) = serde_json::to_string(&event) {
                     http::sse_data(stream, &json)?;
@@ -922,8 +933,8 @@ done
         assert!(app.contains("javascript"), "{app}");
         assert!(app.contains("EventSource"), "{app}");
         assert!(
-            app.contains("Cache-Control: no-store"),
-            "sin esto un proxy le pone su propio max-age y sirve la UI vieja: {app}"
+            app.contains(IMMUTABLE),
+            "el asset va con la versión en la URL: cualquier otra caché lo revive viejo: {app}"
         );
 
         let style = get(server.port, "/style.css", None);
@@ -959,6 +970,10 @@ done
         let cookie = login(server.port, "berti@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(
+            page.contains("Cache-Control: no-store"),
+            "el HTML no lleva versión, así que revalida siempre: {page}"
+        );
         assert!(page.contains("<div id=\"panes\">"), "{page}");
         assert!(page.contains("/markdown.js?v="), "{page}");
         assert!(page.contains("/tool.js?v="), "{page}");

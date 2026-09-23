@@ -1447,7 +1447,10 @@ async function main() {
   await refresh();
   restore();
   receiveShared();
-  setInterval(refresh, 3000);
+  setInterval(refresh, 15000);
+  addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh();
+  });
 }
 
 main();

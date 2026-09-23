@@ -3,6 +3,7 @@ mod audio;
 mod auth;
 mod bus;
 mod conversations;
+mod files;
 mod http;
 mod log;
 mod mail;

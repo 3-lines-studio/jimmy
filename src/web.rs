@@ -8,6 +8,7 @@ use crate::agent::Agent;
 use crate::auth::{self, Auth};
 use crate::bus::Bus;
 use crate::conversations;
+use crate::files;
 use crate::http::{self, Request};
 use crate::log::{Log, Window};
 use crate::media;
@@ -31,6 +32,7 @@ const LOGIN: &str = include_str!("../web/login.html");
 const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
+const FILES: &str = include_str!("../web/files.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const TOOL: &str = include_str!("../web/tool.js");
 const ICON: &str = include_str!("../web/icon.svg");
@@ -110,6 +112,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
         ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
+        ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
         ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
@@ -134,6 +137,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/send") => send(web, &request, stream),
         ("POST", "/api/upload") => upload(web, &request, stream),
         ("GET", "/api/file") => file(web, &request, stream),
+        ("GET", "/api/tree") => tree(web, &request, stream),
+        ("GET", "/api/raw") => raw(web, &request, stream),
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
@@ -174,6 +179,7 @@ fn versioned(page: &str) -> String {
         .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
+        .replace("/files.js", &format!("/files.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
@@ -598,6 +604,90 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     http::respond(stream, 200, media::content_type(name), &[], &data)
 }
 
+/// El directorio de un proyecto, o nada si ese nombre no puede ser uno. El
+/// proyecto `general` es el workspace entero: ahí se ve todo lo que hay.
+fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') || name.starts_with('.') {
+        return None;
+    }
+    let dir = conversations::project_dir(&web.workspace, name);
+    dir.is_dir().then_some(dir)
+}
+
+/// Una carpeta del proyecto, un nivel. Cada carpeta la pide el que mira cuando
+/// la abre.
+fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let project = request.param("project").unwrap_or_default();
+    let Some(root) = project_dir(web, project) else {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    };
+    let path = request.param("path").unwrap_or_default();
+    let Some(entries) = files::list(&root, path) else {
+        return http::send_error(stream, 404, "esa carpeta no está");
+    };
+    let entries: Vec<serde_json::Value> = entries
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "name": entry.name,
+                "dir": entry.dir,
+                "size": entry.size,
+                "kind": entry.kind,
+            })
+        })
+        .collect();
+    http::send_json(
+        stream,
+        200,
+        &serde_json::json!({ "project": project, "path": path, "entries": entries }),
+    )
+}
+
+/// Un archivo del proyecto. Las imágenes van enteras porque el navegador las
+/// muestra; el texto va cortado en el tope y lo avisa; lo que no es texto sale
+/// como binario, para que el navegador no lo muestre como si fuera una página.
+fn raw(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(root) = project_dir(web, request.param("project").unwrap_or_default()) else {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    };
+    let Some(path) = files::resolve(&root, request.param("path").unwrap_or_default()) else {
+        return http::send_error(stream, 404, "ese archivo no está");
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return http::send_error(stream, 404, "ese archivo no está");
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return http::send_error(stream, 404, "ese archivo no está");
+    };
+    if !meta.is_file() {
+        return http::send_error(stream, 404, "eso no es un archivo");
+    }
+    let image = media::is_image(name);
+    let bytes = match files::read(&path, (!image).then_some(files::MAX_READ)) {
+        Ok(bytes) => bytes,
+        Err(error) => return http::send_error(stream, 500, &error),
+    };
+    let content_type = if image {
+        media::content_type(name)
+    } else if files::is_text(&bytes) {
+        "text/plain; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    };
+    let cut: &[(&str, &str)] = if meta.len() > bytes.len() as u64 {
+        &[("X-Truncated", "1")]
+    } else {
+        &[]
+    };
+    http::respond(stream, 200, content_type, cut, &bytes)
+}
+
 fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1008,9 +1098,14 @@ done
         assert!(page.contains("/markdown.js?v="), "{page}");
         assert!(page.contains("/tool.js?v="), "{page}");
         assert!(page.contains("/app.js?v="), "{page}");
+        assert!(page.contains("/files.js?v="), "{page}");
         assert!(
             page.find("/tool.js?v=") < page.find("/app.js?v="),
             "la app usa lo que define el tool: {page}"
+        );
+        assert!(
+            page.find("/files.js?v=") < page.find("/app.js?v="),
+            "el explorador se carga antes que la app: {page}"
         );
         assert!(
             page.find("/markdown.js?v=") < page.find("/app.js?v="),
@@ -1356,6 +1451,128 @@ done
         );
         assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
 
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_file_tree_lists_a_project_one_level_at_a_time() {
+        let server = start("files-tree");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let ken = server.workspace.join("projects/ken");
+        std::fs::create_dir_all(ken.join("src/transport")).unwrap();
+        std::fs::create_dir_all(ken.join("target")).unwrap();
+        std::fs::create_dir_all(ken.join(".git")).unwrap();
+        std::fs::write(ken.join("src/web.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(ken.join("src/transport/telegram.rs"), "// nada\n").unwrap();
+        std::fs::write(ken.join("target/gordo"), "no se lista").unwrap();
+        std::fs::write(ken.join("README.md"), "# ken\n").unwrap();
+        std::fs::write(ken.join(".env"), "SECRETO=1\n").unwrap();
+        std::fs::write(ken.join("logo.png"), b"\x89PNG\r\n\x1a\nno importa").unwrap();
+
+        let tree = get(server.port, "/api/tree?project=ken", Some(&cookie));
+        assert!(tree.starts_with("HTTP/1.1 200"), "{tree}");
+        let entries = json_in(&tree)["entries"].clone();
+        let listed: Vec<&str> = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed, ["src", "logo.png", "README.md"], "{entries}");
+        assert_eq!(entries[0]["dir"], serde_json::json!(true));
+        assert_eq!(entries[1]["kind"], serde_json::json!("image"));
+        assert_eq!(entries[2]["kind"], serde_json::json!("markdown"));
+
+        let deeper = get(server.port, "/api/tree?project=ken&path=src", Some(&cookie));
+        let entries = json_in(&deeper)["entries"].clone();
+        let listed: Vec<&str> = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed, ["transport", "web.rs"], "{entries}");
+        assert_eq!(entries[1]["kind"], serde_json::json!("text"));
+
+        let general = get(server.port, "/api/tree?project=general", Some(&cookie));
+        assert!(general.contains("\"name\":\"projects\""), "{general}");
+
+        let source = get(
+            server.port,
+            "/api/raw?project=ken&path=src/web.rs",
+            Some(&cookie),
+        );
+        assert!(source.starts_with("HTTP/1.1 200"), "{source}");
+        assert!(source.contains("Content-Type: text/plain"), "{source}");
+        assert!(body_in(&source).ends_with("fn main() {}\n"), "{source}");
+
+        let image = get(
+            server.port,
+            "/api/raw?project=ken&path=logo.png",
+            Some(&cookie),
+        );
+        assert!(image.contains("Content-Type: image/png"), "{image}");
+
+        std::fs::write(ken.join("binario"), b"\x00\x01\x02hola").unwrap();
+        let binary = get(
+            server.port,
+            "/api/raw?project=ken&path=binario",
+            Some(&cookie),
+        );
+        assert!(
+            binary.contains("Content-Type: application/octet-stream"),
+            "{binary}"
+        );
+
+        std::fs::write(ken.join("grande.txt"), "a".repeat(600 * 1024)).unwrap();
+        let huge = get(
+            server.port,
+            "/api/raw?project=ken&path=grande.txt",
+            Some(&cookie),
+        );
+        assert!(huge.contains("X-Truncated: 1"), "el corte se avisa");
+        assert_eq!(body_in(&huge).len(), files::MAX_READ as usize);
+
+        let folder = get(server.port, "/api/raw?project=ken&path=src", Some(&cookie));
+        assert!(folder.starts_with("HTTP/1.1 404"), "{folder}");
+
+        assert!(get(server.port, "/api/tree?project=ken", None).starts_with("HTTP/1.1 401"));
+        assert!(
+            get(server.port, "/api/raw?project=ken&path=README.md", None)
+                .starts_with("HTTP/1.1 401")
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_file_tree_cannot_leave_the_project() {
+        let server = start("files-outside");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let ken = server.workspace.join("projects/ken");
+        std::fs::write(server.root.join("afuera.txt"), "mas secreto").unwrap();
+        std::fs::write(server.workspace.join("notes.md"), "secreto").unwrap();
+        std::os::unix::fs::symlink(&server.root, ken.join("atajo")).unwrap();
+
+        let paths = [
+            "/api/tree?project=ken&path=..",
+            "/api/tree?project=ken&path=../../..",
+            "/api/tree?project=ken&path=atajo",
+            "/api/tree?project=..",
+            "/api/tree?project=%2e%2e%2f%2e%2e",
+            "/api/tree?project=no-existe",
+            "/api/raw?project=ken&path=../notes.md",
+            "/api/raw?project=ken&path=../../afuera.txt",
+            "/api/raw?project=ken&path=atajo/afuera.txt",
+            "/api/raw?project=ken&path=.env",
+            "/api/raw?project=ken&path=no-esta.txt",
+        ];
+        for path in paths {
+            let response = get(server.port, path, Some(&cookie));
+            assert!(
+                response.starts_with("HTTP/1.1 40"),
+                "{path} devolvió {response}"
+            );
+        }
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

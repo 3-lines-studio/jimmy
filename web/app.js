@@ -14,6 +14,7 @@ const PATHS = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
+  left: '<path d="m15 18-6-6 6-6"/>',
   pencil:
     '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -161,8 +162,13 @@ function conversationById(id) {
 }
 
 function titleOf(id) {
+  if (isFiles(id)) return "archivos: " + filesProject(id);
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
+}
+
+function knownTab(id) {
+  return isFiles(id) || Boolean(conversationById(id));
 }
 
 function isRunning(id) {
@@ -205,7 +211,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id)) closeTab(id);
   }
   if (searchEl.value.trim().length < 2) {
     renderSidebar();
@@ -246,11 +252,15 @@ function projectEl(project) {
     if (made && made.key) openTab(made.key);
     closeSidebar();
   });
+  const files = iconButton("folder", "ver archivos", () => {
+    openTab(FILES + group.project.name);
+    closeSidebar();
+  });
   const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
-  header.append(caret, group.name, add, remove);
+  header.append(caret, group.name, add, files, remove);
   group.el.append(header, group.list, group.more);
   return group;
 }
@@ -422,6 +432,7 @@ async function deleteProject(project) {
     body.force = true;
   }
   for (const conversation of project.conversations) closeTab(conversation.key);
+  closeTab(FILES + project.name);
   await api("/api/delete-project", body);
   await refresh();
 }
@@ -558,7 +569,7 @@ function restore() {
   const wanted = saved.open.includes(hash) || !hash ? saved.open : [...saved.open, hash];
   const seen = new Set();
   for (const id of wanted) {
-    if (seen.has(id) || !conversationById(id)) continue;
+    if (seen.has(id) || !knownTab(id)) continue;
     seen.add(id);
     if (!tabs.has(id)) createTab(id);
   }
@@ -573,6 +584,7 @@ function openTab(id) {
 }
 
 function createTab(id) {
+  if (isFiles(id)) return createFilesTab(id);
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -702,7 +714,7 @@ function activate(id) {
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   placeholderEl.hidden = tabs.size > 0;
   const tab = tabs.get(id);
-  if (tab && !tab.stream) subscribe(tab);
+  if (tab && !tab.stream && !tab.files) subscribe(tab);
   if (tab) tab.attention = null;
   if (searchEl.value.trim().length < 2) renderSidebar();
   renderTabs();
@@ -779,8 +791,8 @@ function renderTabs() {
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   const running = Boolean(tab) && isRunning(activeId);
-  tabActionsEl.hidden = !tab;
-  composerEl.hidden = !tab || isReadOnly(activeId);
+  tabActionsEl.hidden = !tab || Boolean(tab.files);
+  composerEl.hidden = !tab || Boolean(tab.files) || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
   sendEl.setAttribute("aria-label", running ? "frenar el turno" : "enviar");
@@ -1467,7 +1479,7 @@ addEventListener("popstate", () => {
 addEventListener("hashchange", () => {
   const id = decodeURIComponent(location.hash.slice(1));
   if (id === activeId) return;
-  if (id && conversationById(id)) openTab(id);
+  if (id && knownTab(id)) openTab(id);
 });
 
 function watchOnline() {
@@ -1488,7 +1500,7 @@ function receiveShared() {
   const parts = text.includes(url) ? [text] : [text, url];
   const shared = parts.filter((part) => part).join("\n");
   if (!shared) return;
-  if (!activeId || isReadOnly(activeId)) {
+  if (!activeId || isFiles(activeId) || isReadOnly(activeId)) {
     notify("compartiste algo: abrí una conversación y pegalo");
     return;
   }

@@ -262,6 +262,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             serde_json::json!({
                 "name": project.name,
                 "path": project.path.display().to_string(),
+                "unversioned": unversioned(&project.path),
                 "conversations": conversations,
             })
         })
@@ -376,7 +377,7 @@ fn delete_project(
     if !dir.is_dir() {
         return http::send_error(stream, 400, "ese proyecto no existe");
     }
-    if let Err(why) = disposable(&dir) {
+    if let Err(why) = disposable(&dir, request.flag("force")) {
         return http::send_error(stream, 400, &format!("no lo borro: {why}"));
     }
     let conversations = conversations::projects(&web.root, &web.workspace)
@@ -394,15 +395,17 @@ fn delete_project(
 }
 
 /// Un proyecto se borra si está vacío o si es un clon con todo commiteado y
-/// pusheado. Cualquier otra cosa puede tener trabajo adentro que solo existe
-/// acá, y eso no lo borra un botón.
-fn disposable(dir: &Path) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?.count();
-    if entries == 0 {
+/// pusheado. Lo que no está en git se borra solo si el pedido se hace cargo
+/// (`force`): puede tener trabajo adentro que no existe en ningún otro lado.
+fn disposable(dir: &Path, force: bool) -> Result<(), String> {
+    if empty(dir) {
         return Ok(());
     }
-    if !dir.join(".git").exists() {
-        return Err("tiene archivos que no están en git".into());
+    if unversioned(dir) {
+        return match force {
+            true => Ok(()),
+            false => Err("tiene archivos que no están en git".into()),
+        };
     }
     if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
         return Err("tiene cambios sin commitear".into());
@@ -417,6 +420,18 @@ fn disposable(dir: &Path) -> Result<(), String> {
         return Err("tiene commits sin pushear".into());
     }
     Ok(())
+}
+
+/// Un proyecto sin git y con algo adentro: no hay copia en ningún otro lado,
+/// así que borrarlo es una decisión del que lo pide.
+fn unversioned(dir: &Path) -> bool {
+    !empty(dir) && !dir.join(".git").exists()
+}
+
+fn empty(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.count() == 0)
+        .unwrap_or(true)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -1032,13 +1047,18 @@ done
         let server = start("state");
         let cookie = login(server.port, "berti@ejemplo.com");
 
-        let state = get(server.port, "/api/state", Some(&cookie));
+        let mut state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"general\""), "{state}");
         assert!(state.contains("\"7469057930\""), "{state}");
         assert!(state.contains("\"read_only\":true"), "{state}");
         assert!(state.contains("\"ken\""), "{state}");
         assert!(state.contains("\"berti\""), "{state}");
         assert!(state.contains("\"workspace\""), "{state}");
+        assert!(state.contains("\"unversioned\":false"), "{state}");
+
+        std::fs::write(server.workspace.join("projects/ken/nota.txt"), "x").unwrap();
+        state = get(server.port, "/api/state", Some(&cookie));
+        assert!(state.contains("\"unversioned\":true"), "{state}");
 
         let logout = post(server.port, "/api/logout", "{}");
         assert!(logout.contains("Max-Age=0"), "{logout}");
@@ -1549,6 +1569,16 @@ done
         );
         assert!(dirty.starts_with("HTTP/1.1 400"), "{dirty}");
         assert!(dirty.contains("no lo borro"), "{dirty}");
+        assert!(projects.join("ken").is_dir());
+
+        let forced = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"ken","force":true}"#,
+            Some(&cookie),
+        );
+        assert!(forced.starts_with("HTTP/1.1 200"), "{forced}");
+        assert!(!projects.join("ken").exists());
 
         let general = post_with(
             server.port,
@@ -1599,6 +1629,16 @@ done
         );
         assert!(unpushed.starts_with("HTTP/1.1 400"), "{unpushed}");
         assert!(unpushed.contains("sin pushear"), "{unpushed}");
+        assert!(repo.is_dir());
+
+        let forced_repo = post_with(
+            server.port,
+            "/api/delete-project",
+            r#"{"project":"clon","force":true}"#,
+            Some(&cookie),
+        );
+        assert!(forced_repo.starts_with("HTTP/1.1 400"), "{forced_repo}");
+        assert!(forced_repo.contains("sin pushear"), "{forced_repo}");
         assert!(repo.is_dir());
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }

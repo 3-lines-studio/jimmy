@@ -133,7 +133,7 @@ pub fn rename(root: &Path, key: &str, title: &str) -> Result<(), String> {
     write_meta(root, key, &meta)
 }
 
-fn project_dir(workspace: &Path, project: &str) -> PathBuf {
+pub fn project_dir(workspace: &Path, project: &str) -> PathBuf {
     match project {
         GENERAL => workspace.to_path_buf(),
         name => workspace.join("projects").join(name),

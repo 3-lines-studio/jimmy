@@ -130,6 +130,22 @@ check "y el log la muestra al terminar el turno" $?
 rg -q '^FILE2 image/png ' "$WORK/attachment.log"
 check "la imagen del asistente también se sirve" $?
 
+say "el árbol de archivos de un proyecto, por la web"
+python3 "$HERE/files.py" "$WEB_PORT" berti@ejemplo.com ken "$WORK/root" >"$WORK/files.log" 2>&1
+cat "$WORK/files.log"
+rg -q '^TREE src:dir, logo.png:image, nota.txt:text$' "$WORK/files.log"
+check "el árbol lista lo que hay y no lo que se esconde" $?
+rg -q '^TREE2 src/nota.rs$' "$WORK/files.log"
+check "una carpeta se pide al abrirse" $?
+rg -q '^TEXT text/plain' "$WORK/files.log"
+check "un archivo de texto vuelve como texto" $?
+rg -q '^IMAGE image/png' "$WORK/files.log"
+check "una imagen vuelve entera y con su tipo" $?
+rg -q '^ESC 6 rutas rechazadas$' "$WORK/files.log"
+check "no se puede salir de la carpeta del proyecto" $?
+rg -q '^ANON 401$' "$WORK/files.log"
+check "sin sesión no hay árbol" $?
+
 say "el comando de compactar, por Telegram"
 printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"/compact"}}' >>"$WORK/inbox.jsonl"
 sleep 14

@@ -1226,6 +1226,18 @@ mark {
   background: var(--accent-hover);
 }
 
+#composer .send .stop-icon {
+  display: none;
+}
+
+#composer .send.stop .send-icon {
+  display: none;
+}
+
+#composer .send.stop .stop-icon {
+  display: block;
+}
+
 #pending:not([hidden]) {
   display: flex;
 }
@@ -1332,7 +1344,28 @@ mark {
   }
 
   #tabs {
-    max-width: 56vw;
+    gap: 2px;
+  }
+
+  .tab {
+    min-width: 92px;
+    padding: 0 var(--s1) 0 var(--s2);
+  }
+
+  .tab .dot {
+    display: none;
+  }
+
+  .tab.active .dot {
+    display: block;
+  }
+
+  .tab .close {
+    display: none;
+  }
+
+  .tab.active .close {
+    display: flex;
   }
 
   .transcript {

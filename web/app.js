@@ -1093,14 +1093,10 @@ function finishTool(tab, event) {
     result.textContent = event.text;
     tool.body.append(result);
   }
-  if (event.failed) tool.details.open = true;
   if (tool.group) {
     tool.group.ms += event.ms;
     tool.group.elapsed.textContent = tool.group.ms ? `· ${elapsed(tool.group.ms)}` : "";
-    if (event.failed) {
-      tool.group.details.classList.add("failed");
-      tool.group.details.open = true;
-    }
+    if (event.failed) tool.group.details.classList.add("failed");
   }
   scroll(tab);
 }

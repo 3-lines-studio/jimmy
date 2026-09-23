@@ -617,7 +617,6 @@ function subscribe(tab) {
   tab.stream = stream;
   stream.onopen = () => {
     if (stream.reconnected) {
-      clearTab(tab);
       subscribe(tab);
       return;
     }
@@ -806,6 +805,11 @@ function render(tab, event) {
       if (tab.id === activeId) renderActions();
       break;
     case "synced":
+      if (event.count < tab.count) {
+        clearTab(tab);
+        subscribe(tab);
+        break;
+      }
       tab.count = event.count || 0;
       tab.synced = true;
       if (tab.find) findIn(tab, tab.find);

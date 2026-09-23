@@ -19,8 +19,12 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The end of the backlog: everything before it is already rendered.
-const SYNCED: &str = r#"{"event":"synced"}"#;
+/// El final del backlog: lo de antes ya está en pantalla. Lleva cuántos eventos
+/// tiene el log, para que el que mira guarde el número y al volver a la
+/// conversación pida desde ahí en vez de bajar todo de nuevo.
+fn synced(total: usize) -> String {
+    format!(r#"{{"event":"synced","count":{total}}}"#)
+}
 
 const INDEX: &str = include_str!("../web/index.html");
 const LOGIN: &str = include_str!("../web/login.html");
@@ -642,8 +646,12 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 404, "esa conversación no existe");
     }
     let log = Log::in_dir(&conversation.dir);
+    let since = request
+        .param("since")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
     let (backlog, live) = web.bus.attach(key, &log, &user);
-    let result = follow(stream, &backlog, &live);
+    let result = follow(stream, &backlog, since, &live);
     web.bus.detach(key, &user);
     result
 }
@@ -653,7 +661,7 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let live = web.bus.watch(&user);
-    let result = follow(stream, &[], &live);
+    let result = follow(stream, &[], 0, &live);
     web.bus.detach_watch(&user);
     result
 }
@@ -661,15 +669,16 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 fn follow(
     stream: &mut TcpStream,
     backlog: &[crate::protocol::Event],
+    since: usize,
     live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
 ) -> std::io::Result<()> {
     http::sse_open(stream)?;
-    for event in backlog {
+    for event in backlog.iter().skip(since) {
         if let Ok(json) = serde_json::to_string(event) {
             http::sse_data(stream, &json)?;
         }
     }
-    http::sse_data(stream, SYNCED)?;
+    http::sse_data(stream, &synced(backlog.len()))?;
     loop {
         match live.recv_timeout(Duration::from_secs(5)) {
             Ok(event) => {
@@ -1631,6 +1640,31 @@ done
             live = lines.next().unwrap().unwrap();
         }
         assert!(live.starts_with("data: "), "{live}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_stream_skips_what_the_watcher_already_has() {
+        let server = start("stream-since");
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "GET /api/stream?conversation=7469057930&since=1 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+
+        let mut seen = Vec::new();
+        while seen.len() < 2 {
+            let line = lines.next().unwrap().unwrap();
+            if let Some(data) = line.strip_prefix("data: ") {
+                seen.push(data.to_string());
+            }
+        }
+        assert!(seen[0].contains("\"listo\""), "{seen:?}");
+        assert!(seen[1].contains("\"count\":2"), "{seen:?}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

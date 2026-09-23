@@ -126,16 +126,18 @@ async function openFile(tab, path, entry, element) {
     tab.body.replaceChildren(note("es un archivo binario: no hay nada que mostrar"));
     return;
   }
-  tab.body.replaceChildren(entry.kind === "markdown" ? markdownOf(text) : codeOf(text));
+  tab.body.replaceChildren(entry.kind === "markdown" ? markdownOf(text) : codeOf(text, entry.name));
   if (response.headers.get("x-truncated"))
     tab.body.append(note("se ve sólo el principio: el archivo pasa los 512 KB"));
 }
 
-function codeOf(text) {
+function codeOf(text, name) {
   const box = document.createElement("div");
   box.className = "files-code";
   const pre = document.createElement("pre");
-  pre.textContent = text;
+  const code = document.createElement("code");
+  code.innerHTML = highlight(text, extension(name));
+  pre.append(code);
   box.append(pre, copyButton(text, "copiar el archivo"));
   return box;
 }
@@ -154,6 +156,13 @@ function rawUrl(project, path) {
 
 function join(path, name) {
   return path ? path + "/" + name : name;
+}
+
+/// La terminación, que es lo que el resaltador lee como lenguaje. Un archivo sin
+/// punto —`Makefile`, `LICENSE`— no tiene ninguna, y se muestra sin colores.
+function extension(name) {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 function note(text) {
@@ -175,3 +184,5 @@ function size(bytes) {
   if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
   return (bytes / 1024 / 1024).toFixed(1).replace(".", ",") + " MB";
 }
+
+if (typeof module !== "undefined") module.exports = { extension, size };

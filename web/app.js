@@ -1311,6 +1311,7 @@ composerEl.onsubmit = async (formEvent) => {
 };
 
 inputEl.addEventListener("keydown", (keyEvent) => {
+  if (!finePointer.matches) return;
   if (keyEvent.key === "Enter" && !keyEvent.shiftKey) {
     keyEvent.preventDefault();
     composerEl.requestSubmit();

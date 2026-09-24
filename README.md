@@ -175,12 +175,14 @@ a WebSocket upgrade are copied raw.
 
 What the rewrite cannot see: a JSON payload that carries paths, or a path built
 at runtime by the app. Start the project with its strict-port flag so it cannot
-drift to another port, and remember the preview dies with the deploy.
+drift to another port.
 
-Previews live as long as the process that spawned them, so a redeploy takes them
-with them: they are for looking at work in progress, not for hosting. `jimmy
-preview list` shows what is up, `jimmy preview stop <name>` takes one down, and
-names are slugs: lowercase, digits and dashes.
+A preview that nobody visits takes itself down after thirty minutes: every
+request through the proxy resets that clock, so looking at it or iterating on it
+keeps it up. A redeploy takes the rest. They are for looking at work in progress,
+not for hosting. `jimmy preview list` shows what is up — and how long since the
+last visit — and `jimmy preview stop <name>` takes one down. Names are slugs:
+lowercase, digits and dashes.
 
 The sidebar lists the running previews above the projects, each one a link that
 opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel

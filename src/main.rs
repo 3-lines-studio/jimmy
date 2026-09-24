@@ -736,8 +736,8 @@ fn preview_command(args: &[String]) -> i32 {
     }
     for preview in answer.previews {
         println!(
-            "{} puerto {} pid {} ({}s) en /preview/{}/",
-            preview.name, preview.port, preview.pid, preview.seconds, preview.name
+            "{} puerto {} pid {} en /preview/{}/ (arriba hace {}s, sin visitas hace {}s)",
+            preview.name, preview.port, preview.pid, preview.name, preview.seconds, preview.idle
         );
     }
     0

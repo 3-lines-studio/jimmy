@@ -23,6 +23,11 @@ const LOGS: &str = "state/previews";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEAD: usize = 32 * 1024;
 
+/// Un preview sin visitas se baja solo: nadie pidió que viviera para siempre y
+/// un proceso olvidado se come memoria y puerto hasta el próximo deploy.
+const IDLE: Duration = Duration::from_secs(30 * 60);
+const TICK: Duration = Duration::from_secs(60);
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Order {
     pub op: String,
@@ -53,12 +58,15 @@ pub struct Summary {
     pub port: u16,
     pub pid: u32,
     pub seconds: u64,
+    /// Segundos desde la última visita, que es lo que decide cuándo se cae.
+    pub idle: u64,
 }
 
 struct Running {
     port: u16,
     child: Child,
     started: Instant,
+    last: Instant,
 }
 
 pub struct Previews {
@@ -85,6 +93,38 @@ impl Previews {
                 None
             }
         }
+    }
+
+    /// Cada visita al preview corre el reloj de su inactividad.
+    pub fn touch(&self, name: &str) {
+        let Ok(mut running) = self.running.lock() else {
+            return;
+        };
+        if let Some(entry) = running.get_mut(name) {
+            entry.last = Instant::now();
+        }
+    }
+
+    /// Baja los previews que nadie visitó por más de `ttl` y devuelve sus
+    /// nombres. El proceso se mata fuera del candado: matar puede esperar cinco
+    /// segundos y no hay razón para dejar a los demás esperando.
+    fn expire(&self, now: Instant, ttl: Duration) -> Vec<String> {
+        let mut ripe = Vec::new();
+        let Ok(mut running) = self.running.lock() else {
+            return ripe;
+        };
+        let names: Vec<String> = running
+            .iter()
+            .filter(|(_, entry)| now.duration_since(entry.last) >= ttl)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in names {
+            if let Some(mut entry) = running.remove(&name) {
+                end(&mut entry);
+                ripe.push(name);
+            }
+        }
+        ripe
     }
 
     /// El final del log del preview, para saber por qué no arrancó.
@@ -147,13 +187,15 @@ impl Previews {
                     port,
                     child,
                     started,
+                    last: started,
                 },
             );
         Ok(Summary {
             name,
             port,
             pid,
-            seconds: started.elapsed().as_secs(),
+            seconds: 0,
+            idle: 0,
         })
     }
 
@@ -163,21 +205,18 @@ impl Previews {
             .running
             .lock()
             .map_err(|_| "el registro está trabado".to_string())?;
-        let Some(mut entry) = running.remove(&name) else {
-            return Err(format!("{name} no está corriendo"));
-        };
+        let mut entry = running
+            .remove(&name)
+            .ok_or_else(|| format!("{name} no está corriendo"))?;
         let pid = entry.child.id();
         let summary = Summary {
             name,
             port: entry.port,
             pid,
             seconds: entry.started.elapsed().as_secs(),
+            idle: entry.last.elapsed().as_secs(),
         };
-        kill_group(pid as i32, libc::SIGTERM);
-        if wait_gone(&mut entry.child, STOP_TIMEOUT).is_err() {
-            kill_group(pid as i32, libc::SIGKILL);
-            entry.child.wait().ok();
-        }
+        end(&mut entry);
         Ok(summary)
     }
 
@@ -193,6 +232,7 @@ impl Previews {
                 port: entry.port,
                 pid: entry.child.id(),
                 seconds: entry.started.elapsed().as_secs(),
+                idle: entry.last.elapsed().as_secs(),
             })
             .collect()
     }
@@ -244,6 +284,7 @@ impl Previews {
 /// El socket sobre el que llegan las órdenes. Un preview viejo de un arranque
 /// anterior no puede quedar vivo, así que el socket se rehace siempre.
 pub fn listen(previews: Arc<Previews>) {
+    expire_loop(previews.clone());
     let path = previews.workspace.join(SOCKET);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
@@ -264,6 +305,15 @@ pub fn listen(previews: Arc<Previews>) {
             }
         });
     }
+}
+
+fn expire_loop(previews: Arc<Previews>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TICK);
+        for name in previews.expire(Instant::now(), IDLE) {
+            eprintln!("jimmy: el preview {name} se bajó por inactividad");
+        }
+    });
 }
 
 fn answer(previews: &Arc<Previews>, mut stream: UnixStream) -> std::io::Result<()> {
@@ -694,6 +744,15 @@ fn kill_group(pid: i32, signal: i32) {
     unsafe { libc::kill(-pid, signal) };
 }
 
+fn end(entry: &mut Running) {
+    let pid = entry.child.id();
+    kill_group(pid as i32, libc::SIGTERM);
+    if wait_gone(&mut entry.child, STOP_TIMEOUT).is_err() {
+        kill_group(pid as i32, libc::SIGKILL);
+        entry.child.wait().ok();
+    }
+}
+
 fn wait_gone(child: &mut Child, timeout: Duration) -> Result<(), ()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -754,6 +813,55 @@ mod tests {
         assert!(previews.port("lento").is_none());
         assert!(previews.list().is_empty());
         assert!(!alive(pids[0]));
+    }
+
+    #[test]
+    fn un_preview_que_nadie_visita_se_baja_solo() {
+        let (previews, _dir) = registry();
+        previews.apply(&order("start", "solo", "exec sleep 30"));
+        let pid = previews.list()[0].pid;
+        let ttl = Duration::from_millis(200);
+
+        assert!(previews.expire(Instant::now(), ttl).is_empty());
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            previews.expire(Instant::now(), ttl),
+            vec!["solo".to_string()]
+        );
+        assert!(previews.list().is_empty());
+        assert!(!alive(pid));
+    }
+
+    #[test]
+    fn una_visita_corre_el_reloj_de_la_inactividad() {
+        let (previews, _dir) = registry();
+        previews.apply(&order("start", "visitado", "exec sleep 30"));
+        let ttl = Duration::from_millis(300);
+
+        std::thread::sleep(Duration::from_millis(250));
+        previews.touch("visitado");
+        assert!(previews.expire(Instant::now(), ttl).is_empty());
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(
+            previews.expire(Instant::now(), ttl),
+            vec!["visitado".to_string()]
+        );
+    }
+
+    #[test]
+    fn el_listado_dice_cuanto_hace_que_nadie_lo_visita() {
+        let (previews, _dir) = registry();
+        previews.apply(&order("start", "visto", "exec sleep 30"));
+
+        assert_eq!(previews.list()[0].idle, 0);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(
+            previews.list()[0].idle >= 1,
+            "{:?}",
+            previews.list()[0].idle
+        );
+        previews.touch("visto");
+        assert_eq!(previews.list()[0].idle, 0);
     }
 
     #[test]

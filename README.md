@@ -188,6 +188,29 @@ The sidebar lists the running previews above the projects, each one a link that
 opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel
 refreshes with the rest of the sidebar.
 
+### Recipes
+
+A project's start-up line is worth writing once. `$JIMMY_WORKSPACE/state/previews.toml`
+holds one recipe per name, and then `jimmy preview start <name>` needs no `--cmd`:
+
+```toml
+[bifrost]
+about = "the App Router demo: Vite build, Go SSR"
+cwd = "projects/bifrost/example/app-router-demo"
+cmd = "make dev"
+```
+
+`cwd` is relative to the workspace and defaults to it. `about` is only for the
+listing. `jimmy preview recipes` prints them all with their command, and a
+`--cmd` given on the spot wins over the recipe, so one-off previews still work.
+When a name has no recipe and no command, the error lists the recipes that do
+exist instead of just saying no.
+
+The command runs with a clean environment: `PATH`, `HOME`, `LANG`, `TZ`, plus
+`PORT` and `PREVIEW_NAME`. It does not inherit jimmy's own environment, so a
+preview cannot read jimmy's secrets by accident — what a project needs, it
+declares in its own recipe, in plain sight.
+
 ### Slack app
 
 The `slack` transport uses Socket Mode, so no public URL is needed. In the app:

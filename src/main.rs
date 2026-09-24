@@ -710,17 +710,13 @@ fn preview_command(args: &[String]) -> i32 {
     let order = match args.first().map(String::as_str) {
         Some("start") => {
             let Some(name) = args.get(1) else {
-                eprintln!("uso: jimmy preview start <nombre> --cmd 'comando' [--cwd dir]");
-                return 2;
-            };
-            let Some(command) = flag(args, "--cmd") else {
-                eprintln!("uso: jimmy preview start <nombre> --cmd 'comando' [--cwd dir]");
+                eprintln!("uso: jimmy preview start <nombre> [--cmd 'comando'] [--cwd dir]");
                 return 2;
             };
             preview::Order {
                 op: "start".into(),
                 name: name.clone(),
-                command: Some(command),
+                command: flag(args, "--cmd"),
                 cwd: flag(args, "--cwd"),
             }
         }
@@ -735,12 +731,18 @@ fn preview_command(args: &[String]) -> i32 {
                 ..preview::Order::default()
             }
         }
+        Some("recipes") => preview::Order {
+            op: "recipes".into(),
+            ..preview::Order::default()
+        },
         Some("list") | None => preview::Order {
             op: "list".into(),
             ..preview::Order::default()
         },
         _ => {
-            eprintln!("uso: jimmy preview <start nombre --cmd 'comando'|stop nombre|list>");
+            eprintln!(
+                "uso: jimmy preview <start nombre [--cmd 'comando'] [--cwd dir]|stop nombre|list|recipes>"
+            );
             return 2;
         }
     };
@@ -766,6 +768,17 @@ fn preview_command(args: &[String]) -> i32 {
             "{} puerto {} pid {} en /preview/{}/ (arriba hace {}s, sin visitas hace {}s)",
             preview.name, preview.port, preview.pid, preview.name, preview.seconds, preview.idle
         );
+    }
+    for recipe in answer.recipes {
+        println!(
+            "{}{}",
+            recipe.name,
+            recipe
+                .about
+                .map(|about| format!(" — {about}"))
+                .unwrap_or_default()
+        );
+        println!("    {}", recipe.cmd.trim());
     }
     0
 }

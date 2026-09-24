@@ -96,6 +96,24 @@ fn workspace_from_env() -> PathBuf {
     )
 }
 
+/// Los nombres que jimmy atiende como orden y no como arranque del bot.
+const SUBCOMMANDS: [&str; 6] = [
+    "memo",
+    "send",
+    "conversations",
+    "skill",
+    "preview",
+    "worker",
+];
+
+/// Con argumentos, jimmy sólo hace lo que le pidieron. Un nombre que no conoce
+/// no puede terminar arrancando el bot entero: sería una segunda instancia
+/// escuchando el mismo puerto y robándole los mensajes a la que ya corre.
+fn unknown_command(args: &[String]) -> Option<&str> {
+    let first = args.first()?;
+    (!SUBCOMMANDS.contains(&first.as_str())).then_some(first.as_str())
+}
+
 fn main() {
     axe::set_non_dumpable();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -123,6 +141,11 @@ fn main() {
             }
         };
         std::process::exit(code);
+    }
+    if let Some(name) = unknown_command(&args) {
+        eprintln!("jimmy: no conozco el comando {name}");
+        eprintln!("uso: jimmy [{}] ...", SUBCOMMANDS.join("|"));
+        std::process::exit(2);
     }
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -765,6 +788,15 @@ fn clamp(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_command_never_starts_the_bot() {
+        assert_eq!(unknown_command(&[]), None);
+        assert_eq!(unknown_command(&["memo".into(), "sync".into()]), None);
+        assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
+        assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
+        assert_eq!(unknown_command(&["--help".into()]), Some("--help"));
+    }
 
     #[test]
     fn telegram_voice_extension_is_ogg_not_oga() {

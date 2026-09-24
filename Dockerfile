@@ -23,6 +23,13 @@ RUN curl -fsSL https://ax.3lines.studio/install.sh -o /tmp/ax-install.sh \
     && AX_PREFIX=/usr/local VERSION="$BQX_VERSION" sh /tmp/ax-install.sh bqx \
     && AX_PREFIX=/usr/local VERSION="$PGX_VERSION" sh /tmp/ax-install.sh pgx \
     && rm /tmp/ax-install.sh
+ARG HEIMDALL_VERSION=v0.1.0
+RUN curl -fsSL "https://github.com/3-lines-studio/heimdall/releases/download/${HEIMDALL_VERSION}/heimdall-linux-x64.tar.gz" \
+      | tar -xz -C /usr/local/bin heimdall \
+    && chmod 0755 /usr/local/bin/heimdall \
+    && ln -sf /usr/local/bin/heimdall /usr/local/bin/doppler \
+    && heimdall help > /dev/null \
+    && doppler help > /dev/null
 
 ENV RUSTUP_HOME=/root/.rustup
 ENV CARGO_HOME=/root/.cargo

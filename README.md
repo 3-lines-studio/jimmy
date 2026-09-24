@@ -206,10 +206,10 @@ listing. `jimmy preview recipes` prints them all with their command, and a
 When a name has no recipe and no command, the error lists the recipes that do
 exist instead of just saying no.
 
-The command runs with the environment jimmy was started with, plus `PORT` and
-`PREVIEW_NAME`. That means a preview can also see jimmy's own secrets — an app
-that reads `RESEND_API_KEY`, for instance, will find it. Recipes that do not want
-that clear it themselves (`RESEND_API_KEY= ...`).
+The command runs with a clean environment: `PATH`, `HOME`, `LANG`, `TZ`, plus
+`PORT` and `PREVIEW_NAME`. It does not inherit jimmy's own environment, so a
+preview cannot read jimmy's secrets by accident — what a project needs, it
+declares in its own recipe, in plain sight.
 
 ### Slack app
 

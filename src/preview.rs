@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -218,17 +219,21 @@ impl Previews {
         let out = std::fs::File::create(&log).map_err(|e| e.to_string())?;
         let err = out.try_clone().map_err(|e| e.to_string())?;
 
-        let child = Command::new("sh")
+        let mut spawn = Command::new("sh");
+        spawn
             .arg("-c")
             .arg(command)
             .current_dir(&cwd)
+            .env_clear()
+            .envs(minimal_env())
             .env("PORT", port.to_string())
             .env("PREVIEW_PORT", port.to_string())
             .env("PREVIEW_NAME", &name)
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err)
-            .process_group(0)
+            .process_group(0);
+        let child = spawn
             .spawn()
             .map_err(|e| format!("no pude lanzar {command}: {e}"))?;
 
@@ -824,6 +829,16 @@ fn missing_command(name: &str, recipes: &HashMap<String, Recipe>) -> String {
     }
 }
 
+/// El preview no ve el entorno de jimmy: ni sus secretos ni nada que la app no
+/// haya pedido. Lo que un proyecto necesite lo declara en el comando de su
+/// receta, que es también donde queda a la vista.
+fn minimal_env() -> Vec<(&'static str, OsString)> {
+    ["PATH", "HOME", "LANG", "TZ"]
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
+        .collect()
+}
+
 fn free_port() -> Result<u16, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
     listener
@@ -954,6 +969,37 @@ mod tests {
         );
         previews.touch("visto");
         assert_eq!(previews.list()[0].idle, 0);
+    }
+
+    #[test]
+    fn un_preview_no_hereda_el_entorno_de_jimmy() {
+        let dir = recipe_dir("env");
+        let previews = Previews::new(&dir);
+        let salida = dir.join("env.txt");
+        let report = previews.apply(&order(
+            "start",
+            "web",
+            &format!("env > {}; exec sleep 30", salida.display()),
+        ));
+        assert!(report.ok, "{:?}", report.error);
+        let visto = esperar_archivo(&salida);
+        assert!(visto.contains("PATH="), "sin PATH no arranca nada");
+        assert!(visto.contains(&format!("PORT={}", report.port.unwrap())));
+        assert!(visto.contains("PREVIEW_NAME=web"));
+        assert!(
+            !visto.contains("CARGO_TARGET_DIR="),
+            "heredó el entorno de jimmy"
+        );
+    }
+
+    fn esperar_archivo(path: &Path) -> String {
+        for _ in 0..40 {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("no apareció {}", path.display());
     }
 
     /// Un directorio sólo para el test: el resto comparte uno y un archivo de

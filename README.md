@@ -163,19 +163,22 @@ each result opens its transcript with the matches marked.
 child of the main process and serves it at `/preview/<name>/` on the web port,
 behind the same session as the rest of the UI: no extra domain, no second
 certificate. A preview is never an orphan, which is what keeps the reaper's
-hands off it. The command gets `PORT`, `PREVIEW_PORT`, `PREVIEW_NAME` and
-`PREVIEW_BASE` (`/preview/<name>/`) in its environment, and the last lines of
-its output land in `$JIMMY_WORKSPACE/state/previews/<name>.log`.
+hands off it. The command gets `PORT` and `PREVIEW_NAME` in its environment, and
+the last lines of its output land in
+`$JIMMY_WORKSPACE/state/previews/<name>.log`.
 
-The proxy is a raw relay: it forwards the request and copies the response
-without reading it, so a streamed body and a WebSocket upgrade (Vite's HMR, for
-instance) go through untouched. It does **not** rewrite the path, which is why
-the project has to serve under its own base — `vite --base=$PREVIEW_BASE`, and
-the equivalent flag elsewhere. A project that answers on absolute paths
-(`/app.js`) gets a 404: the prefix belongs to the project, not to the proxy.
+A preview runs bare, the way it would on your machine. The proxy strips the
+prefix on the way in and puts it back on everything that comes out pointing at
+the root — HTML attributes, CSS `url()`, JavaScript string literals and
+redirects — so nothing has to know where it lives. A streamed body, a binary or
+a WebSocket upgrade are copied raw.
+
+What the rewrite cannot see: a JSON payload that carries paths, or a path built
+at runtime by the app. Start the project with its strict-port flag so it cannot
+drift to another port, and remember the preview dies with the deploy.
 
 Previews live as long as the process that spawned them, so a redeploy takes them
-with it: they are for looking at work in progress, not for hosting. `jimmy
+with them: they are for looking at work in progress, not for hosting. `jimmy
 preview list` shows what is up, `jimmy preview stop <name>` takes one down, and
 names are slugs: lowercase, digits and dashes.
 

@@ -116,7 +116,6 @@ impl Previews {
         self.stop(&name).ok();
 
         let port = free_port()?;
-        let base = format!("{PREFIX}{name}/");
         let logs = self.workspace.join(LOGS);
         std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
         let log = logs.join(format!("{name}.log"));
@@ -130,7 +129,6 @@ impl Previews {
             .env("PORT", port.to_string())
             .env("PREVIEW_PORT", port.to_string())
             .env("PREVIEW_NAME", &name)
-            .env("PREVIEW_BASE", &base)
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err)
@@ -418,10 +416,15 @@ pub fn read_head(stream: &mut TcpStream) -> std::io::Result<Option<Head>> {
     }))
 }
 
-/// Reenvía el pedido al preview y devuelve la respuesta sin mirarla: lo que
-/// venga después del encabezado se copia crudo, así el streaming y el
-/// handshake de un WebSocket pasan igual.
-pub fn forward(stream: &mut TcpStream, head: &Head, port: u16) -> std::io::Result<()> {
+/// Reenvía el pedido al preview, sin el prefijo, y devuelve la respuesta
+/// reescrita: el proyecto se sirve en `/` y no sabe que vive bajo
+/// `/preview/<nombre>/`, así que todo lo que sale apuntando a la raíz vuelve
+/// prefijado.
+///
+/// Sólo se reescribe lo que es texto de la página (HTML, CSS y JavaScript). Un
+/// cuerpo con streaming, un binario o un `Upgrade` se copian crudos.
+pub fn forward(stream: &mut TcpStream, head: &Head, name: &str, port: u16) -> std::io::Result<()> {
+    let prefix = format!("{PREFIX}{name}/");
     let mut upstream = match TcpStream::connect(("127.0.0.1", port)) {
         Ok(upstream) => upstream,
         Err(e) => {
@@ -437,33 +440,246 @@ pub fn forward(stream: &mut TcpStream, head: &Head, port: u16) -> std::io::Resul
     };
 
     let host = head.header("host").unwrap_or("localhost").to_string();
-    let mut out = format!("{} {} HTTP/1.1\r\n", head.method, head.target);
+    let base = format!("{PREFIX}{name}");
+    let upgrading = head.header("upgrade").is_some();
+    let target = match head.target.strip_prefix(&base) {
+        Some("") => "/",
+        Some(rest) => rest,
+        None => "/",
+    };
+    let mut out = format!("{} {target} HTTP/1.1\r\n", head.method);
     for (name, value) in &head.headers {
-        if name.eq_ignore_ascii_case("host") {
+        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("accept-encoding") {
+            continue;
+        }
+        if !upgrading && name.eq_ignore_ascii_case("connection") {
             continue;
         }
         out.push_str(&format!("{name}: {value}\r\n"));
     }
     out.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
     out.push_str(&format!("X-Forwarded-Host: {host}\r\n"));
+    if !upgrading {
+        out.push_str("Connection: close\r\n");
+    }
     out.push_str("\r\n");
     upstream.write_all(out.as_bytes())?;
     upstream.flush()?;
 
-    let mut from_client = stream.try_clone()?;
-    let mut to_upstream = upstream.try_clone()?;
-    let mut from_upstream = upstream.try_clone()?;
-    let mut to_client = stream.try_clone()?;
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            let _ = std::io::copy(&mut from_client, &mut to_upstream);
-            let _ = to_upstream.shutdown(std::net::Shutdown::Write);
+    let request_body = head
+        .header("content-length")
+        .and_then(|length| length.parse::<usize>().ok())
+        .unwrap_or(0);
+    if request_body > 0 {
+        let mut body = vec![0u8; request_body];
+        stream.read_exact(&mut body)?;
+        upstream.write_all(&body)?;
+        upstream.flush()?;
+    }
+
+    let Some((status, headers)) = read_response_head(&mut upstream)? else {
+        return Ok(());
+    };
+    let headers = with_location(&headers, &prefix);
+    let ctype = header_value(&headers, "content-type").unwrap_or("");
+
+    if !rewritable(ctype) || status == 101 || status == 304 {
+        write!(stream, "HTTP/1.1 {status} {}\r\n", reason(status))?;
+        for (name, value) in &headers {
+            if status != 101 && name.eq_ignore_ascii_case("connection") {
+                continue;
+            }
+            write!(stream, "{name}: {value}\r\n")?;
+        }
+        if status != 101 {
+            stream.write_all(b"Connection: close\r\n")?;
+        }
+        stream.write_all(b"\r\n")?;
+        stream.flush()?;
+        let mut from_client = stream.try_clone()?;
+        let mut from_upstream = upstream.try_clone()?;
+        let mut to_upstream = upstream.try_clone()?;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _ = std::io::copy(&mut from_client, &mut to_upstream);
+                let _ = to_upstream.shutdown(std::net::Shutdown::Write);
+            });
+            let _ = std::io::copy(&mut from_upstream, stream);
+            let _ = stream.shutdown(std::net::Shutdown::Read);
         });
-        let _ = std::io::copy(&mut from_upstream, &mut to_client);
-        let _ = to_client.shutdown(std::net::Shutdown::Write);
-        let _ = stream.shutdown(std::net::Shutdown::Read);
-    });
-    Ok(())
+        return Ok(());
+    }
+
+    let body = read_body(&mut upstream, &headers)?;
+    let body = rewrite(ctype, &body, &prefix);
+    write!(stream, "HTTP/1.1 {status} {}\r\n", reason(status))?;
+    for (name, value) in &headers {
+        if !networking_header(name) {
+            write!(stream, "{name}: {value}\r\n")?;
+        }
+    }
+    write!(
+        stream,
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(&body)?;
+    stream.flush()
+}
+
+fn networking_header(name: &str) -> bool {
+    ["content-length", "transfer-encoding", "connection"]
+        .iter()
+        .any(|skip| name.eq_ignore_ascii_case(skip))
+}
+fn rewritable(ctype: &str) -> bool {
+    ["text/html", "text/css", "javascript"]
+        .iter()
+        .any(|kind| ctype.contains(kind))
+}
+
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "OK",
+    }
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+/// Un redirect que sale apuntando a la raíz tiene que volver al preview, o el
+/// navegador se va a jimmy.
+fn with_location(headers: &[(String, String)], prefix: &str) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            if !name.eq_ignore_ascii_case("location") {
+                return (name.clone(), value.clone());
+            }
+            if !value.starts_with('/') || value.starts_with("//") || value.starts_with(prefix) {
+                return (name.clone(), value.clone());
+            }
+            (name.clone(), format!("{prefix}{}", &value[1..]))
+        })
+        .collect()
+}
+
+type ResponseHead = (u16, Vec<(String, String)>);
+
+fn read_response_head(stream: &mut TcpStream) -> std::io::Result<Option<ResponseHead>> {
+    let mut raw = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    while !raw.ends_with(b"\r\n\r\n") {
+        if raw.len() > MAX_HEAD {
+            return Ok(None);
+        }
+        if stream.read(&mut byte)? == 0 {
+            return Ok(None);
+        }
+        raw.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&raw).to_string();
+    let mut lines = text.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|line| line.split(' ').nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(200);
+    let headers = lines
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect();
+    Ok(Some((status, headers)))
+}
+
+fn read_body(stream: &mut TcpStream, headers: &[(String, String)]) -> std::io::Result<Vec<u8>> {
+    let chunked = header_value(headers, "transfer-encoding")
+        .map(|value| value.eq_ignore_ascii_case("chunked"))
+        .unwrap_or(false);
+    if chunked {
+        let mut body = Vec::new();
+        loop {
+            let size = usize::from_str_radix(read_line(stream)?.trim(), 16).unwrap_or(0);
+            if size == 0 {
+                read_line(stream)?;
+                return Ok(body);
+            }
+            let mut chunk = vec![0u8; size];
+            stream.read_exact(&mut chunk)?;
+            body.extend_from_slice(&chunk);
+            read_line(stream)?;
+        }
+    }
+    if let Some(length) = header_value(headers, "content-length").and_then(|v| v.parse().ok()) {
+        let mut body = vec![0u8; length];
+        stream.read_exact(&mut body)?;
+        return Ok(body);
+    }
+    let mut body = Vec::new();
+    stream.read_to_end(&mut body)?;
+    Ok(body)
+}
+
+fn read_line(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if stream.read(&mut byte)? == 0 || byte[0] == b'\n' {
+            return Ok(String::from_utf8_lossy(&line).to_string());
+        }
+        line.push(byte[0]);
+    }
+}
+
+/// El prefijo va sobre los paths que quedaron apuntando a la raíz. Un path que
+/// ya empieza con `//` (un host prestado) se deja como está.
+fn rewrite(ctype: &str, body: &[u8], prefix: &str) -> Vec<u8> {
+    let text = String::from_utf8_lossy(body).to_string();
+    let text = if ctype.contains("text/html") {
+        ["href=\"", "src=\"", "action=\"", "srcset=\""]
+            .iter()
+            .fold(text, |text, needle| prefix_after(&text, needle, prefix))
+    } else if ctype.contains("text/css") {
+        prefix_after(&text, "url(", prefix)
+    } else if ctype.contains("javascript") {
+        prefix_after(&prefix_after(&text, "\"", prefix), "'", prefix)
+    } else {
+        text
+    };
+    text.into_bytes()
+}
+
+fn prefix_after(text: &str, needle: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(needle) {
+        let end = index + needle.len();
+        out.push_str(&rest[..end]);
+        rest = &rest[end..];
+        if !rest.starts_with('/') || rest.starts_with("//") {
+            continue;
+        }
+        out.push_str(prefix);
+        rest = &rest[1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn free_port() -> Result<u16, String> {
@@ -592,33 +808,31 @@ mod tests {
     }
 
     #[test]
-    fn forward_lleva_el_pedido_al_preview_y_trae_la_respuesta() {
+    fn forward_quita_el_prefijo_y_reescribe_lo_que_sale() {
         let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = upstream.local_addr().unwrap().port();
         let seen = std::thread::spawn(move || {
             let (mut conn, _) = upstream.accept().unwrap();
             conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") {
-                if conn.read(&mut byte).unwrap() == 0 {
-                    break;
-                }
-                head.push(byte[0]);
-            }
+            let head = read_until_blank(&mut conn);
             let mut body = [0u8; 8];
             let read = conn.read(&mut body).unwrap_or(0);
-            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                .unwrap();
-            (
-                String::from_utf8_lossy(&head).to_string(),
-                String::from_utf8_lossy(&body[..read]).to_string(),
+            let page = "<a href=\"/app.js\">x</a><img src=\"/f.png\">";
+            conn.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{page}",
+                    page.len()
+                )
+                .as_bytes(),
             )
+            .unwrap();
+            (head, String::from_utf8_lossy(&body[..read]).to_string())
         });
 
         let (client, mut server_side) = pair();
-        let head = head("/preview/x/");
-        let proxying = std::thread::spawn(move || forward(&mut server_side, &head, port).unwrap());
+        let head = head_with("/preview/x/", &[("Content-Length", "4")]);
+        let proxying =
+            std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
 
         let mut client = client;
         client.write_all(b"hola").unwrap();
@@ -628,12 +842,63 @@ mod tests {
 
         let answer = String::from_utf8_lossy(&answer).to_string();
         assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
-        assert!(answer.ends_with("ok"), "{answer}");
+        assert!(answer.contains("href=\"/preview/x/app.js\""), "{answer}");
+        assert!(answer.contains("src=\"/preview/x/f.png\""), "{answer}");
         let (head, body) = seen.join().unwrap();
-        assert!(head.starts_with("GET /preview/x/ HTTP/1.1\r\n"), "{head}");
+        assert!(head.starts_with("GET / HTTP/1.1\r\n"), "{head}");
         assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
         assert!(head.contains("X-Forwarded-Host: jimmy.berti.sh"), "{head}");
         assert_eq!(body, "hola");
+    }
+
+    #[test]
+    fn forward_arma_el_cuerpo_fragmentado_y_saca_el_prefijo_del_redirect() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut conn, _) = upstream.accept().unwrap();
+            read_until_blank(&mut conn);
+            conn.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .unwrap();
+            let body = "body { background: url(/f.png) }";
+            conn.write_all(format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len()).as_bytes())
+                .unwrap();
+        });
+
+        let (client, mut server_side) = pair();
+        let head = head_with("/preview/x/estilo.css", &[]);
+        let proxying =
+            std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
+        let mut client = client;
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        proxying.join().unwrap();
+
+        let answer = String::from_utf8_lossy(&answer).to_string();
+        assert!(answer.contains("Content-Length:"), "{answer}");
+        assert!(!answer.contains("chunked"), "{answer}");
+        assert!(answer.contains("url(/preview/x/f.png)"), "{answer}");
+
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut conn, _) = upstream.accept().unwrap();
+            read_until_blank(&mut conn);
+            conn.write_all(b"HTTP/1.1 302 Found\r\nLocation: /panel\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let (client, mut server_side) = pair();
+        let head = head_with("/preview/x/viejo", &[]);
+        let proxying =
+            std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
+        let mut client = client;
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        proxying.join().unwrap();
+        let answer = String::from_utf8_lossy(&answer).to_string();
+        assert!(answer.contains("Location: /preview/x/panel"), "{answer}");
     }
 
     #[test]
@@ -643,25 +908,19 @@ mod tests {
         let echo = std::thread::spawn(move || {
             let (mut conn, _) = upstream.accept().unwrap();
             conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") {
-                if conn.read(&mut byte).unwrap() == 0 {
-                    break;
-                }
-                head.push(byte[0]);
-            }
+            let head = read_until_blank(&mut conn);
             conn.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
                 .unwrap();
             conn.write_all(b"frame-del-server").unwrap();
             let mut buf = [0u8; 32];
             let read = conn.read(&mut buf).unwrap_or(0);
-            String::from_utf8_lossy(&buf[..read]).to_string()
+            (head, String::from_utf8_lossy(&buf[..read]).to_string())
         });
 
         let (client, mut server_side) = pair();
-        let head = head("/preview/x/?token=x");
-        let proxying = std::thread::spawn(move || forward(&mut server_side, &head, port).unwrap());
+        let head = head_with("/preview/x/ws?token=y", &[]);
+        let proxying =
+            std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
 
         let mut client = client;
         let mut handshake = Vec::new();
@@ -677,16 +936,115 @@ mod tests {
         client.write_all(b"ping-del-cliente").unwrap();
         client.flush().unwrap();
 
-        assert_eq!(echo.join().unwrap(), "ping-del-cliente");
+        let (head, ping) = echo.join().unwrap();
+        assert!(head.starts_with("GET /ws?token=y HTTP/1.1\r\n"), "{head}");
+        assert_eq!(ping, "ping-del-cliente");
         proxying.join().unwrap();
     }
 
-    fn head(target: &str) -> Head {
+    #[test]
+    fn forward_le_dice_al_navegador_que_la_conexion_es_de_una_sola_vez() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (mut conn, _) = upstream.accept().unwrap();
+            let head = read_until_blank(&mut conn);
+            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\n42")
+                .unwrap();
+            head
+        });
+
+        let (client, mut server_side) = pair();
+        let head = head_with("/preview/x/api/dato", &[("Connection", "keep-alive")]);
+        let proxying =
+            std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
+        let mut client = client;
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        proxying.join().unwrap();
+
+        let answer = String::from_utf8_lossy(&answer).to_string();
+        assert!(answer.contains("Connection: close"), "{answer}");
+        assert!(!answer.contains("keep-alive"), "{answer}");
+        assert!(answer.ends_with("42"), "{answer}");
+        let head = seen.join().unwrap();
+        assert!(head.contains("Connection: close"), "{head}");
+    }
+
+    #[test]
+    fn rewrite_prefija_lo_que_apunta_a_la_raiz_y_no_toca_lo_prestado() {
+        let prefix = "/preview/x/";
+        let html = rewrite(
+            "text/html",
+            b"<a href=\"/a\">1</a><script src=\"/b.js\"></script><img src=\"//cdn.com/c.png\">",
+            prefix,
+        );
+        let html = String::from_utf8(html).unwrap();
+        assert!(html.contains("href=\"/preview/x/a\""), "{html}");
+        assert!(html.contains("src=\"/preview/x/b.js\""), "{html}");
+        assert!(html.contains("src=\"//cdn.com/c.png\""), "{html}");
+
+        let css = rewrite("text/css", b"a { background: url(/f.png) }", prefix);
+        assert_eq!(
+            String::from_utf8(css).unwrap(),
+            "a { background: url(/preview/x/f.png) }"
+        );
+
+        let js = rewrite(
+            "application/javascript",
+            b"fetch(\"/api/dato\"); const u = '/otro'; const r = a / b;",
+            prefix,
+        );
+        let js = String::from_utf8(js).unwrap();
+        assert!(js.contains("fetch(\"/preview/x/api/dato\")"), "{js}");
+        assert!(js.contains("'/preview/x/otro'"), "{js}");
+        assert!(js.contains("a / b"), "{js}");
+
+        let otros = rewrite("application/json", b"{\"url\":\"/api/x\"}", prefix);
+        assert_eq!(String::from_utf8(otros).unwrap(), "{\"url\":\"/api/x\"}");
+    }
+
+    #[test]
+    fn with_location_deja_afuera_lo_que_no_es_del_preview() {
+        let headers = vec![
+            ("Location".to_string(), "/panel".to_string()),
+            ("X-Otro".to_string(), "/no-tocar".to_string()),
+        ];
+        let out = with_location(&headers, "/preview/x/");
+        assert_eq!(out[0].1, "/preview/x/panel");
+        assert_eq!(out[1].1, "/no-tocar");
+
+        let ya = vec![("Location".to_string(), "/preview/x/panel".to_string())];
+        assert_eq!(with_location(&ya, "/preview/x/")[0].1, "/preview/x/panel");
+        let afuera = vec![("Location".to_string(), "https://otro.com/x".to_string())];
+        assert_eq!(
+            with_location(&afuera, "/preview/x/")[0].1,
+            "https://otro.com/x"
+        );
+    }
+
+    fn head_with(target: &str, extra: &[(&str, &str)]) -> Head {
+        let mut headers = vec![("Host".to_string(), "jimmy.berti.sh".to_string())];
+        for (name, value) in extra {
+            headers.push((name.to_string(), value.to_string()));
+        }
         Head {
             method: "GET".into(),
             target: target.into(),
-            headers: vec![("Host".into(), "jimmy.berti.sh".into())],
+            headers,
         }
+    }
+
+    fn read_until_blank(conn: &mut TcpStream) -> String {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if conn.read(&mut byte).unwrap() == 0 {
+                break;
+            }
+            head.push(byte[0]);
+        }
+        String::from_utf8_lossy(&head).to_string()
     }
 
     /// Un cliente y el otro extremo, como los ve el proxy.

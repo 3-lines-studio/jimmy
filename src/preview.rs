@@ -181,7 +181,7 @@ impl Previews {
         Ok(summary)
     }
 
-    fn list(&self) -> Vec<Summary> {
+    pub fn list(&self) -> Vec<Summary> {
         let Ok(mut running) = self.running.lock() else {
             return Vec::new();
         };

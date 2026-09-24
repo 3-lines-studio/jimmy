@@ -324,6 +324,19 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             })
         })
         .collect();
+    let mut previews: Vec<preview::Summary> = web.previews.list();
+    previews.sort_by(|a, b| a.name.cmp(&b.name));
+    let previews: Vec<serde_json::Value> = previews
+        .into_iter()
+        .map(|preview| {
+            serde_json::json!({
+                "name": preview.name,
+                "port": preview.port,
+                "seconds": preview.seconds,
+                "path": format!("/preview/{}/", preview.name),
+            })
+        })
+        .collect();
     http::send_json(
         stream,
         200,
@@ -331,6 +344,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             "user": user,
             "workspace": web.workspace.display().to_string(),
             "projects": projects,
+            "previews": previews,
         }),
     )
 }

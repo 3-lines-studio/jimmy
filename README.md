@@ -182,6 +182,10 @@ with them: they are for looking at work in progress, not for hosting. `jimmy
 preview list` shows what is up, `jimmy preview stop <name>` takes one down, and
 names are slugs: lowercase, digits and dashes.
 
+The sidebar lists the running previews above the projects, each one a link that
+opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel
+refreshes with the rest of the sidebar.
+
 ### Slack app
 
 The `slack` transport uses Socket Mode, so no public URL is needed. In the app:

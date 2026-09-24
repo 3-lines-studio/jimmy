@@ -592,7 +592,11 @@ fn memo_command(args: &[String]) -> i32 {
             "" => Err("memo miss: falta el texto".into()),
             text => memo::miss(&workspace, text),
         },
-        _ => Err("uso: jimmy memo <sync|demote|miss texto>".into()),
+        Some("show") => match args[1..].join(" ").trim() {
+            "" => Err("memo show: falta la clave".into()),
+            key => memo::show(&workspace, key),
+        },
+        _ => Err("uso: jimmy memo <sync|demote|miss texto|show clave>".into()),
     };
     match result {
         Ok(report) => {

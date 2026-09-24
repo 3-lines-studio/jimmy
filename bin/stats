@@ -74,7 +74,12 @@ def report_memory(events):
             line += f" · vencidas: {', '.join(stale)}"
         print(line)
     if renders:
-        print(f"render — {len(renders)} cortes · último {renders[-1]['bytes']} bytes")
+        last = renders[-1]
+        line = f"render — {len(renders)} cortes · último {last['bytes']} bytes"
+        outside = last.get("outside") or []
+        if outside:
+            line += f" · afuera: {', '.join(outside)}"
+        print(line)
     if misses:
         text = misses[-1]["text"]
         if len(text) > 60:

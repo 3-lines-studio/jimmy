@@ -7,6 +7,22 @@ use std::path::{Path, PathBuf};
 pub const BUDGET: usize = 16 * 1024;
 const STALE_DAYS: i64 = 30;
 const STALE_SHIFT: u32 = 6;
+/// Una entrada tocada estos días no compite por bajar: es lo que acabo de
+/// aprender y lo que más caro sale perder. Sólo cae si no queda otra.
+const GRACE_DAYS: i64 = 7;
+/// Los tipos con los que se clasifica una entrada. La lista es corta a
+/// propósito: con el vocabulario abierto cada entrada inventaba el suyo y el
+/// tipo terminaba sin servir para nada.
+const KINDS: [&str; 8] = [
+    "decision",
+    "estado",
+    "medicion",
+    "bugfix",
+    "herramienta",
+    "identidad",
+    "proyecto",
+    "plataforma",
+];
 const KEEP: [&str; 4] = ["usuario", "proyectos", "entorno", "decisiones-vigentes"];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -76,6 +92,14 @@ pub fn render(workspace: &Path) -> String {
         used += bytes;
     }
 
+    let outside: Vec<&str> = level1
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !keep[*index])
+        .map(|(_, entry)| entry.key.as_str())
+        .collect();
+
     emit(
         workspace,
         json!({
@@ -85,13 +109,53 @@ pub fn render(workspace: &Path) -> String {
             "bytes": text.len(),
             "budget": BUDGET,
             "entries": level1.entries.len(),
+            "outside": outside,
         }),
     );
-    format!(
-        "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}]\n{}",
-        text.len(),
-        prune(&text, &level1.entries, &keep).trim()
-    )
+
+    // Un corte sin nombres deja al agente sin saber qué le falta: el aviso dice
+    // qué entradas quedaron afuera para que las vaya a buscar al nivel 2.
+    let notice = if outside.is_empty() {
+        format!(
+            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}]",
+            text.len()
+        )
+    } else {
+        format!(
+            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}; afuera quedaron: {} (están en el nivel 2)]",
+            text.len(),
+            outside.join(", ")
+        )
+    };
+    format!("{notice}\n{}", prune(&text, &level1.entries, &keep).trim())
+}
+
+pub fn show(workspace: &Path, key: &str) -> Result<String, String> {
+    let key = key.trim();
+    let entry = match std::fs::read_to_string(level1_path(workspace)) {
+        Ok(text) => parse(&text).entries.into_iter().find(|e| e.key == key),
+        Err(_) => None,
+    };
+    if let Some(entry) = entry {
+        return Ok(format!(
+            "## {} · {} · {}\n{}",
+            entry.key,
+            entry.kind,
+            format_date(entry.date),
+            entry.body.trim()
+        ));
+    }
+    let (records, _) = load_records(&level2_path(workspace));
+    let Some(record) = records.iter().rev().find(|record| record.key == key) else {
+        return Err(format!("{key} no está en la memoria"));
+    };
+    Ok(format!(
+        "## {} · {} · {} (nivel 2)\n{}",
+        record.key,
+        record.kind,
+        format_date(record.last_seen),
+        record.body.trim()
+    ))
 }
 
 pub fn sync(workspace: &Path) -> Result<String, String> {
@@ -129,6 +193,14 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     }
 
     let present: Vec<&str> = level1.entries.iter().map(|e| e.key.as_str()).collect();
+    let mut unknown: Vec<&str> = level1
+        .entries
+        .iter()
+        .map(|entry| entry.kind.as_str())
+        .filter(|kind| !KINDS.contains(kind))
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
     let mut dropped = 0;
     for (key, previous) in &latest {
         if previous.left.is_none() && !present.contains(&key.as_str()) {
@@ -158,6 +230,7 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
             "reasserted": reasserted,
             "promoted": promoted,
             "dropped": dropped,
+            "kinds": unknown,
             "malformed": level1.malformed,
             "corrupt": corrupt,
         }),
@@ -168,6 +241,12 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     );
     if dropped > 0 {
         report.push_str(&format!(" · {dropped} borradas a mano"));
+    }
+    if !unknown.is_empty() {
+        report.push_str(&format!(
+            " · tipos fuera de la lista: {}",
+            unknown.join(", ")
+        ));
     }
     if level1.malformed > 0 {
         report.push_str(&format!(" · {} con encabezado inválido", level1.malformed));
@@ -190,8 +269,9 @@ pub fn demote(workspace: &Path) -> Result<String, String> {
     struct Candidate {
         index: usize,
         expired: bool,
+        in_grace: bool,
+        bytes: usize,
         last_seen: i64,
-        rev: u32,
     }
 
     let mut candidates = Vec::new();
@@ -214,15 +294,20 @@ pub fn demote(workspace: &Path) -> Result<String, String> {
         candidates.push(Candidate {
             index,
             expired: today > review_after(last_seen, rev),
+            in_grace: today - entry.date < GRACE_DAYS,
+            bytes: entry.end - entry.start,
             last_seen,
-            rev,
         });
     }
+    // Lo vencido primero, después lo que no está en gracia, y entre iguales lo
+    // más pesado: una entrada gorda libera de una lo que cinco chicas, y la
+    // antigüedad sola castigaba al que acababa de escribir.
     candidates.sort_by(|a, b| {
         b.expired
             .cmp(&a.expired)
+            .then(a.in_grace.cmp(&b.in_grace))
+            .then(b.bytes.cmp(&a.bytes))
             .then(a.last_seen.cmp(&b.last_seen))
-            .then(a.rev.cmp(&b.rev))
     });
 
     let bytes_before = text.len();
@@ -699,6 +784,79 @@ mod tests {
     }
 
     #[test]
+    fn sync_reports_a_kind_outside_the_list() {
+        let con_rara = workspace("sync-kinds");
+        let day = date(1);
+        let text =
+            format!("## buena · decision · {day}\ncuerpo\n\n## rara · invento · {day}\ncuerpo\n\n");
+        write_level1(&con_rara, &text);
+        let report = sync(&con_rara).unwrap();
+        assert!(
+            report.contains("tipos fuera de la lista: invento"),
+            "{report}"
+        );
+
+        let sana = workspace("sync-kinds-ok");
+        write_level1(&sana, &format!("## buena · decision · {day}\ncuerpo\n\n"));
+        let report = sync(&sana).unwrap();
+        assert!(!report.contains("tipos fuera de la lista"), "{report}");
+    }
+
+    #[test]
+    fn demote_does_not_touch_what_was_written_today() {
+        let workspace = workspace("demote-grace");
+        let text = format!(
+            "{}{}",
+            entry("recien-escrita", 1, &"z".repeat(12_000)),
+            entry("de-hace-meses", 200, &"y".repeat(7_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("de-hace-meses"), "{report}");
+        let after = read_level1(&workspace);
+        assert!(after.contains("recien-escrita"), "{after}");
+        assert!(!after.contains("de-hace-meses"), "{after}");
+    }
+
+    #[test]
+    fn demote_prefers_the_heaviest_when_everything_is_recent() {
+        let workspace = workspace("demote-weight");
+        let text = format!(
+            "{}{}",
+            entry("gorda", 1, &"z".repeat(12_000)),
+            entry("flaca", 1, &"y".repeat(7_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("gorda"), "{report}");
+        let after = read_level1(&workspace);
+        assert!(after.contains("flaca"), "{after}");
+        assert!(!after.contains("gorda"), "{after}");
+    }
+
+    #[test]
+    fn show_finds_an_entry_in_either_level() {
+        let workspace = workspace("show");
+        let text = format!(
+            "{}{}",
+            entry("arriba", 1, &"a".repeat(7_000)),
+            entry("abajo", 1, &"b".repeat(12_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("abajo"), "{report}");
+
+        let viva = show(&workspace, "arriba").unwrap();
+        assert!(!viva.contains("nivel 2"), "{viva}");
+        let caida = show(&workspace, "abajo").unwrap();
+        assert!(caida.contains("nivel 2"), "{caida}");
+        assert!(show(&workspace, "no-existe").is_err());
+    }
+
+    #[test]
     fn demote_frees_until_under_budget_oldest_first() {
         let workspace = workspace("demote-budget");
         let body = "y".repeat(6_000);
@@ -733,6 +891,40 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_names_the_entries_that_stay_out() {
+        let workspace = workspace("render-outside");
+        let body = "z".repeat(6_000);
+        let first = date(1);
+        let text = format!(
+            "## usuario · identidad · {first}\n{body}\n\n{}{}",
+            entry("media", 2, &body),
+            entry("nueva", 1, &body)
+        );
+        write_level1(&workspace, &text);
+        let out = render(&workspace);
+        assert!(out.contains("afuera quedaron: media"), "{out}");
+        assert!(!out.contains("afuera quedaron: media, nueva"), "{out}");
+    }
+
+    #[test]
+    fn a_cut_leaves_a_record_of_what_stayed_out() {
+        let workspace = workspace("render-record");
+        let body = "z".repeat(6_000);
+        let first = date(1);
+        let text = format!(
+            "## usuario · identidad · {first}\n{body}\n\n{}{}",
+            entry("media", 2, &body),
+            entry("nueva", 1, &body)
+        );
+        write_level1(&workspace, &text);
+        render(&workspace);
+        let events = std::fs::read_to_string(workspace.join("state/memory-events.jsonl")).unwrap();
+        let last: serde_json::Value = serde_json::from_str(events.lines().last().unwrap()).unwrap();
+        assert_eq!(last["op"], "render");
+        assert_eq!(last["outside"][0], "media");
+    }
+
+    #[test]
     fn render_keeps_fixed_keys_and_never_cuts_an_entry() {
         let workspace = workspace("render-cut");
         let body = "z".repeat(6_000);
@@ -746,8 +938,15 @@ mod tests {
         let out = render(&workspace);
         assert!(out.contains("usuario"));
         assert!(out.contains("nueva"));
-        assert!(!out.contains("media"));
-        assert!(out.len() <= BUDGET + 120);
+        assert!(
+            !out.contains("## media"),
+            "la entrada no puede entrar a medias"
+        );
+        assert!(
+            out.contains("afuera quedaron: media"),
+            "y el aviso tiene que nombrarla"
+        );
+        assert!(out.len() <= BUDGET + 200);
     }
 
     #[test]

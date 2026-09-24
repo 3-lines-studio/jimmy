@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 pub const BUDGET: usize = 16 * 1024;
 const STALE_DAYS: i64 = 30;
 const STALE_SHIFT: u32 = 6;
+/// Una entrada tocada estos días no compite por bajar: es lo que acabo de
+/// aprender y lo que más caro sale perder. Sólo cae si no queda otra.
+const GRACE_DAYS: i64 = 7;
 const KEEP: [&str; 4] = ["usuario", "proyectos", "entorno", "decisiones-vigentes"];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -114,6 +117,34 @@ pub fn render(workspace: &Path) -> String {
     format!("{notice}\n{}", prune(&text, &level1.entries, &keep).trim())
 }
 
+pub fn show(workspace: &Path, key: &str) -> Result<String, String> {
+    let key = key.trim();
+    let entry = match std::fs::read_to_string(level1_path(workspace)) {
+        Ok(text) => parse(&text).entries.into_iter().find(|e| e.key == key),
+        Err(_) => None,
+    };
+    if let Some(entry) = entry {
+        return Ok(format!(
+            "## {} · {} · {}\n{}",
+            entry.key,
+            entry.kind,
+            format_date(entry.date),
+            entry.body.trim()
+        ));
+    }
+    let (records, _) = load_records(&level2_path(workspace));
+    let Some(record) = records.iter().rev().find(|record| record.key == key) else {
+        return Err(format!("{key} no está en la memoria"));
+    };
+    Ok(format!(
+        "## {} · {} · {} (nivel 2)\n{}",
+        record.key,
+        record.kind,
+        format_date(record.last_seen),
+        record.body.trim()
+    ))
+}
+
 pub fn sync(workspace: &Path) -> Result<String, String> {
     let started = std::time::Instant::now();
     std::fs::create_dir_all(workspace.join("notes")).map_err(|e| e.to_string())?;
@@ -210,8 +241,9 @@ pub fn demote(workspace: &Path) -> Result<String, String> {
     struct Candidate {
         index: usize,
         expired: bool,
+        in_grace: bool,
+        bytes: usize,
         last_seen: i64,
-        rev: u32,
     }
 
     let mut candidates = Vec::new();
@@ -234,15 +266,20 @@ pub fn demote(workspace: &Path) -> Result<String, String> {
         candidates.push(Candidate {
             index,
             expired: today > review_after(last_seen, rev),
+            in_grace: today - entry.date < GRACE_DAYS,
+            bytes: entry.end - entry.start,
             last_seen,
-            rev,
         });
     }
+    // Lo vencido primero, después lo que no está en gracia, y entre iguales lo
+    // más pesado: una entrada gorda libera de una lo que cinco chicas, y la
+    // antigüedad sola castigaba al que acababa de escribir.
     candidates.sort_by(|a, b| {
         b.expired
             .cmp(&a.expired)
+            .then(a.in_grace.cmp(&b.in_grace))
+            .then(b.bytes.cmp(&a.bytes))
             .then(a.last_seen.cmp(&b.last_seen))
-            .then(a.rev.cmp(&b.rev))
     });
 
     let bytes_before = text.len();
@@ -716,6 +753,60 @@ mod tests {
         let report = demote(&workspace).unwrap();
         assert!(report.contains("0 bajaron"));
         assert_eq!(stored(&workspace).len(), before);
+    }
+
+    #[test]
+    fn demote_does_not_touch_what_was_written_today() {
+        let workspace = workspace("demote-grace");
+        let text = format!(
+            "{}{}",
+            entry("recien-escrita", 1, &"z".repeat(12_000)),
+            entry("de-hace-meses", 200, &"y".repeat(7_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("de-hace-meses"), "{report}");
+        let after = read_level1(&workspace);
+        assert!(after.contains("recien-escrita"), "{after}");
+        assert!(!after.contains("de-hace-meses"), "{after}");
+    }
+
+    #[test]
+    fn demote_prefers_the_heaviest_when_everything_is_recent() {
+        let workspace = workspace("demote-weight");
+        let text = format!(
+            "{}{}",
+            entry("gorda", 1, &"z".repeat(12_000)),
+            entry("flaca", 1, &"y".repeat(7_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("gorda"), "{report}");
+        let after = read_level1(&workspace);
+        assert!(after.contains("flaca"), "{after}");
+        assert!(!after.contains("gorda"), "{after}");
+    }
+
+    #[test]
+    fn show_finds_an_entry_in_either_level() {
+        let workspace = workspace("show");
+        let text = format!(
+            "{}{}",
+            entry("arriba", 1, &"a".repeat(7_000)),
+            entry("abajo", 1, &"b".repeat(12_000))
+        );
+        write_level1(&workspace, &text);
+        sync(&workspace).unwrap();
+        let report = demote(&workspace).unwrap();
+        assert!(report.contains("abajo"), "{report}");
+
+        let viva = show(&workspace, "arriba").unwrap();
+        assert!(!viva.contains("nivel 2"), "{viva}");
+        let caida = show(&workspace, "abajo").unwrap();
+        assert!(caida.contains("nivel 2"), "{caida}");
+        assert!(show(&workspace, "no-existe").is_err());
     }
 
     #[test]

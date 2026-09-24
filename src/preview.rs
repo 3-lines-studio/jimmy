@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 pub const PREFIX: &str = "/preview/";
 const SOCKET: &str = "state/preview.sock";
 const LOGS: &str = "state/previews";
+/// Las recetas de arranque, una por proyecto. Escribirlas una vez es lo que hace
+/// que levantar un preview sea un nombre y no un comando que hay que reconstruir.
+const RECIPES: &str = "state/previews.toml";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEAD: usize = 32 * 1024;
 
@@ -49,6 +52,8 @@ pub struct Answer {
     #[serde(default)]
     pub previews: Vec<Summary>,
     #[serde(default)]
+    pub recipes: Vec<RecipeSummary>,
+    #[serde(default)]
     pub output: Option<String>,
 }
 
@@ -60,6 +65,41 @@ pub struct Summary {
     pub seconds: u64,
     /// Segundos desde la última visita, que es lo que decide cuándo se cae.
     pub idle: u64,
+}
+
+#[derive(Deserialize)]
+struct Recipe {
+    cmd: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    about: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecipeSummary {
+    pub name: String,
+    pub cmd: String,
+    #[serde(default)]
+    pub about: Option<String>,
+}
+
+/// Las recetas que el proyecto no trae. Un `state/previews.toml` con un nombre
+/// por receta:
+///
+/// ```toml
+/// [bifrost]
+/// cwd = "projects/bifrost"
+/// cmd = "make dev"
+/// about = "el demo del App Router"
+/// ```
+fn recipes(workspace: &Path) -> Result<HashMap<String, Recipe>, String> {
+    let path = workspace.join(RECIPES);
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{RECIPES}: {e}"))?;
+    toml::from_str(&text).map_err(|e| format!("{RECIPES}: {e}"))
 }
 
 struct Running {
@@ -140,14 +180,30 @@ impl Previews {
 
     fn start(&self, order: &Order) -> Result<Summary, String> {
         let name = valid_name(&order.name)?;
+        let recipes = recipes(&self.workspace)?;
+        let recipe = recipes.get(&name);
         let command = order
             .command
             .as_deref()
             .map(str::trim)
             .filter(|command| !command.is_empty())
-            .ok_or("falta el comando")?;
-        let cwd = match &order.cwd {
-            Some(cwd) => PathBuf::from(cwd),
+            .or_else(|| recipe.map(|recipe| recipe.cmd.trim()));
+        let Some(command) = command else {
+            return Err(missing_command(&name, &recipes));
+        };
+        let cwd = match order
+            .cwd
+            .as_deref()
+            .or_else(|| recipe.and_then(|r| r.cwd.as_deref()))
+        {
+            Some(cwd) => {
+                let path = Path::new(cwd);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    self.workspace.join(path)
+                }
+            }
             None => self.workspace.clone(),
         };
         if !cwd.is_dir() {
@@ -271,6 +327,29 @@ impl Previews {
                 ok: true,
                 previews: self.list(),
                 ..Answer::default()
+            },
+            "recipes" => match recipes(&self.workspace) {
+                Ok(recipes) => {
+                    let mut list: Vec<RecipeSummary> = recipes
+                        .into_iter()
+                        .map(|(name, recipe)| RecipeSummary {
+                            name,
+                            cmd: recipe.cmd,
+                            about: recipe.about,
+                        })
+                        .collect();
+                    list.sort_by(|a, b| a.name.cmp(&b.name));
+                    Answer {
+                        ok: true,
+                        recipes: list,
+                        ..Answer::default()
+                    }
+                }
+                Err(error) => Answer {
+                    ok: false,
+                    error: Some(error),
+                    ..Answer::default()
+                },
             },
             other => Answer {
                 ok: false,
@@ -732,6 +811,19 @@ fn prefix_after(text: &str, needle: &str, prefix: &str) -> String {
     out
 }
 
+fn missing_command(name: &str, recipes: &HashMap<String, Recipe>) -> String {
+    let mut names: Vec<&str> = recipes.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    if names.is_empty() {
+        format!("{name} necesita --cmd: en {RECIPES} no hay ninguna receta")
+    } else {
+        format!(
+            "{name} necesita --cmd o una receta propia; en {RECIPES} hay: {}",
+            names.join(", ")
+        )
+    }
+}
+
 fn free_port() -> Result<u16, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
     listener
@@ -862,6 +954,109 @@ mod tests {
         );
         previews.touch("visto");
         assert_eq!(previews.list()[0].idle, 0);
+    }
+
+    /// Un directorio sólo para el test: el resto comparte uno y un archivo de
+    /// recetas escrito desde acá los pisaría a todos.
+    fn recipe_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jimmy-preview-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        dir
+    }
+
+    fn write_recipes(dir: &Path, text: &str) {
+        std::fs::write(dir.join(RECIPES), text).unwrap();
+    }
+
+    #[test]
+    fn a_recipe_saves_the_command_and_the_place() {
+        let dir = recipe_dir("recipe-cwd");
+        let previews = Previews::new(&dir);
+        std::fs::create_dir_all(dir.join("projects/web")).unwrap();
+        write_recipes(
+            &dir,
+            "[web]\ncwd = \"projects/web\"\ncmd = \"exec sleep 30\"\nabout = \"el sitio\"\n",
+        );
+        let report = previews.apply(&Order {
+            op: "start".into(),
+            name: "web".into(),
+            ..Order::default()
+        });
+        assert!(report.ok, "{:?}", report.error);
+        assert_eq!(previews.list().len(), 1);
+        assert!(dir.join("projects/web").is_dir());
+    }
+
+    #[test]
+    fn a_command_given_on_the_spot_beats_the_recipe() {
+        let dir = recipe_dir("recipe-wins");
+        let previews = Previews::new(&dir);
+        write_recipes(&dir, "[web]\ncmd = \"exit 1\"\n");
+        let report = previews.apply(&Order {
+            op: "start".into(),
+            name: "web".into(),
+            command: Some("exec sleep 30".into()),
+            ..Order::default()
+        });
+        assert!(report.ok, "{:?}", report.error);
+    }
+
+    #[test]
+    fn without_a_command_the_error_names_the_recipes_that_exist() {
+        let dir = recipe_dir("recipe-names");
+        let previews = Previews::new(&dir);
+        write_recipes(
+            &dir,
+            "[web]\ncmd = \"exec sleep 30\"\n\n[store]\ncmd = \"exec sleep 30\"\n",
+        );
+        let report = previews.apply(&Order {
+            op: "start".into(),
+            name: "otro".into(),
+            ..Order::default()
+        });
+        let error = report.error.unwrap();
+        assert!(error.contains("store, web"), "{error}");
+
+        let vacio = recipe_dir("recipe-none");
+        let sin = Previews::new(&vacio);
+        let report = sin.apply(&Order {
+            op: "start".into(),
+            name: "otro".into(),
+            ..Order::default()
+        });
+        assert!(report.error.unwrap().contains("no hay ninguna receta"));
+    }
+
+    #[test]
+    fn the_recipe_listing_comes_sorted_and_with_its_about() {
+        let dir = recipe_dir("recipe-list");
+        let previews = Previews::new(&dir);
+        write_recipes(
+            &dir,
+            "[web]\ncmd = \"uno\"\nabout = \"el sitio\"\n\n[api]\ncmd = \"dos\"\n",
+        );
+        let answer = previews.apply(&Order {
+            op: "recipes".into(),
+            ..Order::default()
+        });
+        assert!(answer.ok, "{:?}", answer.error);
+        let names: Vec<&str> = answer.recipes.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["api", "web"]);
+        assert_eq!(answer.recipes[1].about.as_deref(), Some("el sitio"));
+    }
+
+    #[test]
+    fn a_broken_recipe_file_is_said_out_loud() {
+        let dir = recipe_dir("recipe-broken");
+        let previews = Previews::new(&dir);
+        write_recipes(&dir, "[web]\ncmd = \"\"\nno-es-toml\n");
+        let answer = previews.apply(&Order {
+            op: "recipes".into(),
+            ..Order::default()
+        });
+        assert!(!answer.ok, "{:?}", answer.recipes.len());
+        assert!(answer.error.unwrap().contains(RECIPES));
     }
 
     #[test]

@@ -185,6 +185,7 @@ fn preview_page(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         };
         return http::send_text(stream, 404, TEXT, &body);
     };
+    web.previews.touch(name);
     preview::forward(stream, &head, name, port)
 }
 const CSS: &str = "text/css; charset=utf-8";

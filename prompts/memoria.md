@@ -8,4 +8,5 @@ La memoria tiene dos niveles. El **nivel 1** es `notes/memory.md`: es tu archivo
 - Guardá hechos durables: quién es {{usuario}}, sus preferencias, sus proyectos, decisiones vigentes. No charla transitoria ni el detalle de la tarea en curso: una entrada de nivel 1 son 3-6 líneas, y el detalle fino va al nivel 2.
 - `jimmy memo sync` registra en el nivel 2 los cambios del nivel 1 y te dice qué vio: nuevas, actualizadas, reafirmadas, vueltas y sacadas a mano. Si dice **borradas a mano**, una clave desapareció del nivel 1 sin que la bajaran: revisá si fue a propósito.
 - `jimmy memo miss "lo que me repitió"` cuando {{usuario}} te repite algo que ya estaba guardado: es la única señal de que la memoria falló en traerlo.
+- Si el nivel 1 no entra en el tope, el render corta y **el aviso nombra las claves que quedaron afuera**: esas están en el nivel 2, buscálas con `rg` antes de contestar. Que aparezca ese aviso significa que la memoria no te llegó entera y que hay que consolidarla: es la señal, no el ruido.
 - Actualizala en tandas, no en cada respuesta: cada cambio invalida la caché de prefijo del modelo.

@@ -76,6 +76,14 @@ pub fn render(workspace: &Path) -> String {
         used += bytes;
     }
 
+    let outside: Vec<&str> = level1
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !keep[*index])
+        .map(|(_, entry)| entry.key.as_str())
+        .collect();
+
     emit(
         workspace,
         json!({
@@ -85,13 +93,25 @@ pub fn render(workspace: &Path) -> String {
             "bytes": text.len(),
             "budget": BUDGET,
             "entries": level1.entries.len(),
+            "outside": outside,
         }),
     );
-    format!(
-        "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}]\n{}",
-        text.len(),
-        prune(&text, &level1.entries, &keep).trim()
-    )
+
+    // Un corte sin nombres deja al agente sin saber qué le falta: el aviso dice
+    // qué entradas quedaron afuera para que las vaya a buscar al nivel 2.
+    let notice = if outside.is_empty() {
+        format!(
+            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}]",
+            text.len()
+        )
+    } else {
+        format!(
+            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}; afuera quedaron: {} (están en el nivel 2)]",
+            text.len(),
+            outside.join(", ")
+        )
+    };
+    format!("{notice}\n{}", prune(&text, &level1.entries, &keep).trim())
 }
 
 pub fn sync(workspace: &Path) -> Result<String, String> {
@@ -733,6 +753,40 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_names_the_entries_that_stay_out() {
+        let workspace = workspace("render-outside");
+        let body = "z".repeat(6_000);
+        let first = date(1);
+        let text = format!(
+            "## usuario · identidad · {first}\n{body}\n\n{}{}",
+            entry("media", 2, &body),
+            entry("nueva", 1, &body)
+        );
+        write_level1(&workspace, &text);
+        let out = render(&workspace);
+        assert!(out.contains("afuera quedaron: media"), "{out}");
+        assert!(!out.contains("afuera quedaron: media, nueva"), "{out}");
+    }
+
+    #[test]
+    fn a_cut_leaves_a_record_of_what_stayed_out() {
+        let workspace = workspace("render-record");
+        let body = "z".repeat(6_000);
+        let first = date(1);
+        let text = format!(
+            "## usuario · identidad · {first}\n{body}\n\n{}{}",
+            entry("media", 2, &body),
+            entry("nueva", 1, &body)
+        );
+        write_level1(&workspace, &text);
+        render(&workspace);
+        let events = std::fs::read_to_string(workspace.join("state/memory-events.jsonl")).unwrap();
+        let last: serde_json::Value = serde_json::from_str(events.lines().last().unwrap()).unwrap();
+        assert_eq!(last["op"], "render");
+        assert_eq!(last["outside"][0], "media");
+    }
+
+    #[test]
     fn render_keeps_fixed_keys_and_never_cuts_an_entry() {
         let workspace = workspace("render-cut");
         let body = "z".repeat(6_000);
@@ -746,8 +800,15 @@ mod tests {
         let out = render(&workspace);
         assert!(out.contains("usuario"));
         assert!(out.contains("nueva"));
-        assert!(!out.contains("media"));
-        assert!(out.len() <= BUDGET + 120);
+        assert!(
+            !out.contains("## media"),
+            "la entrada no puede entrar a medias"
+        );
+        assert!(
+            out.contains("afuera quedaron: media"),
+            "y el aviso tiene que nombrarla"
+        );
+        assert!(out.len() <= BUDGET + 200);
     }
 
     #[test]

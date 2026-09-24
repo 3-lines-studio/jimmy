@@ -11,6 +11,7 @@ mod markdown;
 mod media;
 mod memo;
 mod pool;
+mod preview;
 mod prompt;
 mod protocol;
 mod random;
@@ -109,6 +110,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("preview") {
+        std::process::exit(preview_command(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("worker") {
         let code = match worker::run(args[1..].to_vec()) {
@@ -333,12 +337,14 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
              JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
         );
     }
+    let previews = preview::Previews::new(Path::new(&config.workspace));
     let web = web::Web::new(
         config.root.clone(),
         PathBuf::from(&config.workspace),
         bus,
         agent,
         auth,
+        previews.clone(),
     );
     let listener = match web::listen(port) {
         Ok(listener) => listener,
@@ -349,6 +355,7 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
     };
     eprintln!("jimmy: web escuchando en el puerto {port}");
     std::thread::spawn(move || web::serve(web, listener));
+    std::thread::spawn(move || preview::listen(previews));
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {
@@ -669,6 +676,71 @@ fn session_from_key(key: &str) -> Option<Session> {
             thread: None,
         }),
     }
+}
+
+fn preview_command(args: &[String]) -> i32 {
+    let workspace = workspace_from_env();
+    let order = match args.first().map(String::as_str) {
+        Some("start") => {
+            let Some(name) = args.get(1) else {
+                eprintln!("uso: jimmy preview start <nombre> --cmd 'comando' [--cwd dir]");
+                return 2;
+            };
+            let Some(command) = flag(args, "--cmd") else {
+                eprintln!("uso: jimmy preview start <nombre> --cmd 'comando' [--cwd dir]");
+                return 2;
+            };
+            preview::Order {
+                op: "start".into(),
+                name: name.clone(),
+                command: Some(command),
+                cwd: flag(args, "--cwd"),
+            }
+        }
+        Some("stop") => {
+            let Some(name) = args.get(1) else {
+                eprintln!("uso: jimmy preview stop <nombre>");
+                return 2;
+            };
+            preview::Order {
+                op: "stop".into(),
+                name: name.clone(),
+                ..preview::Order::default()
+            }
+        }
+        Some("list") | None => preview::Order {
+            op: "list".into(),
+            ..preview::Order::default()
+        },
+        _ => {
+            eprintln!("uso: jimmy preview <start nombre --cmd 'comando'|stop nombre|list>");
+            return 2;
+        }
+    };
+    let answer = match preview::call(&workspace, &order) {
+        Ok(answer) => answer,
+        Err(e) => {
+            eprintln!("jimmy preview: {e}");
+            return 1;
+        }
+    };
+    if !answer.ok {
+        eprintln!(
+            "jimmy preview: {}",
+            answer.error.unwrap_or_else(|| "no pude".into())
+        );
+        return 1;
+    }
+    if let Some(output) = answer.output {
+        println!("{output}");
+    }
+    for preview in answer.previews {
+        println!(
+            "{} puerto {} pid {} ({}s) en /preview/{}/",
+            preview.name, preview.port, preview.pid, preview.seconds, preview.name
+        );
+    }
+    0
 }
 
 fn install_sigterm() {

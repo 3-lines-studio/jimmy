@@ -157,6 +157,35 @@ and remembers.
 Searching the sidebar looks through what was said in every conversation, and
 each result opens its transcript with the matches marked.
 
+### Previews
+
+`jimmy preview start <name> --cmd 'command' [--cwd dir]` runs a project as a
+child of the main process and serves it at `/preview/<name>/` on the web port,
+behind the same session as the rest of the UI: no extra domain, no second
+certificate. A preview is never an orphan, which is what keeps the reaper's
+hands off it. The command gets `PORT` and `PREVIEW_NAME` in its environment, and
+the last lines of its output land in
+`$JIMMY_WORKSPACE/state/previews/<name>.log`.
+
+A preview runs bare, the way it would on your machine. The proxy strips the
+prefix on the way in and puts it back on everything that comes out pointing at
+the root — HTML attributes, CSS `url()`, JavaScript string literals and
+redirects — so nothing has to know where it lives. A streamed body, a binary or
+a WebSocket upgrade are copied raw.
+
+What the rewrite cannot see: a JSON payload that carries paths, or a path built
+at runtime by the app. Start the project with its strict-port flag so it cannot
+drift to another port, and remember the preview dies with the deploy.
+
+Previews live as long as the process that spawned them, so a redeploy takes them
+with them: they are for looking at work in progress, not for hosting. `jimmy
+preview list` shows what is up, `jimmy preview stop <name>` takes one down, and
+names are slugs: lowercase, digits and dashes.
+
+The sidebar lists the running previews above the projects, each one a link that
+opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel
+refreshes with the rest of the sidebar.
+
 ### Slack app
 
 The `slack` transport uses Socket Mode, so no public URL is needed. In the app:

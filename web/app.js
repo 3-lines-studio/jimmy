@@ -71,6 +71,7 @@ const expanded = new Set();
 const VISIBLE = 10;
 
 const projectsEl = document.getElementById("projects");
+const previewsEl = document.getElementById("previews");
 const tabsEl = document.getElementById("tabs");
 const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
@@ -219,6 +220,7 @@ async function refresh() {
     searchDirty = false;
     runSearch();
   }
+  renderPreviews();
   renderTabs();
   renderActions();
   updateTitle();
@@ -227,6 +229,29 @@ async function refresh() {
 /* Sidebar */
 
 const groupEls = new Map();
+
+function previewEl(preview) {
+  const row = document.createElement("a");
+  row.className = "preview";
+  row.href = preview.path;
+  row.target = "_blank";
+  row.rel = "noopener";
+  row.title = "abrir " + preview.path;
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = preview.name;
+  const port = document.createElement("span");
+  port.className = "port";
+  port.textContent = ":" + preview.port;
+  row.append(name, port, icon("globe", 14));
+  return row;
+}
+
+function renderPreviews() {
+  const previews = state.previews || [];
+  previewsEl.hidden = previews.length === 0;
+  previewsEl.replaceChildren(...previews.map(previewEl));
+}
 
 function projectEl(project) {
   const group = {

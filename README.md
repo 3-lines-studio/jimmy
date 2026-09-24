@@ -157,6 +157,28 @@ and remembers.
 Searching the sidebar looks through what was said in every conversation, and
 each result opens its transcript with the matches marked.
 
+### Previews
+
+`jimmy preview start <name> --cmd 'command' [--cwd dir]` runs a project as a
+child of the main process and serves it at `/preview/<name>/` on the web port,
+behind the same session as the rest of the UI: no extra domain, no second
+certificate. A preview is never an orphan, which is what keeps the reaper's
+hands off it. The command gets `PORT`, `PREVIEW_PORT`, `PREVIEW_NAME` and
+`PREVIEW_BASE` (`/preview/<name>/`) in its environment, and the last lines of
+its output land in `$JIMMY_WORKSPACE/state/previews/<name>.log`.
+
+The proxy is a raw relay: it forwards the request and copies the response
+without reading it, so a streamed body and a WebSocket upgrade (Vite's HMR, for
+instance) go through untouched. It does **not** rewrite the path, which is why
+the project has to serve under its own base — `vite --base=$PREVIEW_BASE`, and
+the equivalent flag elsewhere. A project that answers on absolute paths
+(`/app.js`) gets a 404: the prefix belongs to the project, not to the proxy.
+
+Previews live as long as the process that spawned them, so a redeploy takes them
+with it: they are for looking at work in progress, not for hosting. `jimmy
+preview list` shows what is up, `jimmy preview stop <name>` takes one down, and
+names are slugs: lowercase, digits and dashes.
+
 ### Slack app
 
 The `slack` transport uses Socket Mode, so no public URL is needed. In the app:

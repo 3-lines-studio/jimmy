@@ -12,6 +12,7 @@ use crate::files;
 use crate::http::{self, Request};
 use crate::log::{Log, Window};
 use crate::media;
+use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::transport::{Msg, Session, Transport};
 use std::net::{TcpListener, TcpStream};
@@ -46,6 +47,7 @@ pub struct Web {
     bus: Arc<Bus>,
     agent: Agent,
     auth: Auth,
+    previews: Arc<Previews>,
 }
 
 impl Web {
@@ -55,6 +57,7 @@ impl Web {
         bus: Arc<Bus>,
         agent: Agent,
         auth: Auth,
+        previews: Arc<Previews>,
     ) -> Arc<Web> {
         Arc::new(Web {
             root,
@@ -62,16 +65,17 @@ impl Web {
             bus,
             agent,
             auth,
+            previews,
         })
     }
 
     /// El nombre para mostrar: la parte del mail antes del arroba.
     fn user(&self, request: &Request) -> Option<String> {
-        let email = self.auth.user(&request.cookie(auth::COOKIE)?)?;
-        Some(match email.split_once('@') {
-            Some((name, _)) => name.to_string(),
-            None => email,
-        })
+        Some(user_name(self.auth.user(&request.cookie(auth::COOKIE)?)?))
+    }
+
+    fn user_head(&self, head: &preview::Head) -> Option<String> {
+        Some(user_name(self.auth.user(&head.cookie(auth::COOKIE)?)?))
     }
 
     fn base_url(&self, request: &Request) -> String {
@@ -99,7 +103,17 @@ pub fn serve(web: Arc<Web>, listener: TcpListener) {
     }
 }
 
+fn user_name(email: String) -> String {
+    match email.split_once('@') {
+        Some((name, _)) => name.to_string(),
+        None => email,
+    }
+}
+
 fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
+    if preview::wants_preview(stream)? {
+        return preview_page(web, stream);
+    }
     let Some(request) = http::read(stream)? else {
         return Ok(());
     };
@@ -148,6 +162,31 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 const HTML: &str = "text/html; charset=utf-8";
+const TEXT: &str = "text/plain; charset=utf-8";
+
+/// Un preview se sirve crudo: la cabecera se reenvía sin tocarla y lo que sigue
+/// se copia tal cual, así el streaming y el WebSocket de un HMR pasan igual.
+fn preview_page(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(head) = preview::read_head(stream)? else {
+        return Ok(());
+    };
+    if web.user_head(&head).is_none() {
+        return http::respond(stream, 303, TEXT, &[("Location", "/login")], b"");
+    }
+    let Some((name, _)) = preview::name_from_path(&head.target) else {
+        return http::send_text(stream, 404, TEXT, "no está");
+    };
+    let Some(port) = web.previews.port(name) else {
+        let log = web.previews.output(name);
+        let body = if log.is_empty() {
+            format!("{name} no está corriendo\n")
+        } else {
+            format!("{name} no está corriendo\n\n{log}\n")
+        };
+        return http::send_text(stream, 404, TEXT, &body);
+    };
+    preview::forward(stream, &head, port)
+}
 const CSS: &str = "text/css; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -902,7 +941,15 @@ done
 
         let bus = Bus::new();
         let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None, dev);
-        let web = Web::new(root.clone(), workspace.clone(), bus.clone(), agent, auth);
+        let previews = crate::preview::Previews::new(&workspace);
+        let web = Web::new(
+            root.clone(),
+            workspace.clone(),
+            bus.clone(),
+            agent,
+            auth,
+            previews,
+        );
         let listener = listen(0).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || serve(web, listener));
@@ -1162,6 +1209,24 @@ done
             .expect("esperaba la cookie de salida");
         assert!(gone.contains("Max-Age=0"), "{gone}");
         assert!(gone.contains("HttpOnly"), "{gone}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_preview_needs_a_session_and_says_what_is_missing() {
+        let server = start("preview");
+
+        let without = get(server.port, "/preview/loquesea/", None);
+        assert!(without.starts_with("HTTP/1.1 303"), "{without}");
+        assert!(without.contains("Location: /login"), "{without}");
+
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let out = get(server.port, "/preview/loquesea/", Some(&cookie));
+        assert!(out.starts_with("HTTP/1.1 404"), "{out}");
+        assert!(out.contains("loquesea no está corriendo"), "{out}");
+
+        let root = get(server.port, "/preview/", Some(&cookie));
+        assert!(root.starts_with("HTTP/1.1 404"), "{root}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

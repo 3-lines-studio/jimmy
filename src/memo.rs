@@ -10,6 +10,19 @@ const STALE_SHIFT: u32 = 6;
 /// Una entrada tocada estos días no compite por bajar: es lo que acabo de
 /// aprender y lo que más caro sale perder. Sólo cae si no queda otra.
 const GRACE_DAYS: i64 = 7;
+/// Los tipos con los que se clasifica una entrada. La lista es corta a
+/// propósito: con el vocabulario abierto cada entrada inventaba el suyo y el
+/// tipo terminaba sin servir para nada.
+const KINDS: [&str; 8] = [
+    "decision",
+    "estado",
+    "medicion",
+    "bugfix",
+    "herramienta",
+    "identidad",
+    "proyecto",
+    "plataforma",
+];
 const KEEP: [&str; 4] = ["usuario", "proyectos", "entorno", "decisiones-vigentes"];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -180,6 +193,14 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     }
 
     let present: Vec<&str> = level1.entries.iter().map(|e| e.key.as_str()).collect();
+    let mut unknown: Vec<&str> = level1
+        .entries
+        .iter()
+        .map(|entry| entry.kind.as_str())
+        .filter(|kind| !KINDS.contains(kind))
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
     let mut dropped = 0;
     for (key, previous) in &latest {
         if previous.left.is_none() && !present.contains(&key.as_str()) {
@@ -209,6 +230,7 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
             "reasserted": reasserted,
             "promoted": promoted,
             "dropped": dropped,
+            "kinds": unknown,
             "malformed": level1.malformed,
             "corrupt": corrupt,
         }),
@@ -219,6 +241,12 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     );
     if dropped > 0 {
         report.push_str(&format!(" · {dropped} borradas a mano"));
+    }
+    if !unknown.is_empty() {
+        report.push_str(&format!(
+            " · tipos fuera de la lista: {}",
+            unknown.join(", ")
+        ));
     }
     if level1.malformed > 0 {
         report.push_str(&format!(" · {} con encabezado inválido", level1.malformed));
@@ -753,6 +781,25 @@ mod tests {
         let report = demote(&workspace).unwrap();
         assert!(report.contains("0 bajaron"));
         assert_eq!(stored(&workspace).len(), before);
+    }
+
+    #[test]
+    fn sync_reports_a_kind_outside_the_list() {
+        let con_rara = workspace("sync-kinds");
+        let day = date(1);
+        let text =
+            format!("## buena · decision · {day}\ncuerpo\n\n## rara · invento · {day}\ncuerpo\n\n");
+        write_level1(&con_rara, &text);
+        let report = sync(&con_rara).unwrap();
+        assert!(
+            report.contains("tipos fuera de la lista: invento"),
+            "{report}"
+        );
+
+        let sana = workspace("sync-kinds-ok");
+        write_level1(&sana, &format!("## buena · decision · {day}\ncuerpo\n\n"));
+        let report = sync(&sana).unwrap();
+        assert!(!report.contains("tipos fuera de la lista"), "{report}");
     }
 
     #[test]

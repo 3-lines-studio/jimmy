@@ -326,7 +326,7 @@ impl Agent {
         append_entry(&dir, &entry)?;
         entries.push(entry);
 
-        self.execute(transport, session, history, entries, Some(dir))
+        self.execute(transport, session, history, entries, Some(dir), false)
     }
 
     pub(crate) fn local_compact(
@@ -383,6 +383,7 @@ impl Agent {
             history,
             entries,
             Some(dir.to_path_buf()),
+            false,
         )
     }
 
@@ -391,6 +392,7 @@ impl Agent {
         transport: &dyn Transport,
         session: &Session,
         prompt: &str,
+        silent: bool,
     ) -> Result<(), String> {
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
@@ -402,7 +404,7 @@ impl Agent {
             reasoning: String::new(),
             images: Vec::new(),
         };
-        self.execute(transport, session, vec![user], Vec::new(), None)
+        self.execute(transport, session, vec![user], Vec::new(), None, silent)
     }
 
     pub(crate) fn conversation(&self, session: &Session) -> conversations::Conversation {
@@ -416,6 +418,7 @@ impl Agent {
         mut history: Vec<Message>,
         mut entries: Vec<Entry>,
         dir: Option<PathBuf>,
+        silent: bool,
     ) -> Result<(), String> {
         let mut tools = axe::tui::build_tools(&self.cwd);
         tools.extend(crate::tools::all());
@@ -452,7 +455,11 @@ impl Agent {
             .map(|w| w.saturating_sub(OUTPUT_RESERVE));
         let cancel = self.cancel.clone();
 
-        let status = transport.progress(session);
+        let status = if silent {
+            None
+        } else {
+            transport.progress(session)
+        };
         let mut sink = EventSink {
             threshold,
             events: dir.clone(),
@@ -496,7 +503,8 @@ impl Agent {
             match end.outcome {
                 Outcome::Done | Outcome::MaxTurns => {
                     save(&dir, &mut entries)?;
-                    let reply = answer(&end.messages[history.len()..]);
+                    let fallback = if silent { None } else { Some("✅ listo") };
+                    let reply = answer(&end.messages[history.len()..], fallback);
                     transport.answer(session, status, &reply);
                     return Ok(());
                 }
@@ -921,7 +929,7 @@ fn final_answer(history: &[Message]) -> Option<&str> {
     (last.role == "assistant" && last.tool_calls.is_empty()).then_some(last.content.as_str())
 }
 
-fn answer(messages: &[Message]) -> String {
+fn answer(messages: &[Message], fallback: Option<&str>) -> String {
     let mut parts = Vec::new();
     for message in messages {
         if message.role == "assistant" && !message.content.is_empty() {
@@ -929,11 +937,10 @@ fn answer(messages: &[Message]) -> String {
         }
     }
     let out = parts.join("\n\n");
-    if out.trim().is_empty() {
-        "✅ listo".into()
-    } else {
-        out
+    if !out.trim().is_empty() {
+        return out;
     }
+    fallback.unwrap_or_default().to_string()
 }
 
 fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
@@ -1220,13 +1227,22 @@ mod tests {
             assistant("primera parte", vec![call()]),
             assistant("segunda parte", Vec::new()),
         ];
-        assert_eq!(answer(&messages), "primera parte\n\nsegunda parte");
+        assert_eq!(
+            answer(&messages, Some("✅ listo")),
+            "primera parte\n\nsegunda parte"
+        );
     }
 
     #[test]
     fn answer_falls_back_when_there_is_only_a_tool_call() {
         let messages = vec![assistant("", vec![call()])];
-        assert_eq!(answer(&messages), "✅ listo");
+        assert_eq!(answer(&messages, Some("✅ listo")), "✅ listo");
+    }
+
+    #[test]
+    fn answer_stays_empty_without_a_fallback() {
+        let messages = vec![assistant("", vec![call()])];
+        assert_eq!(answer(&messages, None), "");
     }
 
     #[derive(Default)]

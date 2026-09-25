@@ -31,28 +31,18 @@ RUN curl -fsSL "https://github.com/3-lines-studio/heimdall/releases/download/${H
     && heimdall help > /dev/null \
     && doppler help > /dev/null
 
-ENV RUSTUP_HOME=/root/.rustup
-ENV CARGO_HOME=/root/.cargo
 ENV CARGO_TARGET_DIR=/tmp/cargo-target
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly -c rustfmt -c clippy
 
 ENV MISE_DATA_DIR=/root/.local/share/mise
 ENV MISE_CONFIG_DIR=/root/.config/mise
 ENV MISE_YES=1
-ENV PATH=/root/.cargo/bin:/root/.local/share/mise/shims:/root/.local/bin:$PATH
+ENV PATH=/root/.local/share/mise/shims:/root/.cargo/bin:/root/.local/bin:$PATH
 RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
 
-ARG MBX_VERSION=v1.17.0
-RUN curl -fsSL "https://github.com/jdx/mr-boxington/releases/download/${MBX_VERSION}/mbx-x86_64-unknown-linux-musl.tar.gz" \
-      | tar -xz -C /usr/local/bin mbx \
-    && chmod 0755 /usr/local/bin/mbx \
-    && mbx setup --yes
-
 ENV MBX_GC_MAX_SIZE=10GiB
 ENV MBX_GC_INCREMENTAL_MAX_SIZE=10GiB
-ENV PATH=/root/.local/share/mbx/bin:$PATH
 
 RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
     && uv venv --clear "$VENV" \

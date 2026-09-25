@@ -343,10 +343,12 @@ The image ships:
   needs a session, a click, or a screenshot.
 - mise, with a global config copied from `mise.toml` to
   `/root/.config/mise/config.toml`: `go`, `node`, `python`, `bun`, `uv`,
-  `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`. The
-  shims live in `/root/.local/share/mise/shims` and are on `PATH`.
-- Rust nightly with `cargo` (rustup, minimal profile) in `/root/.cargo`, so the
-  agent can build and test itself. `git` is configured to authenticate to
+  `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`, `rust`
+  and `mr-boxington`. The shims live in `/root/.local/share/mise/shims` and are
+  on `PATH` ahead of `/root/.cargo/bin`, so Cargo commands go through `mbx`.
+- Rust nightly with `cargo` (minimal profile, `rustfmt` and `clippy`) comes
+  from that mise config, and `mr-boxington` caches builds across projects, so
+  the agent can build and test itself. `git` is configured to authenticate to
   GitHub through `gh`, which reads `GITHUB_TOKEN`.
 
 Edit `mise.toml` and rebuild to change the versions.
@@ -400,7 +402,7 @@ Requires Docker: the `Makefile` targets wrap `docker build` and `docker run`.
 `make build` runs `docker build -t jimmy .`. axe is a pinned git dependency, so
 the build fetches it from GitHub. The build must use nightly Rust because axe's
 manifest declares a nightly `cargo-features` entry; the image installs nightly
-with rustup.
+with mise.
 
 `make run` mounts `./data` at `/data`, so sessions and the workspace persist
 across restarts.
@@ -409,7 +411,7 @@ To follow a newer axe, bump the `rev` in `Cargo.toml`:
 
 ```sh
 git -C ../axe rev-parse origin/main   # copy the sha into Cargo.toml
-cargo +nightly build --release        # refreshes Cargo.lock
+cargo build --release                 # refreshes Cargo.lock
 ```
 
 ## Railway

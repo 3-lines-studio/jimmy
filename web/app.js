@@ -162,6 +162,20 @@ function conversationById(id) {
   return null;
 }
 
+function projectOf(id) {
+  if (isFiles(id)) return filesProject(id);
+  const conversation = conversationById(id);
+  return conversation ? conversation.project : "";
+}
+
+function projectPill(name) {
+  const pill = document.createElement("span");
+  pill.className = "pill";
+  pill.textContent = projectInitials(name);
+  pill.style.background = projectColor(name);
+  return pill;
+}
+
 function titleOf(id) {
   if (isFiles(id)) return "archivos: " + filesProject(id);
   const conversation = conversationById(id);
@@ -294,7 +308,7 @@ function projectEl(project) {
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
-  header.append(caret, group.name, add, files, remove);
+  header.append(caret, projectPill(group.project.name), group.name, add, files, remove);
   group.el.append(header, group.list, group.more);
   return group;
 }
@@ -804,7 +818,7 @@ function tabEl(tab) {
     event.stopPropagation();
     closeTab(tab.id);
   };
-  item.el.append(item.dot, item.title, close);
+  item.el.append(projectPill(projectOf(tab.id)), item.dot, item.title, close);
   item.el.onclick = () => activate(tab.id);
   return item;
 }

@@ -34,6 +34,7 @@ const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 const FILES: &str = include_str!("../web/files.js");
+const PROJECT: &str = include_str!("../web/project.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const TOOL: &str = include_str!("../web/tool.js");
 const ICON: &str = include_str!("../web/icon.svg");
@@ -127,6 +128,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
         ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
         ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
+        ("GET", "/project.js") => asset(stream, JS, PROJECT.as_bytes()),
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
         ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
@@ -243,6 +245,7 @@ fn versioned(page: &str) -> String {
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/files.js", &format!("/files.js?v={version}"))
+        .replace("/project.js", &format!("/project.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
@@ -334,6 +337,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 .map(|conversation| {
                     serde_json::json!({
                         "key": conversation.key,
+                        "project": conversation.project,
                         "title": conversation.title,
                         "read_only": conversation.read_only,
                         "running": web.agent.running(&conversation.key),
@@ -1158,6 +1162,10 @@ done
         assert!(tool.starts_with("HTTP/1.1 200"), "{tool}");
         assert!(tool.contains("function describeTool"), "{tool}");
 
+        let project = get(server.port, "/project.js", None);
+        assert!(project.starts_with("HTTP/1.1 200"), "{project}");
+        assert!(project.contains("function projectColor"), "{project}");
+
         let icon = get(server.port, "/icon.svg", None);
         assert!(icon.contains("image/svg+xml"), "{icon}");
         assert!(icon.contains("<svg"), "{icon}");
@@ -1186,9 +1194,14 @@ done
         assert!(page.contains("/tool.js?v="), "{page}");
         assert!(page.contains("/app.js?v="), "{page}");
         assert!(page.contains("/files.js?v="), "{page}");
+        assert!(page.contains("/project.js?v="), "{page}");
         assert!(
             page.find("/tool.js?v=") < page.find("/app.js?v="),
             "la app usa lo que define el tool: {page}"
+        );
+        assert!(
+            page.find("/project.js?v=") < page.find("/app.js?v="),
+            "el color del proyecto se carga antes que la app: {page}"
         );
         assert!(
             page.find("/files.js?v=") < page.find("/app.js?v="),

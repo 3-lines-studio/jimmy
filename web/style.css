@@ -426,6 +426,22 @@ textarea:focus {
   border-color: var(--err);
 }
 
+.pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 26px;
+  height: 16px;
+  padding: 0 var(--s1);
+  border-radius: var(--r-full);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

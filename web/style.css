@@ -261,18 +261,27 @@ textarea:focus {
 .preview {
   display: flex;
   align-items: center;
-  gap: var(--s2);
+  gap: var(--s1);
   height: 30px;
   padding: 0 var(--s2);
   margin-bottom: var(--s1);
-  color: var(--text);
-  font-size: 13px;
-  text-decoration: none;
 }
 
 .preview:hover {
   background: var(--hover);
   border-radius: var(--r-md);
+}
+
+.preview .link {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
 }
 
 .preview .name {
@@ -288,7 +297,7 @@ textarea:focus {
   font-size: 12px;
 }
 
-.preview svg {
+.preview .link svg {
   flex: none;
   color: var(--muted);
 }
@@ -1448,6 +1457,10 @@ mark {
 
 @media (hover: none) {
   .conversation {
+    height: 40px;
+  }
+
+  .preview {
     height: 40px;
   }
 

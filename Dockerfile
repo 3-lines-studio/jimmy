@@ -44,6 +44,16 @@ RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
 
+ARG MBX_VERSION=v1.17.0
+RUN curl -fsSL "https://github.com/jdx/mr-boxington/releases/download/${MBX_VERSION}/mbx-x86_64-unknown-linux-musl.tar.gz" \
+      | tar -xz -C /usr/local/bin mbx \
+    && chmod 0755 /usr/local/bin/mbx \
+    && mbx setup --yes
+
+ENV MBX_GC_MAX_SIZE=10GiB
+ENV MBX_GC_INCREMENTAL_MAX_SIZE=10GiB
+ENV PATH=/root/.local/share/mbx/bin:$PATH
+
 RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
     && uv venv --clear "$VENV" \
     && uv pip install --python "$VENV/bin/python" playwright \

@@ -8,11 +8,11 @@ run:
 	docker run --rm -it --env-file .env -v $(PWD)/data:/data jimmy
 
 fmt:
-	cargo +nightly fmt
+	cargo fmt
 
 lint:
-	cargo +nightly clippy -- -D warnings
+	cargo clippy -- -D warnings
 
 test:
 	node --test web/
-	cargo +nightly test
+	cargo test

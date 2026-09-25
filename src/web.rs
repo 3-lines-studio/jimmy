@@ -157,6 +157,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/cancel") => cancel(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
+        ("POST", "/api/preview/stop") => stop_preview(web, &request, stream),
         _ => http::send_text(stream, 404, "text/plain", "no está"),
     }
 }
@@ -187,6 +188,28 @@ fn preview_page(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     };
     web.previews.touch(name);
     preview::forward(stream, &head, name, port)
+}
+
+fn stop_preview(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let order = preview::Order {
+        op: "stop".into(),
+        name: request.field("name").unwrap_or_default(),
+        ..preview::Order::default()
+    };
+    match preview::call(&web.workspace, &order) {
+        Ok(answer) if answer.ok => http::send_json(stream, 200, &serde_json::json!({ "ok": true })),
+        Ok(answer) => http::send_error(
+            stream,
+            400,
+            &answer
+                .error
+                .unwrap_or_else(|| "no pude parar el preview".into()),
+        ),
+        Err(error) => http::send_error(stream, 503, &error),
+    }
 }
 const CSS: &str = "text/css; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
@@ -904,6 +927,7 @@ mod tests {
         workspace: PathBuf,
         port: u16,
         bus: Arc<Bus>,
+        previews: Arc<crate::preview::Previews>,
     }
 
     fn start(tag: &str) -> Server {
@@ -963,7 +987,7 @@ done
             bus.clone(),
             agent,
             auth,
-            previews,
+            previews.clone(),
         );
         let listener = listen(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -973,6 +997,7 @@ done
             workspace,
             port,
             bus,
+            previews,
         }
     }
 
@@ -1242,6 +1267,50 @@ done
 
         let root = get(server.port, "/preview/", Some(&cookie));
         assert!(root.starts_with("HTTP/1.1 404"), "{root}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_preview_stops_from_the_api() {
+        let server = start("preview-stop");
+        std::thread::spawn({
+            let previews = server.previews.clone();
+            move || crate::preview::listen(previews)
+        });
+        let cookie = login(server.port, "berti@ejemplo.com");
+
+        let order = crate::preview::Order {
+            op: "start".into(),
+            name: "ken".into(),
+            command: Some("exec sleep 60".into()),
+            ..crate::preview::Order::default()
+        };
+        let started = crate::preview::call(&server.workspace, &order).unwrap();
+        assert!(started.ok, "{:?}", started.error);
+        let running = json_in(&get(server.port, "/api/state", Some(&cookie)));
+        assert_eq!(running["previews"][0]["name"], "ken");
+
+        let without = post(server.port, "/api/preview/stop", r#"{"name":"ken"}"#);
+        assert!(without.starts_with("HTTP/1.1 401"), "{without}");
+
+        let stopped = post_with(
+            server.port,
+            "/api/preview/stop",
+            r#"{"name":"ken"}"#,
+            Some(&cookie),
+        );
+        assert!(stopped.starts_with("HTTP/1.1 200"), "{stopped}");
+        let after = json_in(&get(server.port, "/api/state", Some(&cookie)));
+        assert!(after["previews"].as_array().unwrap().is_empty(), "{after}");
+
+        let again = post_with(
+            server.port,
+            "/api/preview/stop",
+            r#"{"name":"ken"}"#,
+            Some(&cookie),
+        );
+        assert!(again.starts_with("HTTP/1.1 400"), "{again}");
+        assert!(again.contains("no está corriendo"), "{again}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

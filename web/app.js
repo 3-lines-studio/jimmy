@@ -230,20 +230,29 @@ async function refresh() {
 
 const groupEls = new Map();
 
+async function stopPreview(name) {
+  await api("/api/preview/stop", { name });
+  await refresh();
+}
+
 function previewEl(preview) {
-  const row = document.createElement("a");
+  const row = document.createElement("div");
   row.className = "preview";
-  row.href = preview.path;
-  row.target = "_blank";
-  row.rel = "noopener";
-  row.title = "abrir " + preview.path;
+  const link = document.createElement("a");
+  link.className = "link";
+  link.href = preview.path;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.title = "abrir " + preview.path;
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = preview.name;
   const port = document.createElement("span");
   port.className = "port";
   port.textContent = ":" + preview.port;
-  row.append(name, port, icon("globe", 14));
+  link.append(name, port, icon("globe", 14));
+  const stop = iconButton("stop", "parar " + preview.name, () => stopPreview(preview.name));
+  row.append(link, stop);
   return row;
 }
 

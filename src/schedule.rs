@@ -26,6 +26,8 @@ struct Task {
     chat: Option<i64>,
     prompt: String,
     #[serde(default)]
+    silent: bool,
+    #[serde(default)]
     when: Option<String>,
     #[serde(default)]
     at: Option<String>,
@@ -121,7 +123,7 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Re
         run.last_date = date.clone();
         run.done = task.when.is_some();
         eprintln!("jimmy: agenda: corriendo {}", task.name);
-        if let Err(e) = agent.run_task(transport, &session, &task.prompt) {
+        if let Err(e) = agent.run_task(transport, &session, &task.prompt, task.silent) {
             transport.note(&session, &format!("⚠️ la tarea {} falló: {e}", task.name));
         }
         if task.when.is_some() {
@@ -254,10 +256,22 @@ mod tests {
             target: None,
             chat: Some(1),
             prompt: "p".into(),
+            silent: false,
             when: when.map(String::from),
             at: at.map(String::from),
             every: every.map(String::from),
         }
+    }
+
+    #[test]
+    fn silent_is_optional_and_defaults_to_false() {
+        let loud = "[[task]]\nname = \"t\"\nchat = 1\nprompt = \"p\"\nevery = \"6h\"\n";
+        let quiet =
+            "[[task]]\nname = \"t\"\nchat = 1\nprompt = \"p\"\nevery = \"6h\"\nsilent = true\n";
+        let file: File = toml::from_str(loud).unwrap();
+        assert!(!file.task[0].silent);
+        let file: File = toml::from_str(quiet).unwrap();
+        assert!(file.task[0].silent);
     }
 
     #[test]

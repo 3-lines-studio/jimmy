@@ -89,6 +89,11 @@ task fires once the interval has elapsed since its last run, so a restart
 catches up on a missed run. A task that fails reports the error to its chat,
 and each task is capped at 6 runs per hour.
 
+A task with `silent = true` only speaks when it has something to say: it skips
+the progress placeholder and an empty reply is not sent (the usual `✅ listo`
+fallback does not apply). It is meant for watchdogs that should report failures
+and stay quiet otherwise. Anything the reply does contain is sent as usual.
+
 The file is meant to be edited by the agent: ask it to schedule something and it
 appends a block. The tick picks it up without a restart.
 

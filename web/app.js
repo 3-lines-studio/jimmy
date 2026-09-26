@@ -1472,9 +1472,8 @@ function closeSidebar() {
 document.getElementById("menu").onclick = openSidebar;
 backdrop.onclick = closeSidebar;
 
-/* Arrastrar desde el borde izquierdo para abrirla */
+/* Arrastrar hacia la derecha para abrirla */
 
-const EDGE = 32;
 const DRAWER_AT = 72;
 const narrow = matchMedia("(max-width: 760px)");
 
@@ -1497,10 +1496,12 @@ document.addEventListener(
   "touchstart",
   (event) => {
     if (!narrow.matches || sidebar.classList.contains("open")) return;
-    if (event.touches.length !== 1 || event.touches[0].clientX > EDGE) return;
+    if (event.touches.length !== 1) return;
+    if (event.touches[0].clientX > innerWidth / 3) return;
+    if (event.target.closest("pre, .table-wrap, #composer")) return;
     drawerFrom = event.touches[0].clientX;
-    drawerMoved = 0;
     drawerFromY = event.touches[0].clientY;
+    drawerMoved = 0;
     sidebar.style.transition = "none";
   },
   { passive: true },

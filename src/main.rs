@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use transport::slack;
 use transport::telegram;
-use transport::{Event, EventSource, Session, Transport};
+use transport::{Event, EventSource, Idle, Null, Session, Transport};
 
 struct Config {
     api_key: String,
@@ -415,6 +415,7 @@ fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
             slack_bot_token()?,
             slack_app_token()?,
         ))),
+        "none" => Ok(Arc::new(Null)),
         other => Err(format!("transporte desconocido: {other}")),
     }
 }
@@ -428,6 +429,7 @@ fn source_from_env() -> Result<Box<dyn EventSource>, String> {
             slack_bot_token()?,
             slack_app_token()?,
         )))),
+        "none" => Ok(Box::new(Idle)),
         other => Err(format!("transporte desconocido: {other}")),
     }
 }

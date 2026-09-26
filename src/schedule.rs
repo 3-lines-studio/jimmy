@@ -120,26 +120,19 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64, asked
 }
 
 fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date: &str, now: i64) {
-    let session = match &entry.task.target {
-        Some(target) => match transport.parse_target(target) {
-            Ok(session) => session,
-            Err(e) => {
-                eprintln!("jimmy: agenda: {}: {e}", entry.name);
-                return;
-            }
-        },
-        None => Session::channel(entry.name.as_str()),
-    };
-    let transport: &dyn Transport = match entry.task.target {
-        Some(_) => transport,
-        None => &Null,
-    };
+    let (outbound, session, warning) = outbound(transport, entry);
     let started = Instant::now();
-    let result = agent.run_task(transport, &session, &entry.task.prompt, entry.task.silent);
-    let (ok, text) = match result {
+    let result = agent.run_task(outbound, &session, &entry.task.prompt, entry.task.silent);
+    let (ok, mut text) = match result {
         Ok(reply) => (true, reply),
         Err(e) => (false, e),
     };
+    if let Some(warning) = warning {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&warning);
+    }
     record(
         dir,
         &entry.name,
@@ -151,6 +144,26 @@ fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date
             text,
         },
     );
+}
+
+/// A dónde sale la corrida: al chat del target si el transporte lo conoce, y si
+/// no a ningún lado. Un target que no existe no se lleva puesta la corrida: se
+/// hace igual, queda en el historial y ahí dice por qué no salió.
+fn outbound<'a>(
+    transport: &'a dyn Transport,
+    entry: &Entry,
+) -> (&'a dyn Transport, Session, Option<String>) {
+    let Some(target) = entry.task.target.as_deref() else {
+        return (&Null, Session::channel(entry.name.as_str()), None);
+    };
+    match transport.parse_target(target) {
+        Ok(session) => (transport, session, None),
+        Err(e) => (
+            &Null,
+            Session::channel(entry.name.as_str()),
+            Some(format!("⚠️ no salió a {target}: {e}")),
+        ),
+    }
 }
 
 fn due(task: &Task, runs: &[Run], now: i64, date: &str, time: &str) -> bool {
@@ -344,6 +357,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::Msg;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir =
@@ -371,6 +385,40 @@ mod tests {
             ms: 10,
             ok: true,
             text: "ok".into(),
+        }
+    }
+
+    fn entry(name: &str) -> Entry {
+        Entry {
+            name: name.into(),
+            task: task(None, Some("09:00"), None),
+            runs: Vec::new(),
+        }
+    }
+
+    struct Reject;
+
+    impl Transport for Reject {
+        fn parse_target(&self, key: &str) -> Result<Session, String> {
+            Err(format!("no conozco el chat {key}"))
+        }
+
+        fn progress(&self, _: &Session) -> Option<Msg> {
+            None
+        }
+
+        fn answer(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+        fn note(&self, _: &Session, _: &str) {}
+
+        fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+        fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+            Err("no".into())
+        }
+
+        fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+            Err("no".into())
         }
     }
 
@@ -463,6 +511,24 @@ mod tests {
         assert_eq!(runs.first().unwrap().ts, 3);
         assert_eq!(last_run(&runs), (KEEP as i64) + 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_target_the_transport_does_not_know_still_runs_and_says_so() {
+        let mut entry = entry("memoria");
+        entry.task.target = Some("7469057930".into());
+
+        let (_, session, warning) = outbound(&Reject, &entry);
+        assert_eq!(session.key(), "memoria");
+        let warning = warning.expect("tenía que avisar que no salió");
+        assert!(warning.contains("7469057930"), "{warning}");
+    }
+
+    #[test]
+    fn a_task_without_a_target_has_nothing_to_report() {
+        let (_, session, warning) = outbound(&Reject, &entry("limpieza"));
+        assert_eq!(session.key(), "limpieza");
+        assert!(warning.is_none());
     }
 
     #[test]

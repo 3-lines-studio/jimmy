@@ -113,7 +113,7 @@ appends a block. The tick picks it up without a restart.
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
-| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | directory with Agent Skills (see below) |
+| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | first directory with Agent Skills; the builtin one comes after (see below) |
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
 | `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
@@ -241,10 +241,12 @@ skills/charts/SKILL.md
 skills/charts/render_chart.py
 ```
 
-The image ships none. `JIMMY_SKILLS` (default `$JIMMY_ROOT/skills`) is the only
-path jimmy knows; each instance populates its own volume, typically by cloning a
-private skills repo there. The agent lists skills with `jimmy skill list` and
-loads one with `jimmy skill load <name>`.
+`skills/` in the repo ships in the image at `/usr/local/share/jimmy/skills`, so
+every instance gets them from a deploy. `JIMMY_SKILLS` (default
+`$JIMMY_ROOT/skills`, on the volume) comes first and shadows the builtin ones:
+that is where an instance keeps its own. The prompt carries the index —one line
+per skill, from the frontmatter— and the agent loads one with
+`jimmy skill load <name>`. `jimmy skill list` does the same by hand.
 
 ## Data tools
 

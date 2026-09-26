@@ -382,11 +382,9 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {
-    let fragments = prompt::assemble(
-        &config.prompt,
-        &prompt::dirs(&config.root),
-        &prompt::parse_vars(&config.vars),
-    )?;
+    let mut vars = prompt::parse_vars(&config.vars);
+    vars.push(("skills".into(), skill::index(&skills_dirs())));
+    let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
     Ok(Agent::new(
         config.base.clone(),
         config.model.clone(),
@@ -546,22 +544,23 @@ fn keep(
     Ok(name)
 }
 
-fn skills_dir() -> PathBuf {
-    match env("JIMMY_SKILLS") {
+fn skills_dirs() -> Vec<PathBuf> {
+    let local = match env("JIMMY_SKILLS") {
         Some(path) => PathBuf::from(path),
         None => root_from_env().join("skills"),
-    }
+    };
+    skill::dirs(local)
 }
 
 fn skill_command(args: &[String]) -> i32 {
-    let dir = skills_dir();
+    let dirs = skills_dirs();
     match args.first().map(String::as_str) {
         Some("list") => {
-            println!("{}", skill::list(&dir));
+            println!("{}", skill::list(&dirs));
             0
         }
         Some("load") => match args.get(1) {
-            Some(name) => match skill::load(&dir, name) {
+            Some(name) => match skill::load(&dirs, name) {
                 Ok(text) => {
                     println!("{text}");
                     0
@@ -884,5 +883,13 @@ mod tests {
         std::fs::write(root.join("chats/456/inflight"), b"").unwrap();
         assert_eq!(inflight_chats(&root), ["123", "456"]);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_default_spec_assembles_with_the_vars_the_agent_gets() {
+        let mut vars = prompt::parse_vars("usuario=Don Berti,asistente=Jimmy");
+        vars.push(("skills".into(), "browse — Nav".into()));
+        let out = prompt::assemble(prompt::DEFAULT, &prompt::dirs(Path::new(".")), &vars).unwrap();
+        assert!(out.contains("browse — Nav"));
     }
 }

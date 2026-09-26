@@ -63,6 +63,7 @@ COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY prompts /usr/local/share/jimmy/prompts
+COPY skills /usr/local/share/jimmy/skills
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats

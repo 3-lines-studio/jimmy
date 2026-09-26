@@ -1523,6 +1523,60 @@ function receiveShared() {
   grow();
 }
 
+/* Tirar para recargar */
+
+const refreshEl = document.getElementById("refresh");
+const REFRESH_AT = 64;
+
+let pullFrom = null;
+let pullDistance = 0;
+
+function pullScroller() {
+  const tab = activeId ? tabs.get(activeId) : null;
+  return tab ? tab.transcript || tab.body : null;
+}
+
+function endPull(reload) {
+  pullFrom = null;
+  pullDistance = 0;
+  refreshEl.hidden = true;
+  refreshEl.style.transform = "";
+  if (reload) location.reload();
+}
+
+document.addEventListener(
+  "touchstart",
+  (event) => {
+    const scroller = pullScroller();
+    if (!scroller || event.touches.length !== 1 || scroller.scrollTop > 0) return;
+    pullFrom = event.touches[0].clientY;
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  "touchmove",
+  (event) => {
+    if (pullFrom === null) return;
+    pullDistance = event.touches[0].clientY - pullFrom;
+    if (pullDistance <= 0) return endPull(false);
+    refreshEl.hidden = false;
+    setText(refreshEl, pullDistance > REFRESH_AT ? "Soltá para Recargar" : "Tirá para Recargar");
+    refreshEl.style.transform = `translate(-50%, ${Math.min(pullDistance, 120)}px)`;
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  "touchend",
+  () => {
+    if (pullFrom !== null) endPull(pullDistance > REFRESH_AT);
+  },
+  { passive: true },
+);
+
+document.addEventListener("touchcancel", () => endPull(false), { passive: true });
+
 async function main() {
   watchOnline();
   await refresh();

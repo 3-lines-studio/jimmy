@@ -1350,6 +1350,22 @@ main {
   box-shadow: var(--shadow-md);
 }
 
+#refresh {
+  position: absolute;
+  top: calc(52px + env(safe-area-inset-top) + var(--s2));
+  left: 50%;
+  z-index: 3;
+  padding: var(--s1) var(--s3);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: var(--r-full);
+  color: var(--muted);
+  font-size: 12.5px;
+  pointer-events: none;
+  transform: translate(-50%, 0);
+}
+
 #backdrop {
   display: none;
 }

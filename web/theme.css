@@ -2,6 +2,7 @@
   color-scheme: dark;
 
   --bg: #0e0e11;
+  --glass: rgba(28, 28, 34, 0.7);
   --panel: #141418;
   --raised: #1c1c22;
   --hover: #1f1f26;
@@ -71,6 +72,7 @@
   color-scheme: light;
 
   --bg: #ffffff;
+  --glass: rgba(247, 247, 249, 0.8);
   --panel: #f7f7f9;
   --raised: #ececf0;
   --hover: #e6e6ec;

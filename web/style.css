@@ -525,6 +525,7 @@ textarea:focus {
 /* Main */
 
 main {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -534,12 +535,19 @@ main {
 /* Tab bar */
 
 #tabbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: var(--s2);
   height: calc(52px + env(safe-area-inset-top));
-  flex: none;
   padding: env(safe-area-inset-top) var(--s3) 0;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--line);
 }
 
@@ -669,7 +677,8 @@ main {
 .transcript {
   flex: 1;
   overflow-y: auto;
-  padding: var(--s5) var(--s5) var(--s6);
+  padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s5)
+    calc(72px + env(safe-area-inset-bottom));
 }
 
 .transcript > * {
@@ -1160,10 +1169,17 @@ main {
 }
 
 #composer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
   flex-direction: column;
   gap: var(--s2);
-  flex: none;
   padding: var(--s3) var(--s4) calc(var(--s4) + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 #typing {
@@ -1308,7 +1324,7 @@ main {
 .jump {
   position: absolute;
   right: var(--s5);
-  bottom: var(--s4);
+  bottom: calc(72px + env(safe-area-inset-bottom));
   height: 32px;
   padding: 0 var(--s4);
   background: var(--raised);
@@ -1320,7 +1336,7 @@ main {
 
 .earlier {
   position: absolute;
-  top: var(--s3);
+  top: calc(52px + env(safe-area-inset-top) + var(--s2));
   left: 50%;
   transform: translateX(-50%);
   height: 32px;
@@ -1520,6 +1536,7 @@ main {
 
 .pane.files {
   flex-direction: row;
+  padding-top: calc(52px + env(safe-area-inset-top));
 }
 
 .files-tree {

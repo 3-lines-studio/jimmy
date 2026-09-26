@@ -10,6 +10,7 @@ mod machine;
 mod mail;
 mod markdown;
 mod media;
+mod memlog;
 mod memo;
 mod pool;
 mod preview;
@@ -186,15 +187,13 @@ fn main() {
             std::process::exit(1);
         }
     };
-    schedule::spawn(
-        transport.clone(),
-        agent.clone(),
-        PathBuf::from(config.workspace.clone()),
-    );
+    let workspace = PathBuf::from(config.workspace.clone());
+    schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
     let mut reaper = reap::Reaper::default();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(60));
         reaper.reap(std::time::Instant::now());
+        memlog::sample(&workspace);
     });
     install_sigterm();
     recover(&agent, transport.clone(), &config.root);

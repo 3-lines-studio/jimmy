@@ -34,6 +34,9 @@ const PATHS = {
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  play: '<path d="m6 4 14 8-14 8Z"/>',
+  pause: '<path d="M9 4v16"/><path d="M15 4v16"/>',
   folder:
     '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
 };
@@ -111,6 +114,9 @@ themeEl.append(sunEl, moonEl);
 document.getElementById("attach").append(icon("clip", 17));
 document.querySelector("#logout button").append(icon("logout", 18));
 document.querySelector("#new-project button").append(icon("plus", 17));
+const agendaEl = document.getElementById("agenda");
+agendaEl.prepend(icon("clock", 16));
+agendaEl.onclick = () => openTab(AGENDA);
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);
@@ -173,6 +179,7 @@ function conversationById(id) {
 
 function projectOf(id) {
   if (isFiles(id)) return filesProject(id);
+  if (isAgenda(id)) return "";
   const conversation = conversationById(id);
   return conversation ? conversation.project : "";
 }
@@ -187,12 +194,13 @@ function projectPill(name) {
 
 function titleOf(id) {
   if (isFiles(id)) return "Archivos: " + filesProject(id);
+  if (isAgenda(id)) return "Agenda";
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
 }
 
 function knownTab(id) {
-  return isFiles(id) || Boolean(conversationById(id));
+  return isFiles(id) || isAgenda(id) || Boolean(conversationById(id));
 }
 
 function isRunning(id) {
@@ -233,7 +241,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id) && !isFiles(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id) && !isAgenda(id)) closeTab(id);
   }
   renderSidebar();
   renderPreviews();
@@ -561,6 +569,7 @@ function openTab(id) {
 
 function createTab(id) {
   if (isFiles(id)) return createFilesTab(id);
+  if (isAgenda(id)) return createAgendaTab(id);
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -710,7 +719,8 @@ function activate(id) {
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   placeholderEl.hidden = tabs.size > 0;
   const tab = tabs.get(id);
-  if (tab && !tab.stream && !tab.files) subscribe(tab);
+  if (tab && !tab.stream && !tab.files && !tab.agenda) subscribe(tab);
+  if (isAgenda(id)) loadAgenda();
   if (tab) tab.attention = null;
   renderSidebar();
   renderTabs();
@@ -766,8 +776,9 @@ function tabEl(tab) {
     event.stopPropagation();
     closeTab(tab.id);
   };
-  item.el.append(projectPill(projectOf(tab.id)), item.dot, item.title, close);
   item.el.onclick = () => activate(tab.id);
+  if (!tab.agenda) item.el.append(projectPill(projectOf(tab.id)));
+  item.el.append(item.dot, item.title, close);
   return item;
 }
 
@@ -787,8 +798,9 @@ function renderTabs() {
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   const running = Boolean(tab) && isRunning(activeId);
-  tabActionsEl.hidden = !tab || Boolean(tab.files);
-  composerEl.hidden = !tab || Boolean(tab.files) || isReadOnly(activeId);
+  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda));
+  tabActionsEl.hidden = !tab || extra;
+  composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
   sendEl.setAttribute("aria-label", running ? "Frenar el Turno" : "Enviar");
@@ -1645,7 +1657,9 @@ async function main() {
   await refresh();
   restore();
   receiveShared();
+  loadAgenda();
   setInterval(refresh, 15000);
+  setInterval(loadAgenda, 60000);
   addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     refresh();

@@ -36,6 +36,7 @@ const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 const FILES: &str = include_str!("../web/files.js");
+const AGENDA: &str = include_str!("../web/agenda.js");
 const PROJECT: &str = include_str!("../web/project.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const MACHINE: &str = include_str!("../web/machine.js");
@@ -134,6 +135,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
         ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
         ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
+        ("GET", "/agenda.js") => asset(stream, JS, AGENDA.as_bytes()),
         ("GET", "/project.js") => asset(stream, JS, PROJECT.as_bytes()),
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
         ("GET", "/machine.js") => asset(stream, JS, MACHINE.as_bytes()),
@@ -255,6 +257,7 @@ fn versioned(page: &str) -> String {
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/files.js", &format!("/files.js?v={version}"))
+        .replace("/agenda.js", &format!("/agenda.js?v={version}"))
         .replace("/project.js", &format!("/project.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
@@ -1212,6 +1215,10 @@ done
         let project = get(server.port, "/project.js", None);
         assert!(project.starts_with("HTTP/1.1 200"), "{project}");
         assert!(project.contains("function projectColor"), "{project}");
+
+        let agenda = get(server.port, "/agenda.js", None);
+        assert!(agenda.starts_with("HTTP/1.1 200"), "{agenda}");
+        assert!(agenda.contains("function createAgendaTab"), "{agenda}");
 
         let icon = get(server.port, "/icon.svg", None);
         assert!(icon.contains("image/svg+xml"), "{icon}");

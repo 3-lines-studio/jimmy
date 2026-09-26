@@ -158,7 +158,7 @@ fn main() {
         }
     };
     axe::sentinel::seed(&config.api_key);
-    if config.allowed.is_empty() {
+    if transport_name() != "none" && config.allowed.is_empty() {
         eprintln!(
             "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
         );
@@ -435,7 +435,7 @@ fn source_from_env() -> Result<Box<dyn EventSource>, String> {
 }
 
 fn transport_name() -> String {
-    env("JIMMY_TRANSPORT").unwrap_or_else(|| "telegram".into())
+    env("JIMMY_TRANSPORT").unwrap_or_else(|| "none".into())
 }
 
 fn telegram_token() -> Result<String, String> {

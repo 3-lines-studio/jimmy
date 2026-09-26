@@ -125,8 +125,10 @@ its last run, so a restart catches up on a missed run. A task that fails records
 the error, and each task is capped at 6 runs per hour. `paused = true` keeps the
 file and stops the clock.
 
-The **Agenda** tab of the web frontend lists the tasks with their last runs, and
-runs one on the spot.
+The **Agenda** tab of the web frontend lists the tasks with their last runs, runs
+one on the spot and pauses it. Each task shows how many runs you have not looked
+at yet, the sidebar carries the total, and opening a task — or the "Marcar Todo
+Leído" button — clears it.
 
 A task with `silent = true` only speaks when it has something to say: it skips
 the progress placeholder and an empty reply is not sent (the usual `✅ listo`

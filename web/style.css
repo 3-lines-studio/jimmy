@@ -411,6 +411,11 @@ textarea:focus {
   border-color: var(--err);
 }
 
+.dot.unread {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .pill {
   display: flex;
   align-items: center;
@@ -1750,11 +1755,15 @@ main {
   height: 18px;
   padding: 0 var(--s1);
   border-radius: var(--r-full);
-  background: var(--err);
+  background: var(--accent);
   color: var(--bg);
   font-size: 11px;
   line-height: 18px;
   text-align: center;
+}
+
+#agenda-badge.error {
+  background: var(--err);
 }
 
 .pane.agenda {
@@ -1775,6 +1784,26 @@ main {
   color: var(--faint);
   font-size: 13px;
   text-align: center;
+}
+
+.agenda-foot {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--s3);
+}
+
+.agenda-foot button {
+  height: 30px;
+  padding: 0 var(--s4);
+  border-radius: var(--r-full);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.agenda-foot button:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .task {
@@ -1830,6 +1859,11 @@ main {
 .task .pill {
   background: var(--raised);
   color: var(--muted);
+}
+
+.task .pill.unread {
+  background: var(--accent);
+  color: var(--bg);
 }
 
 .task-runs {

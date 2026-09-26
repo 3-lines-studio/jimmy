@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { agendaWhen, agendaDuration, agendaMoment, agendaAgo, agendaEvery, agendaFailed } =
+const { agendaWhen, agendaDuration, agendaMoment, agendaAgo, agendaEvery, agendaUnread, agendaFailed, agendaMark } =
   require("./agenda.js");
 
 test("el horario se lee de un vistazo", () => {
@@ -37,13 +37,17 @@ test("hace cuánto corrió", () => {
   assert.equal(agendaAgo(seconds - 259_200, now), "hace 3 d");
 });
 
-test("el badge cuenta sólo lo que falló y no está pausado", () => {
+test("el contador suma lo que todavía no se miró", () => {
   const tasks = [
-    { name: "ok", paused: false, runs: [{ ok: true }] },
-    { name: "rota", paused: false, runs: [{ ok: false }] },
-    { name: "callada", paused: true, runs: [{ ok: false }] },
-    { name: "nueva", paused: false, runs: [] },
+    { name: "ok", paused: false, unread: 3, runs: [{ ok: true }] },
+    { name: "leida", paused: false, unread: 0, runs: [{ ok: false }] },
+    { name: "rota", paused: false, unread: 2, runs: [{ ok: false }] },
+    { name: "pausada", paused: true, unread: 1, runs: [{ ok: false }] },
   ];
-  assert.equal(agendaFailed(tasks), 1);
-  assert.equal(agendaFailed([]), 0);
+  assert.equal(agendaUnread(tasks), 6);
+  assert.equal(agendaUnread([]), 0);
+  assert.equal(agendaFailed(tasks), 2, "sólo cuentan los fallos que no se miraron");
+  assert.equal(agendaMark(tasks), "error", "si algo falló, el punto avisa en rojo");
+  assert.equal(agendaMark([{ unread: 1, runs: [{ ok: true }] }]), "unread");
+  assert.equal(agendaMark([{ unread: 0, runs: [{ ok: false }] }]), "unread");
 });

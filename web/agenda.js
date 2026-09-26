@@ -79,8 +79,17 @@ function agendaState(task) {
   return last.ok ? "done" : "error";
 }
 
+function agendaUnread(tasks) {
+  return tasks.reduce((total, task) => total + (task.unread || 0), 0);
+}
+
 function agendaFailed(tasks) {
-  return tasks.filter((task) => !task.paused && task.runs[0] && !task.runs[0].ok).length;
+  return tasks.filter((task) => task.unread > 0 && task.runs[0] && !task.runs[0].ok).length;
+}
+
+function agendaMark(tasks) {
+  if (!agendaFailed(tasks)) return "unread";
+  return "error";
 }
 
 function agendaLast(task, now) {
@@ -118,12 +127,13 @@ async function loadAgenda() {
 }
 
 function renderAgenda() {
-  const failed = agendaFailed(agendaTasks);
+  const unread = agendaUnread(agendaTasks);
   const badge = document.getElementById("agenda-badge");
-  badge.hidden = failed === 0;
-  badge.textContent = failed;
+  badge.hidden = unread === 0;
+  badge.textContent = unread;
+  badge.classList.toggle("error", agendaFailed(agendaTasks) > 0);
   const tab = tabs.get(AGENDA);
-  if (tab) tab.attention = failed ? "error" : null;
+  if (tab) tab.attention = unread ? agendaMark(agendaTasks) : null;
   renderAgendaPane();
   renderTabs();
 }
@@ -141,6 +151,19 @@ function renderAgendaPane() {
     return;
   }
   for (const task of agendaTasks) tab.inner.append(agendaTaskEl(task, now));
+  if (agendaUnread(agendaTasks) > 0) tab.inner.append(agendaFootEl());
+}
+
+function agendaFootEl() {
+  const foot = document.createElement("div");
+  foot.className = "agenda-foot";
+  const button = document.createElement("button");
+  button.textContent = "Marcar Todo Leído";
+  button.onclick = async () => {
+    if (await api("/api/agenda/read", {})) await loadAgenda();
+  };
+  foot.append(button);
+  return foot;
 }
 
 function agendaTaskEl(task, now) {
@@ -161,6 +184,12 @@ function agendaTaskEl(task, now) {
   when.className = "task-when";
   when.textContent = agendaWhen(task);
   title.append(dot, name, when);
+  if (task.unread > 0) {
+    const pill = document.createElement("span");
+    pill.className = "pill unread";
+    pill.textContent = task.unread;
+    title.append(pill);
+  }
   if (task.paused) {
     const pill = document.createElement("span");
     pill.className = "pill";
@@ -185,8 +214,12 @@ function agendaTaskEl(task, now) {
 
   head.append(title, meta);
   head.onclick = () => {
-    if (agendaOpen.has(task.name)) agendaOpen.delete(task.name);
-    else agendaOpen.add(task.name);
+    if (agendaOpen.has(task.name)) {
+      agendaOpen.delete(task.name);
+    } else {
+      agendaOpen.add(task.name);
+      readAgendaTask(task);
+    }
     renderAgendaPane();
   };
   el.append(head);
@@ -224,8 +257,7 @@ function agendaRunsEl(task, now) {
   return runs;
 }
 
-async function runAgendaTask(task) {
-  agendaPending.set(task.name, task.runs[0] ? task.runs[0].ts : 0);
+async function runAgendaTask(task) {  agendaPending.set(task.name, task.runs[0] ? task.runs[0].ts : 0);
   renderAgendaPane();
   if (!(await api("/api/agenda/run", { name: task.name }))) {
     agendaPending.delete(task.name);
@@ -239,6 +271,22 @@ async function pauseAgendaTask(task) {
   await loadAgenda();
 }
 
+async function readAgendaTask(task) {
+  if (!task.unread) return;
+  task.unread = 0;
+  renderAgenda();
+  await api("/api/agenda/read", { name: task.name });
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { agendaWhen, agendaDuration, agendaMoment, agendaAgo, agendaEvery, agendaFailed };
+  module.exports = {
+    agendaWhen,
+    agendaDuration,
+    agendaMoment,
+    agendaAgo,
+    agendaEvery,
+    agendaUnread,
+    agendaFailed,
+    agendaMark,
+  };
 }

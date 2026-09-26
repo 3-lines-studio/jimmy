@@ -149,6 +149,8 @@ function agendaTaskEl(task, now) {
   const head = document.createElement("div");
   head.className = "task-head";
 
+  const title = document.createElement("div");
+  title.className = "task-title";
   const dot = document.createElement("span");
   const state = agendaState(task);
   dot.className = "dot" + (state ? " " + state : "");
@@ -158,25 +160,30 @@ function agendaTaskEl(task, now) {
   const when = document.createElement("span");
   when.className = "task-when";
   when.textContent = agendaWhen(task);
-  head.append(dot, name, when);
+  title.append(dot, name, when);
   if (task.paused) {
     const pill = document.createElement("span");
     pill.className = "pill";
     pill.textContent = "pausada";
-    head.append(pill);
+    title.append(pill);
   }
+
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
   const last = document.createElement("span");
   last.className = "task-last";
   last.textContent = agendaLast(task, now);
-  head.append(last);
+  meta.append(last);
   if (!task.paused) {
-    head.append(iconButton("play", "Correr Ahora", () => runAgendaTask(task)));
+    meta.append(iconButton("play", "Correr Ahora", () => runAgendaTask(task)));
   }
-  head.append(
+  meta.append(
     iconButton(task.paused ? "play" : "pause", task.paused ? "Reanudar" : "Pausar", () =>
       pauseAgendaTask(task),
     ),
   );
+
+  head.append(title, meta);
   head.onclick = () => {
     if (agendaOpen.has(task.name)) agendaOpen.delete(task.name);
     else agendaOpen.add(task.name);

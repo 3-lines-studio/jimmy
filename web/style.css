@@ -1792,9 +1792,24 @@ main {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--s1) var(--s2);
+  gap: var(--s1) var(--s3);
   padding: var(--s3);
   cursor: pointer;
+}
+
+.task-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  min-width: 0;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
 }
 
 .task-name {
@@ -1810,10 +1825,6 @@ main {
   color: var(--faint);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-}
-
-.task-head .icon-btn {
-  margin-left: auto;
 }
 
 .task .pill {
@@ -1866,18 +1877,4 @@ main {
 .run-empty {
   color: var(--faint);
   font-size: 12.5px;
-}
-
-@media (min-width: 701px) {
-  .task-when {
-    margin-left: var(--s2);
-  }
-
-  .task-last {
-    margin-left: auto;
-  }
-
-  .task-head .icon-btn {
-    margin-left: 0;
-  }
 }

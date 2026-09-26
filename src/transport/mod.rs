@@ -63,6 +63,16 @@ pub trait EventSource: Send {
     fn recv(&mut self) -> Result<Vec<Event>, String>;
 }
 
+/// Una fuente que no escucha a nadie: el proceso vive para la web.
+pub struct Idle;
+
+impl EventSource for Idle {
+    fn recv(&mut self) -> Result<Vec<Event>, String> {
+        std::thread::sleep(std::time::Duration::from_secs(3_600));
+        Ok(Vec::new())
+    }
+}
+
 /// Un transporte que no habla con nadie: el turno corre, pero no hay dónde
 /// contestar. Lo usan las tareas de la agenda que no tienen destino y la web,
 /// que lee el log en vez de esperar un mensaje.
@@ -70,7 +80,7 @@ pub struct Null;
 
 impl Transport for Null {
     fn parse_target(&self, key: &str) -> Result<Session, String> {
-        crate::session_from_key(key).ok_or_else(|| "clave de conversación inválida".into())
+        Err(format!("no hay transporte configurado para {key}"))
     }
 
     fn progress(&self, _: &Session) -> Option<Msg> {
@@ -89,5 +99,15 @@ impl Transport for Null {
 
     fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
         Err("este transporte no manda archivos".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_null_transport_knows_no_chat() {
+        assert!(Null.parse_target("7469057930").is_err());
     }
 }

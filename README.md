@@ -104,9 +104,13 @@ target = "123456789"
 prompt = "Summarize what is still pending."
 ```
 
-The file name is the task name. `target` (or `chat`, its older name) is
-optional: with it the reply goes to that chat; without it the run only leaves
-its result in the history.
+The file name is the task name. The agenda lives in the web frontend: the
+**Agenda** tab is where tasks are listed, run on the spot and paused, and where
+their history is read. `target` (or `chat`, its older name) is only a backup
+alert: with it the reply also goes to that chat, without it the run just leaves
+its result in the history. A target the configured transport does not know — an
+old Telegram chat, say, when the process runs with `JIMMY_TRANSPORT=none` — does
+not cancel the run: it happens anyway and the history says it did not go out.
 
 Every run appends a line to `<task>.jsonl`, next to the file: time, duration and
 the reply. The last twenty are kept. That history is also the state — a task is
@@ -138,7 +142,7 @@ and it writes a file. The tick picks it up without a restart. An older single
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JIMMY_TRANSPORT` | `telegram` | `telegram` or `slack` |
+| `JIMMY_TRANSPORT` | `telegram` | `telegram`, `slack` or `none` |
 | `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
 | `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
 | `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |

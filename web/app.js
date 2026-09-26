@@ -1342,6 +1342,11 @@ inputEl.addEventListener("paste", async (event) => {
 function grow() {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 240) + "px";
+  const style = getComputedStyle(inputEl);
+  const lines =
+    (inputEl.scrollHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) /
+    parseFloat(style.lineHeight);
+  composerEl.querySelector(".box").classList.toggle("tall", lines > 1.5);
 }
 
 inputEl.addEventListener("input", () => {

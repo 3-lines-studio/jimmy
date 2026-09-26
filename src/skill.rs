@@ -1,13 +1,49 @@
 use std::iter::Peekable;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::Lines;
 
-pub fn list(dir: &Path) -> String {
-    let mut skills = scan(dir);
-    skills.sort_by(|a, b| a.0.cmp(&b.0));
+pub const BUILTIN: &str = "/usr/local/share/jimmy/skills";
+
+pub fn dirs(local: PathBuf) -> Vec<PathBuf> {
+    vec![local, PathBuf::from(BUILTIN)]
+}
+
+pub fn list(dirs: &[PathBuf]) -> String {
+    let skills = scan(dirs);
     if skills.is_empty() {
-        return format!("No hay skills instaladas en {}.", dir.display());
+        return format!("No hay skills instaladas en {}.", paths(dirs));
     }
+    lines(skills)
+}
+
+pub fn index(dirs: &[PathBuf]) -> String {
+    let skills = scan(dirs);
+    if skills.is_empty() {
+        return "No hay ninguna instalada.".to_string();
+    }
+    lines(skills)
+}
+
+pub fn load(dirs: &[PathBuf], name: &str) -> Result<String, String> {
+    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
+        return Err(format!("nombre de skill inválido: {name}"));
+    }
+    for dir in dirs {
+        let skill_dir = dir.join(name);
+        let Ok(text) = std::fs::read_to_string(skill_dir.join("SKILL.md")) else {
+            continue;
+        };
+        return Ok(format!(
+            "Skill {name} — {}\n\n{}",
+            skill_dir.display(),
+            body(&text)
+        ));
+    }
+    Err(format!("no existe la skill `{name}` en {}", paths(dirs)))
+}
+
+fn lines(mut skills: Vec<(String, String)>) -> String {
+    skills.sort_by(|a, b| a.0.cmp(&b.0));
     skills
         .into_iter()
         .map(|(name, description)| format!("{name} — {description}"))
@@ -15,21 +51,27 @@ pub fn list(dir: &Path) -> String {
         .join("\n")
 }
 
-pub fn load(dir: &Path, name: &str) -> Result<String, String> {
-    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
-        return Err(format!("nombre de skill inválido: {name}"));
-    }
-    let skill_dir = dir.join(name);
-    let text = std::fs::read_to_string(skill_dir.join("SKILL.md"))
-        .map_err(|_| format!("no existe la skill `{name}` en {}", dir.display()))?;
-    Ok(format!(
-        "Skill {name} — {}\n\n{}",
-        skill_dir.display(),
-        body(&text)
-    ))
+fn paths(dirs: &[PathBuf]) -> String {
+    dirs.iter()
+        .map(|dir| dir.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-fn scan(dir: &Path) -> Vec<(String, String)> {
+fn scan(dirs: &[PathBuf]) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for dir in dirs {
+        for skill in scan_dir(dir) {
+            if found.iter().any(|(name, _)| name == &skill.0) {
+                continue;
+            }
+            found.push(skill);
+        }
+    }
+    found
+}
+
+fn scan_dir(dir: &Path) -> Vec<(String, String)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -129,14 +171,14 @@ mod tests {
     #[test]
     fn list_shows_only_skills_with_a_body() {
         let dir = setup("list");
-        assert_eq!(list(&dir), "charts — Gráficos");
+        assert_eq!(list(&[dir.clone()]), "charts — Gráficos");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn load_strips_the_frontmatter() {
         let dir = setup("load");
-        let out = load(&dir, "charts").unwrap();
+        let out = load(&[dir.clone()], "charts").unwrap();
         assert!(out.contains("# Charts"));
         assert!(!out.contains("description:"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -145,8 +187,8 @@ mod tests {
     #[test]
     fn load_rejects_a_bad_name() {
         let dir = setup("bad");
-        assert!(load(&dir, "../secrets").is_err());
-        assert!(load(&dir, "nope").is_err());
+        assert!(load(&[dir.clone()], "../secrets").is_err());
+        assert!(load(&[dir.clone()], "nope").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -158,12 +200,48 @@ mod tests {
             "---\nname: multi\ndescription: >\n  Una cosa\n  y la otra.\n---\n\n# Multi\n",
         )
         .unwrap();
-        assert!(list(&dir).contains("empty — Una cosa y la otra."));
+        assert!(list(&[dir.clone()]).contains("empty — Una cosa y la otra."));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_missing_directory_lists_nothing() {
-        assert!(list(Path::new("/nope/nope/skills")).contains("No hay skills"));
+        assert!(list(&[PathBuf::from("/nope/nope/skills")]).contains("No hay skills"));
+    }
+
+    #[test]
+    fn a_local_skill_shadows_the_builtin_one() {
+        let over = setup("over");
+        let under = setup("under");
+        std::fs::write(
+            over.join("charts/SKILL.md"),
+            "---\nname: charts\ndescription: \"Mía\"\n---\n\n# Mía\n",
+        )
+        .unwrap();
+        std::fs::write(
+            under.join("charts/SKILL.md"),
+            "---\nname: charts\ndescription: \"De fábrica\"\n---\n\n# De fábrica\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(under.join("otra")).unwrap();
+        std::fs::write(
+            under.join("otra/SKILL.md"),
+            "---\nname: otra\ndescription: \"Sólo del builtin\"\n---\n\n# Otra\n",
+        )
+        .unwrap();
+        let dirs = vec![over.clone(), under.clone()];
+        assert_eq!(index(&dirs), "charts — Mía\notra — Sólo del builtin");
+        let loaded = load(&dirs, "otra").unwrap();
+        assert!(loaded.starts_with(&format!("Skill otra — {}", under.join("otra").display())));
+        std::fs::remove_dir_all(&over).unwrap();
+        std::fs::remove_dir_all(&under).unwrap();
+    }
+
+    #[test]
+    fn the_index_says_so_when_there_is_nothing() {
+        assert_eq!(
+            index(&[PathBuf::from("/nope/nope/skills")]),
+            "No hay ninguna instalada."
+        );
     }
 }

@@ -1,11 +1,12 @@
 # Jimmy
 
-A Telegram and Slack personal assistant. It embeds axe as a library and gives
-it a machine of its own: every message it replies to is an axe agent run with
+A personal assistant that lives in a web frontend, with Telegram and Slack as
+optional channels. It embeds axe as a library and gives
+it the machine of its own: every message it replies to is an axe agent run with
 the full `read`, `write`, `edit`, and `bash` toolset on the container
 filesystem.
 
-One session per chat — a Telegram chat, or a Slack thread — stored as
+One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored as
 append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
 listens by long polling and Slack over Socket Mode, so there is no public URL
 and no webhook to configure. Sending a message shows one `pensando`
@@ -144,7 +145,7 @@ and it writes a file. The tick picks it up without a restart. An older single
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JIMMY_TRANSPORT` | `telegram` | `telegram`, `slack` or `none` |
+| `JIMMY_TRANSPORT` | `none` | `telegram`, `slack` or `none` |
 | `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
 | `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
 | `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |

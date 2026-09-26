@@ -46,24 +46,30 @@ Telegram voice notes are handled; audio sent as a document is ignored.
 
 ## Memory
 
-Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
-a plain Markdown file, written by the agent with `read` and `edit`, injected
-whole into the prompt on every message under `## Memoria en contexto`, with a
-16 KiB cap. Level 2 is `notes/memory.jsonl`: append-only, holding every state a
-level-1 entry ever had, searched with `rg`.
+A fact lives on its own, one entry per file, and where it lives says how far it
+reaches. `$JIMMY_WORKSPACE/notes/memory/` holds the cross-cutting facts —who the
+user is, the map of projects, the platform, how memory itself works— and
+`notes/projects/<project>.md` holds the ones that belong to a project.
+`jimmy memo add <key> <kind> <text>` writes one.
 
-Each level-1 entry starts with `## key · kind · YYYY-MM-DD`. The key is what
-makes an updated fact replace the old one instead of duplicating it, so an
-entry is a topic, not a line in a log. `jimmy memo sync` diffs level 1 against
-level 2, appends the changes and reports what it saw; `jimmy memo demote` moves
-the oldest entries down when level 1 outgrows the budget; `jimmy memo miss`
-records a memory that failed to surface (`jimmy memo miss "..."`). Nothing is
+The prompt gets every cross-cutting fact plus the two newest of the project the
+conversation belongs to. The rest is not lost: it stays in its file, and `jimmy
+memo show <key>` or `rg` bring it back. Because a new fact has an owner, it never
+competes with what was already there, and that is what keeps the prompt small: a
+project's manual does not sit in front of every conversation.
+
+Each entry starts with `## key · kind · YYYY-MM-DD`. The key is what makes an
+updated fact replace the old one instead of duplicating it, so an entry is a
+topic, not a line in a log. `notes/memory.jsonl` is append-only and holds every
+state a fact went through: `jimmy memo sync` diffs the facts against it, appends
+the changes and reports what it saw, and `jimmy memo miss` records a memory that
+failed to surface. `jimmy memo list` prints the files and their keys. Nothing is
 ever deleted.
 
-Both commands write one JSON event per run to
+Those commands write one JSON event per run to
 `$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
-`stats` reads it and appends the memory state to its report: level-1 size,
-syncs, demotions, truncated renders and misses.
+`stats` reads it and appends the memory state to its report: how many facts,
+the syncs, the renders and misses.
 
 ## Scheduled tasks
 
@@ -446,7 +452,7 @@ src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
-src/memo.rs       the two-level memory: sync, demote, miss
+src/memo.rs       the memory facts: render, sync, add, migrate, miss
 src/prompt.rs     assemble the system prompt from fragments
 bin/              the CLIs the agent gets: browse, gen-image, recall, stats
 web/              the browser frontend, embedded with include_str!

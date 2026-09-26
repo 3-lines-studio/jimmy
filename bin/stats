@@ -48,34 +48,25 @@ def report_memory(events):
         return sum(row.get(field, 0) for row in rows)
 
     syncs = of("sync")
-    demotes = of("demote")
     renders = of("render")
     misses = of("miss")
 
     if syncs:
         last = syncs[-1]
-        line = f"memoria — nivel 1: {last['entries']} entradas · {last['bytes']} bytes"
-        if demotes:
-            line += f" · tope {demotes[-1]['budget']}"
-        print(line)
+        print(f"memoria — {last['entries']} hechos · {last['bytes']} bytes")
         print(
             f"sync — {len(syncs)} corridas"
-            f" · {total(syncs, 'created')} nuevas"
-            f" · {total(syncs, 'updated')} actualizadas"
-            f" · {total(syncs, 'reasserted')} reafirmadas"
+            f" · {total(syncs, 'created')} nuevos"
+            f" · {total(syncs, 'updated')} actualizados"
+            f" · {total(syncs, 'reasserted')} reafirmados"
             f" · {total(syncs, 'promoted')} vueltas"
-            f" · {total(syncs, 'dropped')} sacadas a mano"
+            f" · {total(syncs, 'dropped')} sacados a mano"
         )
-    if demotes:
-        moved = sum(len(demote.get("moved", [])) for demote in demotes)
-        line = f"demote — {len(demotes)} corridas · {moved} bajaron"
-        stale = demotes[-1].get("stale") or []
-        if stale:
-            line += f" · vencidas: {', '.join(stale)}"
-        print(line)
     if renders:
         last = renders[-1]
-        line = f"render — {len(renders)} cortes · último {last['bytes']} bytes"
+        line = f"render — {len(renders)} corridas · último {last['bytes']} bytes"
+        if last.get("project"):
+            line += f" para {last['project']}"
         outside = last.get("outside") or []
         if outside:
             line += f" · afuera: {', '.join(outside)}"

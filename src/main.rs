@@ -586,7 +586,18 @@ fn memo_command(args: &[String]) -> i32 {
     let workspace = workspace_from_env();
     let result = match args.first().map(String::as_str) {
         Some("sync") => memo::sync(&workspace),
-        Some("demote") => memo::demote(&workspace),
+        Some("migrate") => memo::migrate(&workspace),
+        Some("list") => Ok(memo::list(&workspace)),
+        Some("render") => Ok(memo::render(
+            &workspace,
+            args.get(1).map(String::as_str).unwrap_or(""),
+        )),
+        Some("add") => match (args.get(1), args.get(2), args.get(3..)) {
+            (Some(key), Some(kind), Some(rest)) if !rest.is_empty() => {
+                memo::add(&workspace, key, kind, &rest.join(" "))
+            }
+            _ => Err("memo add: uso `jimmy memo add <clave> <tipo> <texto>`".into()),
+        },
         Some("miss") => match args[1..].join(" ").trim() {
             "" => Err("memo miss: falta el texto".into()),
             text => memo::miss(&workspace, text),
@@ -595,7 +606,10 @@ fn memo_command(args: &[String]) -> i32 {
             "" => Err("memo show: falta la clave".into()),
             key => memo::show(&workspace, key),
         },
-        _ => Err("uso: jimmy memo <sync|demote|miss texto|show clave>".into()),
+        _ => Err(
+            "uso: jimmy memo <sync|migrate|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
+                .into(),
+        ),
     };
     match result {
         Ok(report) => {

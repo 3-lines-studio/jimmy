@@ -66,7 +66,17 @@ let state = { projects: [] };
 const tabs = new Map();
 let activeId = null;
 let pending = new Map();
-const collapsed = new Set();
+const OPEN_KEY = "jimmy-open-projects";
+
+function readOpenProjects() {
+  try {
+    return JSON.parse(localStorage.getItem(OPEN_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+const opened = new Set(readOpenProjects());
 const expanded = new Set();
 const VISIBLE = 10;
 
@@ -426,7 +436,7 @@ function renderSidebar() {
     group.project = project;
     setText(group.name, project.name);
     group.name.title = project.path;
-    group.el.classList.toggle("collapsed", collapsed.has(project.name));
+    group.el.classList.toggle("collapsed", !opened.has(project.name));
     const open = expanded.has(project.name);
     setText(group.more, open ? "ver menos" : "ver más");
     group.more.hidden = project.conversations.length <= VISIBLE;
@@ -466,10 +476,11 @@ function toggleMore(name) {
 }
 
 function toggleProject(name) {
-  if (collapsed.has(name)) collapsed.delete(name);
-  else collapsed.add(name);
+  if (opened.has(name)) opened.delete(name);
+  else opened.add(name);
+  localStorage.setItem(OPEN_KEY, JSON.stringify([...opened]));
   const group = groupEls.get(name);
-  if (group) group.el.classList.toggle("collapsed", collapsed.has(name));
+  if (group) group.el.classList.toggle("collapsed", !opened.has(name));
 }
 
 function rename(item) {

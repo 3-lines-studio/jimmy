@@ -171,14 +171,14 @@ mod tests {
     #[test]
     fn list_shows_only_skills_with_a_body() {
         let dir = setup("list");
-        assert_eq!(list(&[dir.clone()]), "charts — Gráficos");
+        assert_eq!(list(std::slice::from_ref(&dir)), "charts — Gráficos");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn load_strips_the_frontmatter() {
         let dir = setup("load");
-        let out = load(&[dir.clone()], "charts").unwrap();
+        let out = load(std::slice::from_ref(&dir), "charts").unwrap();
         assert!(out.contains("# Charts"));
         assert!(!out.contains("description:"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -187,8 +187,8 @@ mod tests {
     #[test]
     fn load_rejects_a_bad_name() {
         let dir = setup("bad");
-        assert!(load(&[dir.clone()], "../secrets").is_err());
-        assert!(load(&[dir.clone()], "nope").is_err());
+        assert!(load(std::slice::from_ref(&dir), "../secrets").is_err());
+        assert!(load(std::slice::from_ref(&dir), "nope").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -200,7 +200,7 @@ mod tests {
             "---\nname: multi\ndescription: >\n  Una cosa\n  y la otra.\n---\n\n# Multi\n",
         )
         .unwrap();
-        assert!(list(&[dir.clone()]).contains("empty — Una cosa y la otra."));
+        assert!(list(std::slice::from_ref(&dir)).contains("empty — Una cosa y la otra."));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

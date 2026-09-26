@@ -4,12 +4,9 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const BUDGET: usize = 16 * 1024;
-const STALE_DAYS: i64 = 30;
-const STALE_SHIFT: u32 = 6;
-/// Una entrada tocada estos días no compite por bajar: es lo que acabo de
-/// aprender y lo que más caro sale perder. Sólo cae si no queda otra.
-const GRACE_DAYS: i64 = 7;
+/// Cuántas entradas del proyecto en curso entran al prompt. El resto vive en su
+/// archivo y vuelve cuando el tema vuelve: no hay tope que desaloje nada.
+const PROJECT_ENTRIES: usize = 2;
 /// Los tipos con los que se clasifica una entrada. La lista es corta a
 /// propósito: con el vocabulario abierto cada entrada inventaba el suyo y el
 /// tipo terminaba sin servir para nada.
@@ -23,7 +20,6 @@ const KINDS: [&str; 8] = [
     "proyecto",
     "plataforma",
 ];
-const KEEP: [&str; 4] = ["usuario", "proyectos", "entorno", "decisiones-vigentes"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -42,8 +38,6 @@ struct Entry {
     kind: String,
     date: i64,
     body: String,
-    start: usize,
-    end: usize,
 }
 
 struct Level1 {
@@ -59,91 +53,181 @@ fn level2_path(workspace: &Path) -> PathBuf {
     workspace.join("notes/memory.jsonl")
 }
 
+/// Los hechos transversales: uno por archivo, y todos entran al prompt.
+fn facts_dir(workspace: &Path) -> PathBuf {
+    workspace.join("notes/memory")
+}
+
+/// Los hechos de cada proyecto, un archivo por proyecto. Viven fuera del clon
+/// porque un `git clean -fd` se llevaría lo que no esté commiteado.
+fn projects_dir(workspace: &Path) -> PathBuf {
+    workspace.join("notes/projects")
+}
+
+fn project_path(workspace: &Path, project: &str) -> PathBuf {
+    projects_dir(workspace).join(format!("{project}.md"))
+}
+
 fn events_path(workspace: &Path) -> PathBuf {
     workspace.join("state/memory-events.jsonl")
 }
 
-pub fn render(workspace: &Path) -> String {
-    let Ok(text) = std::fs::read_to_string(level1_path(workspace)) else {
-        return String::new();
+fn md_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
     };
-    if text.len() <= BUDGET {
-        return text.trim().to_string();
-    }
-
-    let level1 = parse(&text);
-    let mut keep = vec![false; level1.entries.len()];
-    let mut used = 0;
-    for (index, entry) in level1.entries.iter().enumerate() {
-        if KEEP.contains(&entry.key.as_str()) {
-            keep[index] = true;
-            used += entry.end - entry.start;
-        }
-    }
-    for (index, entry) in level1.entries.iter().enumerate().rev() {
-        if keep[index] {
-            continue;
-        }
-        let bytes = entry.end - entry.start;
-        if used + bytes > BUDGET {
-            continue;
-        }
-        keep[index] = true;
-        used += bytes;
-    }
-
-    let outside: Vec<&str> = level1
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !keep[*index])
-        .map(|(_, entry)| entry.key.as_str())
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .collect();
+    paths.sort();
+    paths
+}
 
+fn read(path: &Path) -> Level1 {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text),
+        Err(_) => Level1 {
+            entries: Vec::new(),
+            malformed: 0,
+        },
+    }
+}
+
+fn read_all(dir: &Path) -> Level1 {
+    let mut level = Level1 {
+        entries: Vec::new(),
+        malformed: 0,
+    };
+    for path in md_files(dir) {
+        let part = read(&path);
+        level.entries.extend(part.entries);
+        level.malformed += part.malformed;
+    }
+    level
+}
+
+fn merge(into: &mut Level1, other: Level1) {
+    into.entries.extend(other.entries);
+    into.malformed += other.malformed;
+}
+
+/// Los hechos transversales: uno por archivo, y todos entran al prompt. Mientras
+/// no exista la carpeta, el `notes/memory.md` de antes.
+fn transversal(workspace: &Path) -> Level1 {
+    let dir = facts_dir(workspace);
+    if !dir.is_dir() {
+        return read(&level1_path(workspace));
+    }
+    read_all(&dir)
+}
+
+fn of_project(workspace: &Path, project: &str) -> Vec<Entry> {
+    if project.is_empty() {
+        return Vec::new();
+    }
+    read(&project_path(workspace, project)).entries
+}
+
+fn every_fact(workspace: &Path) -> Level1 {
+    let mut level = transversal(workspace);
+    merge(&mut level, read_all(&projects_dir(workspace)));
+    level
+}
+
+fn format_entry(entry: &Entry) -> String {
+    format!(
+        "## {} · {} · {}\n\n{}\n",
+        entry.key,
+        entry.kind,
+        format_date(entry.date),
+        entry.body.trim()
+    )
+}
+
+fn text_of(entries: &[Entry]) -> String {
+    entries
+        .iter()
+        .map(format_entry)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render(workspace: &Path, project: &str) -> String {
+    let mut entries = transversal(workspace).entries;
+    let mut mine = of_project(workspace, project);
+    mine.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+    let outside: Vec<String> = mine
+        .iter()
+        .skip(PROJECT_ENTRIES)
+        .map(|entry| entry.key.clone())
+        .collect();
+    entries.extend(mine.into_iter().take(PROJECT_ENTRIES));
+    if entries.is_empty() {
+        return String::new();
+    }
+    let text = text_of(&entries);
     emit(
         workspace,
         json!({
             "kind": "memory",
             "op": "render",
             "ts": now(),
+            "project": project,
             "bytes": text.len(),
-            "budget": BUDGET,
-            "entries": level1.entries.len(),
+            "entries": entries.len(),
             "outside": outside,
         }),
     );
+    if outside.is_empty() {
+        return text.trim().to_string();
+    }
+    // Lo que quedó afuera está en el archivo del proyecto: el aviso sirve para
+    // saber que existe, no para pedir que alguien consolide nada.
+    format!(
+        "{}\n\n[en `notes/projects/{project}.md` y afuera del prompt: {}]",
+        text.trim(),
+        outside.join(", ")
+    )
+}
 
-    // Un corte sin nombres deja al agente sin saber qué le falta: el aviso dice
-    // qué entradas quedaron afuera para que las vaya a buscar al nivel 2.
-    let notice = if outside.is_empty() {
-        format!(
-            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}]",
-            text.len()
-        )
+pub fn list(workspace: &Path) -> String {
+    let mut paths = Vec::new();
+    let dir = facts_dir(workspace);
+    if dir.is_dir() {
+        paths.extend(md_files(&dir));
     } else {
-        format!(
-            "[cortado: el nivel 1 tiene {} bytes y el tope es {BUDGET}; afuera quedaron: {} (están en el nivel 2)]",
-            text.len(),
-            outside.join(", ")
-        )
-    };
-    format!("{notice}\n{}", prune(&text, &level1.entries, &keep).trim())
+        paths.push(level1_path(workspace));
+    }
+    paths.extend(md_files(&projects_dir(workspace)));
+    let mut out = Vec::new();
+    for path in paths {
+        let entries = read(&path).entries;
+        if entries.is_empty() {
+            continue;
+        }
+        let name = path
+            .strip_prefix(workspace)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        out.push(name);
+        for entry in entries {
+            out.push(format!(
+                "  {} · {} · {}",
+                entry.key,
+                entry.kind,
+                format_date(entry.date)
+            ));
+        }
+    }
+    out.join("\n")
 }
 
 pub fn show(workspace: &Path, key: &str) -> Result<String, String> {
     let key = key.trim();
-    let entry = match std::fs::read_to_string(level1_path(workspace)) {
-        Ok(text) => parse(&text).entries.into_iter().find(|e| e.key == key),
-        Err(_) => None,
-    };
-    if let Some(entry) = entry {
-        return Ok(format!(
-            "## {} · {} · {}\n{}",
-            entry.key,
-            entry.kind,
-            format_date(entry.date),
-            entry.body.trim()
-        ));
+    if let Some(entry) = every_fact(workspace).entries.iter().find(|e| e.key == key) {
+        return Ok(format_entry(entry).trim_end().to_string());
     }
     let (records, _) = load_records(&level2_path(workspace));
     let Some(record) = records.iter().rev().find(|record| record.key == key) else {
@@ -158,13 +242,151 @@ pub fn show(workspace: &Path, key: &str) -> Result<String, String> {
     ))
 }
 
+pub fn add(workspace: &Path, key: &str, kind: &str, text: &str) -> Result<String, String> {
+    let key = key.trim();
+    let kind = kind.trim();
+    let text = text.trim();
+    if !valid_key(key) {
+        return Err(format!(
+            "clave inválida: {key} (minúsculas, números, `-` y `familia/tema`)"
+        ));
+    }
+    if !KINDS.contains(&kind) {
+        return Err(format!(
+            "tipo desconocido: {kind} (los que hay: {})",
+            KINDS.join(", ")
+        ));
+    }
+    if text.is_empty() {
+        return Err("el hecho está vacío".into());
+    }
+    let path = match key.split_once('/') {
+        Some((family, _)) => {
+            known_project(workspace, family)?;
+            project_path(workspace, family)
+        }
+        None => facts_dir(workspace).join(format!("{key}.md")),
+    };
+    let mut entries = read(&path).entries;
+    let date = today();
+    match entries.iter().position(|entry| entry.key == key) {
+        Some(index) => {
+            entries[index].kind = kind.to_string();
+            entries[index].body = text.to_string();
+            entries[index].date = date;
+        }
+        None => entries.insert(
+            0,
+            Entry {
+                key: key.to_string(),
+                kind: kind.to_string(),
+                date,
+                body: text.to_string(),
+            },
+        ),
+    }
+    write_entries(&path, &entries)?;
+    Ok(format!(
+        "{} · {kind} · {}",
+        path.display(),
+        format_date(date)
+    ))
+}
+
+pub fn migrate(workspace: &Path) -> Result<String, String> {
+    let mut moved = 0;
+    for entry in read(&level1_path(workspace)).entries {
+        let path = match entry.key.split_once('/') {
+            Some((family, _)) => project_path(workspace, family),
+            None => facts_dir(workspace).join(format!("{}.md", entry.key)),
+        };
+        let mut entries = read(&path).entries;
+        if entries.iter().any(|present| present.key == entry.key) {
+            continue;
+        }
+        entries.insert(0, entry);
+        write_entries(&path, &entries)?;
+        moved += 1;
+    }
+    Ok(format!(
+        "migrate: {moved} hechos a notes/memory y notes/projects"
+    ))
+}
+
+fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '/' || c == '.'
+        })
+        && !key.starts_with('/')
+        && !key.ends_with('/')
+        && !key.contains("//")
+}
+
+fn known_project(workspace: &Path, family: &str) -> Result<(), String> {
+    let mut known: Vec<String> = md_files(&projects_dir(workspace))
+        .iter()
+        .filter_map(|path| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .collect();
+    let clones = std::fs::read_dir(workspace.join("projects"));
+    for entry in clones.into_iter().flatten().flatten() {
+        if entry.path().is_dir() {
+            known.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    known.sort();
+    known.dedup();
+    if known.iter().any(|name| name == family) {
+        return Ok(());
+    }
+    let near = known
+        .iter()
+        .min_by_key(|name| distance(name, family))
+        .filter(|name| distance(name, family) <= 2);
+    let hint = match near {
+        Some(name) => format!(" (¿{name}?)"),
+        None => format!(" (los que hay: {})", known.join(", ")),
+    };
+    Err(format!("no conozco el proyecto {family}{hint}"))
+}
+
+fn distance(a: &str, b: &str) -> usize {
+    let right: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, left) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, other) in right.iter().enumerate() {
+            let previous = row[j + 1];
+            row[j + 1] = if left == *other {
+                diagonal
+            } else {
+                1 + diagonal.min(row[j]).min(row[j + 1])
+            };
+            diagonal = previous;
+        }
+    }
+    row[right.len()]
+}
+
+fn write_entries(path: &Path, entries: &[Entry]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    axe::atomic_write(path, text_of(entries).as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub fn sync(workspace: &Path) -> Result<String, String> {
     let started = std::time::Instant::now();
     std::fs::create_dir_all(workspace.join("notes")).map_err(|e| e.to_string())?;
-    let Ok(text) = std::fs::read_to_string(level1_path(workspace)) else {
-        return Ok("sync: no hay notes/memory.md".into());
-    };
-    let level1 = parse(&text);
+    let level1 = every_fact(workspace);
+    if level1.entries.is_empty() {
+        return Ok("sync: no hay hechos".into());
+    }
     let (records, corrupt) = load_records(&level2_path(workspace));
     let latest = latest(&records);
 
@@ -214,7 +436,7 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     }
 
     append_records(&level2_path(workspace), &fresh)?;
-    let bytes = text.len();
+    let bytes = text_of(&level1.entries).len();
     let entries = level1.entries.len();
     emit(
         workspace,
@@ -237,7 +459,7 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     );
 
     let mut report = format!(
-        "sync: {entries} entradas, {bytes} bytes · {created} nuevas · {updated} actualizadas · {reasserted} reafirmadas · {promoted} vueltas"
+        "sync: {entries} hechos, {bytes} bytes · {created} nuevos · {updated} actualizados · {reasserted} reafirmados · {promoted} vueltas"
     );
     if dropped > 0 {
         report.push_str(&format!(" · {dropped} borradas a mano"));
@@ -253,129 +475,6 @@ pub fn sync(workspace: &Path) -> Result<String, String> {
     }
     if corrupt > 0 {
         report.push_str(&format!(" · {corrupt} líneas corruptas en el nivel 2"));
-    }
-    Ok(report)
-}
-
-pub fn demote(workspace: &Path) -> Result<String, String> {
-    let started = std::time::Instant::now();
-    let path = level1_path(workspace);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("memory.md: {e}"))?;
-    let level1 = parse(&text);
-    let (records, _) = load_records(&level2_path(workspace));
-    let latest = latest(&records);
-    let today = today();
-
-    struct Candidate {
-        index: usize,
-        expired: bool,
-        in_grace: bool,
-        bytes: usize,
-        last_seen: i64,
-    }
-
-    let mut candidates = Vec::new();
-    let mut stale = Vec::new();
-    for (index, entry) in level1.entries.iter().enumerate() {
-        if KEEP.contains(&entry.key.as_str()) {
-            continue;
-        }
-        let (rev, last_seen) = match latest.get(&entry.key) {
-            Some(record) => (record.rev, record.last_seen),
-            None => (1, entry.date),
-        };
-        if today > review_after(last_seen, rev) {
-            stale.push(format!(
-                "{} ({})",
-                entry.key,
-                format_date(review_after(last_seen, rev))
-            ));
-        }
-        candidates.push(Candidate {
-            index,
-            expired: today > review_after(last_seen, rev),
-            in_grace: today - entry.date < GRACE_DAYS,
-            bytes: entry.end - entry.start,
-            last_seen,
-        });
-    }
-    // Lo vencido primero, después lo que no está en gracia, y entre iguales lo
-    // más pesado: una entrada gorda libera de una lo que cinco chicas, y la
-    // antigüedad sola castigaba al que acababa de escribir.
-    candidates.sort_by(|a, b| {
-        b.expired
-            .cmp(&a.expired)
-            .then(a.in_grace.cmp(&b.in_grace))
-            .then(b.bytes.cmp(&a.bytes))
-            .then(a.last_seen.cmp(&b.last_seen))
-    });
-
-    let bytes_before = text.len();
-    let mut removed = Vec::new();
-    let mut freed = 0;
-    for candidate in &candidates {
-        if bytes_before - freed <= BUDGET {
-            break;
-        }
-        let entry = &level1.entries[candidate.index];
-        freed += entry.end - entry.start;
-        removed.push(candidate.index);
-    }
-
-    let mut moved = Vec::new();
-    if !removed.is_empty() {
-        let mut down = Vec::new();
-        for index in &removed {
-            let entry = &level1.entries[*index];
-            let rev = latest.get(&entry.key).map(|r| r.rev).unwrap_or(1);
-            down.push(Record {
-                ts: now(),
-                key: entry.key.clone(),
-                kind: entry.kind.clone(),
-                body: entry.body.clone(),
-                rev,
-                last_seen: entry.date,
-                left: Some("demoted".into()),
-            });
-            moved.push(entry.key.clone());
-        }
-        append_records(&level2_path(workspace), &down)?;
-        let mut keep = vec![true; level1.entries.len()];
-        for index in &removed {
-            keep[*index] = false;
-        }
-        axe::atomic_write(&path, prune(&text, &level1.entries, &keep).as_bytes())
-            .map_err(|e| format!("memory.md: {e}"))?;
-    }
-
-    let bytes_after = bytes_before - freed;
-    emit(
-        workspace,
-        json!({
-            "kind": "memory",
-            "op": "demote",
-            "ts": now(),
-            "ms": started.elapsed().as_millis() as u64,
-            "bytes_before": bytes_before,
-            "bytes_after": bytes_after,
-            "budget": BUDGET,
-            "moved": moved,
-            "stale": stale,
-        }),
-    );
-
-    let mut report = format!(
-        "demote: {bytes_before} → {bytes_after} bytes (tope {BUDGET}) · {} bajaron",
-        moved.len()
-    );
-    if !moved.is_empty() {
-        report.push_str(&format!(": {}", moved.join(", ")));
-    }
-    if bytes_after > BUDGET {
-        report.push_str(" · ojo: sigue por encima del tope");
-    }
-    if !stale.is_empty() {
-        report.push_str(&format!(" · vencidas: {}", stale.join(", ")));
     }
     Ok(report)
 }
@@ -401,48 +500,29 @@ fn new_record(entry: &Entry, rev: u32, left: Option<String>) -> Record {
     }
 }
 
-fn review_after(last_seen: i64, rev: u32) -> i64 {
-    let shift = rev.saturating_sub(1).min(STALE_SHIFT);
-    last_seen + STALE_DAYS * (1i64 << shift)
-}
-
 fn parse(text: &str) -> Level1 {
-    let chunks: Vec<&str> = text.split_inclusive('\n').collect();
-    let mut offsets = Vec::with_capacity(chunks.len());
-    let mut position = 0;
-    for chunk in &chunks {
-        offsets.push(position);
-        position += chunk.len();
-    }
-
     let mut malformed = 0;
-    let mut starts = Vec::new();
-    for (index, chunk) in chunks.iter().enumerate() {
-        let Some(rest) = chunk.strip_prefix("## ") else {
+    let mut entries: Vec<Entry> = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            match heading(rest.trim_end()) {
+                Some((key, kind, date)) => entries.push(Entry {
+                    key,
+                    kind,
+                    date,
+                    body: String::new(),
+                }),
+                None => malformed += 1,
+            }
             continue;
-        };
-        match heading(rest.trim_end()) {
-            Some((key, kind, date)) => starts.push((index, key, kind, date)),
-            None => malformed += 1,
+        }
+        if let Some(entry) = entries.last_mut() {
+            entry.body.push_str(line);
+            entry.body.push('\n');
         }
     }
-
-    let mut entries = Vec::new();
-    for (position, (index, key, kind, date)) in starts.iter().enumerate() {
-        let end_chunk = starts
-            .get(position + 1)
-            .map(|next| next.0)
-            .unwrap_or(chunks.len());
-        let end = offsets.get(end_chunk).copied().unwrap_or(text.len());
-        let body = chunks[*index + 1..end_chunk].concat().trim().to_string();
-        entries.push(Entry {
-            key: key.clone(),
-            kind: kind.clone(),
-            date: *date,
-            body,
-            start: offsets[*index],
-            end,
-        });
+    for entry in &mut entries {
+        entry.body = entry.body.trim().to_string();
     }
     Level1 { entries, malformed }
 }
@@ -463,24 +543,6 @@ fn heading(line: &str) -> Option<(String, String, i64)> {
         return None;
     }
     Some((key.to_string(), parts[1].to_string(), parse_date(parts[2])?))
-}
-
-fn prune(text: &str, entries: &[Entry], keep: &[bool]) -> String {
-    let Some(first) = entries.first() else {
-        return text.to_string();
-    };
-    let mut out = String::new();
-    out.push_str(&text[..first.start]);
-    let mut cursor = first.start;
-    for (index, entry) in entries.iter().enumerate() {
-        if keep[index] {
-            continue;
-        }
-        out.push_str(&text[cursor..entry.start]);
-        cursor = entry.end;
-    }
-    out.push_str(&text[cursor..]);
-    out
 }
 
 fn load_records(path: &Path) -> (Vec<Record>, usize) {
@@ -621,10 +683,6 @@ mod tests {
         std::fs::write(level1_path(workspace), text).unwrap();
     }
 
-    fn read_level1(workspace: &Path) -> String {
-        std::fs::read_to_string(level1_path(workspace)).unwrap()
-    }
-
     fn stored(workspace: &Path) -> Vec<Record> {
         load_records(&level2_path(workspace)).0
     }
@@ -636,6 +694,17 @@ mod tests {
     fn entry(key: &str, days_ago: i64, body: &str) -> String {
         let day = date(days_ago);
         format!("## {key} · decision · {day}\n{body}\n\n")
+    }
+
+    fn fact(workspace: &Path, key: &str, days_ago: i64, body: &str) {
+        let path = if key.contains('/') {
+            project_path(workspace, key.split('/').next().unwrap())
+        } else {
+            facts_dir(workspace).join(format!("{key}.md"))
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&path, format!("{}{before}", entry(key, days_ago, body))).unwrap();
     }
 
     #[test]
@@ -681,7 +750,7 @@ mod tests {
         let workspace = workspace("sync-new");
         write_level1(&workspace, &entry("a", 1, "cuerpo a"));
         let report = sync(&workspace).unwrap();
-        assert!(report.contains("1 nuevas"));
+        assert!(report.contains("1 nuevos"));
         let records = stored(&workspace);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key, "a");
@@ -733,220 +802,101 @@ mod tests {
     }
 
     #[test]
-    fn sync_detects_return_after_demote() {
-        let workspace = workspace("sync-promote");
-        let filler = "f".repeat(BUDGET + 1_000);
-        let kept = date(1);
-        let text = format!(
-            "## usuario · identidad · {kept}\n{filler}\n\n{}",
-            entry("a", 40, "cuerpo a")
-        );
-        write_level1(&workspace, &text);
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("1 bajaron: a"), "{report}");
-        assert!(!read_level1(&workspace).contains("cuerpo a"));
-        write_level1(&workspace, &text);
-        let report = sync(&workspace).unwrap();
-        assert!(report.contains("1 vueltas"), "{report}");
-        let records = stored(&workspace);
-        let last = records.last().unwrap();
-        assert_eq!(last.key, "a");
-        assert_eq!(last.rev, 2);
-        assert!(last.left.is_none());
-    }
-
-    #[test]
-    fn demote_never_moves_fixed_keys() {
-        let workspace = workspace("demote-keep");
-        let body = "x".repeat(BUDGET);
-        let day = date(400);
-        write_level1(
-            &workspace,
-            &format!("## usuario · identidad · {day}\n{body}\n"),
-        );
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("0 bajaron"));
-        assert!(report.contains("sigue por encima del tope"));
-        assert!(read_level1(&workspace).contains("usuario"));
-    }
-
-    #[test]
-    fn demote_is_idempotent_when_under_budget() {
-        let workspace = workspace("demote-idle");
-        write_level1(&workspace, &entry("a", 1, "cuerpo a"));
-        sync(&workspace).unwrap();
-        let before = stored(&workspace).len();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("0 bajaron"));
-        assert_eq!(stored(&workspace).len(), before);
-    }
-
-    #[test]
-    fn sync_reports_a_kind_outside_the_list() {
-        let con_rara = workspace("sync-kinds");
-        let day = date(1);
-        let text =
-            format!("## buena · decision · {day}\ncuerpo\n\n## rara · invento · {day}\ncuerpo\n\n");
-        write_level1(&con_rara, &text);
-        let report = sync(&con_rara).unwrap();
-        assert!(
-            report.contains("tipos fuera de la lista: invento"),
-            "{report}"
-        );
-
-        let sana = workspace("sync-kinds-ok");
-        write_level1(&sana, &format!("## buena · decision · {day}\ncuerpo\n\n"));
-        let report = sync(&sana).unwrap();
-        assert!(!report.contains("tipos fuera de la lista"), "{report}");
-    }
-
-    #[test]
-    fn demote_does_not_touch_what_was_written_today() {
-        let workspace = workspace("demote-grace");
-        let text = format!(
-            "{}{}",
-            entry("recien-escrita", 1, &"z".repeat(12_000)),
-            entry("de-hace-meses", 200, &"y".repeat(7_000))
-        );
-        write_level1(&workspace, &text);
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("de-hace-meses"), "{report}");
-        let after = read_level1(&workspace);
-        assert!(after.contains("recien-escrita"), "{after}");
-        assert!(!after.contains("de-hace-meses"), "{after}");
-    }
-
-    #[test]
-    fn demote_prefers_the_heaviest_when_everything_is_recent() {
-        let workspace = workspace("demote-weight");
-        let text = format!(
-            "{}{}",
-            entry("gorda", 1, &"z".repeat(12_000)),
-            entry("flaca", 1, &"y".repeat(7_000))
-        );
-        write_level1(&workspace, &text);
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("gorda"), "{report}");
-        let after = read_level1(&workspace);
-        assert!(after.contains("flaca"), "{after}");
-        assert!(!after.contains("gorda"), "{after}");
-    }
-
-    #[test]
-    fn show_finds_an_entry_in_either_level() {
-        let workspace = workspace("show");
-        let text = format!(
-            "{}{}",
-            entry("arriba", 1, &"a".repeat(7_000)),
-            entry("abajo", 1, &"b".repeat(12_000))
-        );
-        write_level1(&workspace, &text);
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("abajo"), "{report}");
-
-        let viva = show(&workspace, "arriba").unwrap();
-        assert!(!viva.contains("nivel 2"), "{viva}");
-        let caida = show(&workspace, "abajo").unwrap();
-        assert!(caida.contains("nivel 2"), "{caida}");
-        assert!(show(&workspace, "no-existe").is_err());
-    }
-
-    #[test]
-    fn demote_frees_until_under_budget_oldest_first() {
-        let workspace = workspace("demote-budget");
-        let body = "y".repeat(6_000);
-        let text = format!(
-            "{}{}{}",
-            entry("nueva", 1, &body),
-            entry("vieja", 300, &body),
-            entry("antigua", 400, &body)
-        );
-        write_level1(&workspace, &text);
-        sync(&workspace).unwrap();
-        let report = demote(&workspace).unwrap();
-        assert!(report.contains("1 bajaron"), "{report}");
-        assert!(report.contains("antigua"));
-        let after = read_level1(&workspace);
-        assert!(after.len() <= BUDGET);
-        assert!(after.contains("nueva"));
-        assert!(!after.contains("antigua"));
-        let moved: Vec<String> = stored(&workspace)
-            .iter()
-            .filter(|record| record.left.as_deref() == Some("demoted"))
-            .map(|record| record.key.clone())
-            .collect();
-        assert_eq!(moved, vec!["antigua"]);
-    }
-
-    #[test]
-    fn render_returns_file_as_is_when_it_fits() {
-        let workspace = workspace("render-fit");
-        write_level1(&workspace, &entry("a", 1, "cuerpo a"));
-        assert_eq!(render(&workspace), read_level1(&workspace).trim());
-    }
-
-    #[test]
-    fn a_cut_names_the_entries_that_stay_out() {
-        let workspace = workspace("render-outside");
-        let body = "z".repeat(6_000);
-        let first = date(1);
-        let text = format!(
-            "## usuario · identidad · {first}\n{body}\n\n{}{}",
-            entry("media", 2, &body),
-            entry("nueva", 1, &body)
-        );
-        write_level1(&workspace, &text);
-        let out = render(&workspace);
-        assert!(out.contains("afuera quedaron: media"), "{out}");
-        assert!(!out.contains("afuera quedaron: media, nueva"), "{out}");
-    }
-
-    #[test]
-    fn a_cut_leaves_a_record_of_what_stayed_out() {
-        let workspace = workspace("render-record");
-        let body = "z".repeat(6_000);
-        let first = date(1);
-        let text = format!(
-            "## usuario · identidad · {first}\n{body}\n\n{}{}",
-            entry("media", 2, &body),
-            entry("nueva", 1, &body)
-        );
-        write_level1(&workspace, &text);
-        render(&workspace);
-        let events = std::fs::read_to_string(workspace.join("state/memory-events.jsonl")).unwrap();
-        let last: serde_json::Value = serde_json::from_str(events.lines().last().unwrap()).unwrap();
-        assert_eq!(last["op"], "render");
-        assert_eq!(last["outside"][0], "media");
-    }
-
-    #[test]
-    fn render_keeps_fixed_keys_and_never_cuts_an_entry() {
-        let workspace = workspace("render-cut");
-        let body = "z".repeat(6_000);
-        let first = date(1);
-        let text = format!(
-            "## usuario · identidad · {first}\n{body}\n\n{}{}",
-            entry("media", 2, &body),
-            entry("nueva", 1, &body)
-        );
-        write_level1(&workspace, &text);
-        let out = render(&workspace);
-        assert!(out.contains("usuario"));
+    fn render_is_the_facts_plus_the_newest_of_the_project() {
+        let workspace = workspace("render-facts");
+        fact(&workspace, "usuario", 10, "quién es");
+        fact(&workspace, "jimmy/vieja", 30, "vieja");
+        fact(&workspace, "jimmy/media", 5, "media");
+        fact(&workspace, "jimmy/nueva", 1, "nueva");
+        let out = render(&workspace, "jimmy");
+        assert!(out.contains("quién es"));
         assert!(out.contains("nueva"));
-        assert!(
-            !out.contains("## media"),
-            "la entrada no puede entrar a medias"
+        assert!(out.contains("media"));
+        assert!(!out.contains("## jimmy/vieja"));
+        assert!(out.contains("afuera del prompt: jimmy/vieja"), "{out}");
+    }
+
+    #[test]
+    fn render_without_a_project_is_only_the_facts() {
+        let workspace = workspace("render-general");
+        fact(&workspace, "usuario", 10, "quién es");
+        fact(&workspace, "jimmy/nueva", 1, "nueva");
+        let out = render(&workspace, "");
+        assert!(out.contains("quién es"));
+        assert!(!out.contains("nueva"));
+    }
+
+    #[test]
+    fn render_falls_back_to_memory_md_until_the_facts_exist() {
+        let workspace = workspace("render-legacy");
+        write_level1(&workspace, &entry("usuario", 1, "quién es"));
+        assert!(render(&workspace, "jimmy").contains("quién es"));
+        std::fs::create_dir_all(facts_dir(&workspace)).unwrap();
+        assert!(render(&workspace, "jimmy").is_empty());
+    }
+
+    #[test]
+    fn add_writes_a_fact_and_updates_it_in_place() {
+        let workspace = workspace("add");
+        std::fs::create_dir_all(workspace.join("projects/jimmy")).unwrap();
+        add(&workspace, "jimmy/telemetria", "medicion", "un número").unwrap();
+        assert!(show(&workspace, "jimmy/telemetria")
+            .unwrap()
+            .contains("un número"));
+        add(&workspace, "jimmy/telemetria", "decision", "otro número").unwrap();
+        let text = std::fs::read_to_string(project_path(&workspace, "jimmy")).unwrap();
+        assert_eq!(text.matches("## jimmy/telemetria").count(), 1);
+        assert!(text.contains("decision"));
+        assert!(text.contains("otro número"));
+    }
+
+    #[test]
+    fn add_rejects_an_unknown_project_and_an_unknown_kind() {
+        let workspace = workspace("add-unknown");
+        std::fs::create_dir_all(workspace.join("projects/picsel")).unwrap();
+        let error = add(&workspace, "picssel/algo", "estado", "x").unwrap_err();
+        assert!(error.contains("¿picsel?"), "{error}");
+        let error = add(&workspace, "jimmy/algo", "inventado", "x").unwrap_err();
+        assert!(error.contains("tipo desconocido"), "{error}");
+    }
+
+    #[test]
+    fn migrate_splits_memory_md_into_facts_and_projects() {
+        let workspace = workspace("migrate");
+        let text = format!(
+            "{}{}",
+            entry("usuario", 1, "quién es"),
+            entry("jimmy/estado", 2, "cómo está")
         );
-        assert!(
-            out.contains("afuera quedaron: media"),
-            "y el aviso tiene que nombrarla"
-        );
-        assert!(out.len() <= BUDGET + 200);
+        write_level1(&workspace, &text);
+        let report = migrate(&workspace).unwrap();
+        assert!(report.contains("2 hechos"), "{report}");
+        assert!(facts_dir(&workspace).join("usuario.md").exists());
+        assert!(project_path(&workspace, "jimmy").exists());
+        assert!(render(&workspace, "jimmy").contains("quién es"));
+    }
+
+    #[test]
+    fn list_names_the_files_and_their_keys() {
+        let workspace = workspace("list");
+        fact(&workspace, "usuario", 1, "quién es");
+        fact(&workspace, "jimmy/estado", 1, "cómo está");
+        let out = list(&workspace);
+        assert!(out.contains("notes/memory/usuario.md"), "{out}");
+        assert!(out.contains("notes/projects/jimmy.md"), "{out}");
+        assert!(out.contains("jimmy/estado"), "{out}");
+    }
+
+    #[test]
+    fn show_finds_a_fact_and_then_the_dropped_one() {
+        let workspace = workspace("show");
+        fact(&workspace, "usuario", 1, "vive acá");
+        assert!(show(&workspace, "usuario").unwrap().contains("vive acá"));
+        sync(&workspace).unwrap();
+        std::fs::remove_file(facts_dir(&workspace).join("usuario.md")).unwrap();
+        let out = show(&workspace, "usuario").unwrap();
+        assert!(out.contains("nivel 2"), "{out}");
+        assert!(show(&workspace, "no-existe").is_err());
     }
 
     #[test]

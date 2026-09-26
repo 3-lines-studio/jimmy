@@ -184,8 +184,10 @@ impl Worker {
         let mut stdin = self.stdin.lock().unwrap();
         stdin
             .write_all(line.as_bytes())
-            .map_err(|e| e.to_string())?;
-        stdin.flush().map_err(|e| e.to_string())
+            .map_err(|e| format!("el worker terminó sin responder: {e}"))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("el worker terminó sin responder: {e}"))
     }
 
     fn receive(&self) -> Result<Event, String> {

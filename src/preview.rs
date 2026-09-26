@@ -995,7 +995,9 @@ mod tests {
     fn esperar_archivo(path: &Path) -> String {
         for _ in 0..40 {
             if let Ok(text) = std::fs::read_to_string(path) {
-                return text;
+                if !text.is_empty() {
+                    return text;
+                }
             }
             std::thread::sleep(Duration::from_millis(50));
         }

@@ -24,12 +24,12 @@ function createFilesTab(id) {
   head.hidden = true;
   const back = document.createElement("button");
   back.className = "files-back";
-  back.append(icon("left", 15), label("archivos"));
+  back.append(icon("left", 15), label("Archivos"));
   const path = label("", "files-path");
   head.append(back, path);
   const body = document.createElement("div");
   body.className = "files-body";
-  body.append(note("Elegí un archivo para leerlo."));
+  body.append(note("Elegí un Archivo para Leerlo."));
   view.append(head, body);
   pane.append(view, tree);
   panesEl.append(pane);
@@ -61,11 +61,11 @@ async function list(tab, parent, path) {
     "/api/tree?project=" + encodeURIComponent(tab.project) + "&path=" + encodeURIComponent(path);
   const data = await api(query);
   if (!data) {
-    parent.append(note("no pude leer esa carpeta"));
+    parent.append(note("No Pude Leer Esa Carpeta"));
     return;
   }
   if (!data.entries.length) {
-    parent.append(note("vacía"));
+    parent.append(note("Vacía"));
     return;
   }
   for (const entry of data.entries) parent.append(row(tab, join(path, entry.name), entry));
@@ -103,7 +103,7 @@ async function openFile(tab, path, entry, element) {
   tab.path.textContent = path;
   tab.head.hidden = false;
   tab.pane.classList.add("showing");
-  tab.body.replaceChildren(note("trayendo…"));
+  tab.body.replaceChildren(note("Trayendo…"));
 
   if (entry.kind === "image") {
     const image = document.createElement("img");
@@ -117,18 +117,18 @@ async function openFile(tab, path, entry, element) {
   const response = await fetch(rawUrl(tab.project, path));
   if (tab.file !== path) return;
   if (!response.ok) {
-    tab.body.replaceChildren(note("no pude abrir ese archivo"));
+    tab.body.replaceChildren(note("No Pude Abrir Ese Archivo"));
     return;
   }
   const text = await response.text();
   if (tab.file !== path) return;
   if (!(response.headers.get("content-type") || "").startsWith("text/")) {
-    tab.body.replaceChildren(note("es un archivo binario: no hay nada que mostrar"));
+    tab.body.replaceChildren(note("Es un Archivo Binario: No Hay Nada que Mostrar"));
     return;
   }
   tab.body.replaceChildren(entry.kind === "markdown" ? markdownOf(text) : codeOf(text, entry.name));
   if (response.headers.get("x-truncated"))
-    tab.body.append(note("se ve sólo el principio: el archivo pasa los 512 KB"));
+    tab.body.append(note("Se Ve Sólo el Principio: el Archivo Pasa los 512 KB"));
 }
 
 function codeOf(text, name) {
@@ -138,7 +138,7 @@ function codeOf(text, name) {
   const code = document.createElement("code");
   code.innerHTML = highlight(text, extension(name));
   pre.append(code);
-  box.append(pre, copyButton(text, "copiar el archivo"));
+  box.append(pre, copyButton(text, "Copiar el Archivo"));
   return box;
 }
 

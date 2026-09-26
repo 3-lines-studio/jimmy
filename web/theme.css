@@ -33,7 +33,6 @@
   --diff-del-bg: rgba(240, 115, 107, 0.08);
   --diff-del: #e0aaa6;
 
-  --mark: rgba(106, 162, 255, 0.22);
   --selection: rgba(138, 180, 255, 0.25);
 
   --scroll: #3a3a44;
@@ -103,7 +102,6 @@
   --diff-del-bg: rgba(207, 34, 46, 0.1);
   --diff-del: #b42318;
 
-  --mark: rgba(9, 105, 218, 0.12);
   --selection: rgba(9, 105, 218, 0.18);
 
   --scroll: #c2c2ca;

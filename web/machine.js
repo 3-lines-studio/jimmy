@@ -10,20 +10,10 @@ function machineRatio(used, total) {
   return machineSize(used) + " / " + machineSize(total);
 }
 
-function machineDetail(machine) {
-  const memory = machine.memory;
-  return [
-    "anon " + machineSize(memory.anon),
-    "cache " + machineSize(memory.cache),
-    "kernel " + machineSize(memory.kernel),
-    machine.processes + " procesos",
-  ].join(" · ");
-}
-
 function decimal(value) {
   return value.toFixed(1).replace(".", ",").replace(",0", "");
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { machineSize, machineRatio, machineDetail };
+  module.exports = { machineSize, machineRatio };
 }

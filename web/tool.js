@@ -14,7 +14,7 @@ function describeTool(name, raw, workspace) {
   if (name === "search") return { dir: "", text: args.query || "" };
   if (name === "fetch") return { dir: "", text: args.url || "" };
   if (name === "browse") {
-    return { dir: "", text: args.url || `${(args.steps || []).length} pasos` };
+    return { dir: "", text: args.url || `${(args.steps || []).length} Pasos` };
   }
   return { dir: "", text: JSON.stringify(args) };
 }

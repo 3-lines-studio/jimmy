@@ -1719,3 +1719,165 @@ main {
     display: none;
   }
 }
+
+/* Agenda */
+
+#agenda {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  margin: var(--s2) var(--s2) 0;
+  height: 32px;
+  padding: 0 var(--s3);
+  border-radius: var(--r-full);
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+#agenda:hover {
+  background: var(--hover);
+}
+
+#agenda svg {
+  flex: none;
+  color: var(--muted);
+}
+
+#agenda-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--s1);
+  border-radius: var(--r-full);
+  background: var(--err);
+  color: var(--bg);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.pane.agenda {
+  overflow-y: auto;
+  padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s4) var(--s6);
+}
+
+.agenda-inner {
+  max-width: var(--measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.agenda-empty {
+  padding: var(--s6) 0;
+  color: var(--faint);
+  font-size: 13px;
+  text-align: center;
+}
+
+.task {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.task.open {
+  border-color: var(--line-strong);
+}
+
+.task-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  padding: var(--s3);
+  cursor: pointer;
+}
+
+.task-name {
+  font-weight: 600;
+}
+
+.task-when {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.task-last {
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-head .icon-btn {
+  margin-left: auto;
+}
+
+.task .pill {
+  background: var(--raised);
+  color: var(--muted);
+}
+
+.task-runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.run {
+  display: flex;
+  gap: var(--s3);
+}
+
+.run-time {
+  flex: none;
+  width: 72px;
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.run-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.run-text p {
+  margin: 0 0 var(--s2);
+}
+
+.run-text p:last-child {
+  margin-bottom: 0;
+}
+
+.run.failed .run-text {
+  color: var(--err);
+}
+
+.run-empty {
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+@media (min-width: 701px) {
+  .task-when {
+    margin-left: var(--s2);
+  }
+
+  .task-last {
+    margin-left: auto;
+  }
+
+  .task-head .icon-btn {
+    margin-left: 0;
+  }
+}

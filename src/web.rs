@@ -15,10 +15,11 @@ use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
-use crate::transport::{Msg, Session, Transport};
+use crate::schedule;
+use crate::transport::Null;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ const THEME: &str = include_str!("../web/theme.css");
 const STYLE: &str = include_str!("../web/style.css");
 const APP: &str = include_str!("../web/app.js");
 const FILES: &str = include_str!("../web/files.js");
+const AGENDA: &str = include_str!("../web/agenda.js");
 const PROJECT: &str = include_str!("../web/project.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const MACHINE: &str = include_str!("../web/machine.js");
@@ -51,6 +53,7 @@ pub struct Web {
     agent: Agent,
     auth: Auth,
     previews: Arc<Previews>,
+    agenda: Sender<String>,
 }
 
 impl Web {
@@ -61,6 +64,7 @@ impl Web {
         agent: Agent,
         auth: Auth,
         previews: Arc<Previews>,
+        agenda: Sender<String>,
     ) -> Arc<Web> {
         Arc::new(Web {
             root,
@@ -69,6 +73,7 @@ impl Web {
             agent,
             auth,
             previews,
+            agenda,
         })
     }
 
@@ -130,6 +135,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
         ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
         ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
+        ("GET", "/agenda.js") => asset(stream, JS, AGENDA.as_bytes()),
         ("GET", "/project.js") => asset(stream, JS, PROJECT.as_bytes()),
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
         ("GET", "/machine.js") => asset(stream, JS, MACHINE.as_bytes()),
@@ -160,6 +166,9 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/api/raw") => raw(web, &request, stream),
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
+        ("GET", "/api/agenda") => agenda(web, &request, stream),
+        ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
+        ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
         ("POST", "/api/preview/stop") => stop_preview(web, &request, stream),
@@ -248,6 +257,7 @@ fn versioned(page: &str) -> String {
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/files.js", &format!("/files.js?v={version}"))
+        .replace("/agenda.js", &format!("/agenda.js?v={version}"))
         .replace("/project.js", &format!("/project.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
@@ -622,7 +632,7 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
     let web = web.clone();
     std::thread::spawn(move || {
-        if let Err(error) = web.agent.respond(&Silent, &session, &text, images, &user) {
+        if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
     });
@@ -785,31 +795,63 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
-/// The answer of a web conversation is its own log, which the browser is
-/// already watching, so there is nobody to hand it to here.
-struct Silent;
+/// Cuántas corridas de cada tarea se le muestran a la web: el archivo guarda
+/// muchas más, la vista muestra las últimas.
+const SHOWN: usize = 5;
 
-impl Transport for Silent {
-    fn parse_target(&self, key: &str) -> Result<Session, String> {
-        crate::session_from_key(key).ok_or_else(|| "clave de conversación inválida".into())
+fn agenda_dir(web: &Web) -> PathBuf {
+    web.workspace.join("state").join("schedule")
+}
+
+fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
     }
+    let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web))
+        .into_iter()
+        .map(|entry| {
+            let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
+            serde_json::json!({
+                "name": entry.name,
+                "when": entry.task.when,
+                "at": entry.task.at,
+                "every": entry.task.every,
+                "target": entry.task.target,
+                "silent": entry.task.silent,
+                "paused": entry.task.paused,
+                "runs": shown,
+            })
+        })
+        .collect();
+    http::send_json(stream, 200, &serde_json::json!({ "tasks": tasks }))
+}
 
-    fn progress(&self, _: &Session) -> Option<Msg> {
-        None
+fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
     }
-
-    fn answer(&self, _: &Session, _: Option<Msg>, _: &str) {}
-
-    fn note(&self, _: &Session, _: &str) {}
-
-    fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
-
-    fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
-        Err("la web no baja archivos".into())
+    let name = request.field("name").unwrap_or_default();
+    if !schedule::list(&agenda_dir(web))
+        .iter()
+        .any(|task| task.name == name)
+    {
+        return http::send_error(stream, 404, "esa tarea no existe");
     }
+    if web.agenda.send(name).is_err() {
+        return http::send_error(stream, 500, "el scheduler no está corriendo");
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "queued": true }))
+}
 
-    fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
-        Err("la web no manda archivos".into())
+fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("name").unwrap_or_default();
+    let paused = request.flag("paused");
+    match schedule::set_paused(&agenda_dir(web), &name, paused) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "paused": paused })),
+        Err(e) => http::send_error(stream, 400, &e),
     }
 }
 
@@ -936,6 +978,7 @@ mod tests {
         port: u16,
         bus: Arc<Bus>,
         previews: Arc<crate::preview::Previews>,
+        agenda: std::sync::mpsc::Receiver<String>,
     }
 
     fn start(tag: &str) -> Server {
@@ -989,6 +1032,7 @@ done
         let bus = Bus::new();
         let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None, dev);
         let previews = crate::preview::Previews::new(&workspace);
+        let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
             root.clone(),
             workspace.clone(),
@@ -996,6 +1040,7 @@ done
             agent,
             auth,
             previews.clone(),
+            agenda,
         );
         let listener = listen(0).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1006,6 +1051,7 @@ done
             port,
             bus,
             previews,
+            agenda: runner,
         }
     }
 
@@ -1169,6 +1215,10 @@ done
         let project = get(server.port, "/project.js", None);
         assert!(project.starts_with("HTTP/1.1 200"), "{project}");
         assert!(project.contains("function projectColor"), "{project}");
+
+        let agenda = get(server.port, "/agenda.js", None);
+        assert!(agenda.starts_with("HTTP/1.1 200"), "{agenda}");
+        assert!(agenda.contains("function createAgendaTab"), "{agenda}");
 
         let icon = get(server.port, "/icon.svg", None);
         assert!(icon.contains("image/svg+xml"), "{icon}");
@@ -1335,6 +1385,14 @@ done
     fn everything_but_logging_in_needs_a_session() {
         let server = start("auth");
         assert!(get(server.port, "/api/state", None).starts_with("HTTP/1.1 401"));
+        assert!(get(server.port, "/api/agenda", None).starts_with("HTTP/1.1 401"));
+        assert!(post(server.port, "/api/agenda/run", r#"{"name":"x"}"#).starts_with("HTTP/1.1 401"));
+        assert!(post(
+            server.port,
+            "/api/agenda/pause",
+            r#"{"name":"x","paused":true}"#
+        )
+        .starts_with("HTTP/1.1 401"));
         let without = post(server.port, "/api/login", r#"{"email":"otro@ejemplo.com"}"#);
         assert!(without.starts_with("HTTP/1.1 200"), "{without}");
         assert!(
@@ -2301,5 +2359,117 @@ done
                 );
             }
         }
+    }
+
+    fn agenda_file(server: &Server, name: &str, body: &str) {
+        let dir = server.workspace.join("state/schedule");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.toml")), body).unwrap();
+    }
+
+    #[test]
+    fn the_agenda_lists_tasks_with_their_last_runs() {
+        let server = start("agenda");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        agenda_file(
+            &server,
+            "memoria",
+            "at = \"05:00\"\ntarget = \"7469057930\"\nprompt = \"reportá\"\n",
+        );
+        agenda_file(
+            &server,
+            "perezosa",
+            "every = \"6h\"\nprompt = \"p\"\npaused = true\n",
+        );
+        let runs: String = (0..7)
+            .map(|i| {
+                format!(
+                    "{{\"ts\":{i},\"date\":\"2026-09-14\",\"ms\":{},\"ok\":true,\"text\":\"corrida {i}\"}}\n",
+                    i * 10
+                )
+            })
+            .collect();
+        std::fs::write(server.workspace.join("state/schedule/memoria.jsonl"), runs).unwrap();
+
+        let response = get(server.port, "/api/agenda", Some(&cookie));
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = json_in(&response);
+        let tasks = body["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["name"], "memoria");
+        assert_eq!(tasks[0]["at"], "05:00");
+        assert_eq!(tasks[0]["target"], "7469057930");
+        let runs = tasks[0]["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 5, "sólo se muestran las últimas cinco");
+        assert_eq!(runs[0]["text"], "corrida 6");
+        assert_eq!(runs[4]["text"], "corrida 2");
+        assert_eq!(tasks[1]["name"], "perezosa");
+        assert_eq!(tasks[1]["paused"], true);
+        assert!(tasks[1]["runs"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn running_a_task_hands_its_name_to_the_scheduler() {
+        let server = start("agenda-run");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        agenda_file(&server, "memoria", "at = \"05:00\"\nprompt = \"p\"\n");
+
+        let queued = post_with(
+            server.port,
+            "/api/agenda/run",
+            r#"{"name":"memoria"}"#,
+            Some(&cookie),
+        );
+        assert!(queued.starts_with("HTTP/1.1 200"), "{queued}");
+        assert_eq!(
+            server.agenda.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "memoria"
+        );
+
+        let missing = post_with(
+            server.port,
+            "/api/agenda/run",
+            r#"{"name":"nada"}"#,
+            Some(&cookie),
+        );
+        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn pausing_a_task_from_the_web_keeps_the_rest_of_the_file() {
+        let server = start("agenda-pause");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        agenda_file(
+            &server,
+            "memoria",
+            "at = \"05:00\"\ntarget = \"123\"\nprompt = \"reportá\"\nsilent = true\n",
+        );
+
+        let paused = post_with(
+            server.port,
+            "/api/agenda/pause",
+            r#"{"name":"memoria","paused":true}"#,
+            Some(&cookie),
+        );
+        assert!(paused.starts_with("HTTP/1.1 200"), "{paused}");
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["paused"], true);
+        assert_eq!(body["tasks"][0]["silent"], true);
+        assert_eq!(body["tasks"][0]["at"], "05:00");
+
+        let resumed = post_with(
+            server.port,
+            "/api/agenda/pause",
+            r#"{"name":"memoria","paused":false}"#,
+            Some(&cookie),
+        );
+        assert!(resumed.starts_with("HTTP/1.1 200"), "{resumed}");
+        assert_eq!(
+            json_in(&get(server.port, "/api/agenda", Some(&cookie)))["tasks"][0]["paused"],
+            false
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 }

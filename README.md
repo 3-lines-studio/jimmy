@@ -92,35 +92,47 @@ what another jimmy learned.
 
 ## Scheduled tasks
 
-`$JIMMY_WORKSPACE/state/schedule.toml` holds tasks the agent runs on a clock. A
-thread wakes every 60 seconds, re-reads the file, and runs whatever is due.
-Each run is a fresh agent run in a clean context — the system prompt and the
-task's `prompt`, nothing else — and the reply is sent to the task's chat. Runs
-are not written to the chat transcript.
+`$JIMMY_WORKSPACE/state/schedule/` holds one file per task. A thread wakes
+every 60 seconds, reads the directory, and runs whatever is due. Each run is a
+fresh agent run in a clean context — the system prompt and the task's `prompt`,
+nothing else — and runs are not written to the chat transcript.
 
 ```toml
-[[task]]
-name = "morning-report"
-chat = 123456789
+# state/schedule/morning-report.toml
 at = "09:00"
+target = "123456789"
 prompt = "Summarize what is still pending."
 ```
 
+The file name is the task name. `target` (or `chat`, its older name) is
+optional: with it the reply goes to that chat; without it the run only leaves
+its result in the history.
+
+Every run appends a line to `<task>.jsonl`, next to the file: time, duration and
+the reply. The last twenty are kept. That history is also the state — a task is
+due based on its own runs — so nothing else is written on its behalf.
+
 Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
 "HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
-Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is removed
-from the file once it fires; a daily task fires once per local date; an interval
-task fires once the interval has elapsed since its last run, so a restart
-catches up on a missed run. A task that fails reports the error to its chat,
-and each task is capped at 6 runs per hour.
+Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task keeps its
+file after it fires, so its result is still there to read; a daily task fires
+once per local date; an interval task fires once the interval has elapsed since
+its last run, so a restart catches up on a missed run. A task that fails records
+the error, and each task is capped at 6 runs per hour. `paused = true` keeps the
+file and stops the clock.
+
+The **Agenda** tab of the web frontend lists the tasks with their last runs, and
+runs one on the spot.
 
 A task with `silent = true` only speaks when it has something to say: it skips
 the progress placeholder and an empty reply is not sent (the usual `✅ listo`
 fallback does not apply). It is meant for watchdogs that should report failures
 and stay quiet otherwise. Anything the reply does contain is sent as usual.
 
-The file is meant to be edited by the agent: ask it to schedule something and it
-appends a block. The tick picks it up without a restart.
+The directory is meant to be edited by the agent: ask it to schedule something
+and it writes a file. The tick picks it up without a restart. An older single
+`state/schedule.toml` is migrated on the first boot and left beside it as
+`schedule.toml.old`.
 
 ## Config
 

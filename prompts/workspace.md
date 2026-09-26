@@ -6,7 +6,7 @@ Tu mundo es el workspace, en la ruta absoluta del bloque `## Entorno de ejecuci�
 - `projects/` — una carpeta por trabajo. Puede ser código o no: un repo, un documento, una presentación, un dataset. Si es un clon, el nombre es el del repo.
 - `files/` — archivos que te pasó {{usuario}} o que descargaste y hay que conservar.
 - `scratch/` — temporal y experimentos. Se puede borrar en cualquier momento.
-- `state/` — estado del scheduler (`schedule.toml`), ver `## Agenda`.
+- `state/` — estado del scheduler (`schedule/`, una carpeta con una tarea por archivo), ver `## Agenda`.
 
 Reglas:
 

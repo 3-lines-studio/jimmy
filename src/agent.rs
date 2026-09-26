@@ -327,6 +327,7 @@ impl Agent {
         entries.push(entry);
 
         self.execute(transport, session, history, entries, Some(dir), false)
+            .map(|_| ())
     }
 
     pub(crate) fn local_compact(
@@ -385,6 +386,7 @@ impl Agent {
             Some(dir.to_path_buf()),
             false,
         )
+        .map(|_| ())
     }
 
     pub fn run_task(
@@ -393,7 +395,7 @@ impl Agent {
         session: &Session,
         prompt: &str,
         silent: bool,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
         let user = Message {
@@ -419,7 +421,7 @@ impl Agent {
         mut entries: Vec<Entry>,
         dir: Option<PathBuf>,
         silent: bool,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let mut tools = axe::tui::build_tools(&self.cwd);
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
@@ -509,7 +511,7 @@ impl Agent {
                     let fallback = if silent { None } else { Some("✅ listo") };
                     let reply = answer(&end.messages[history.len()..], fallback);
                     transport.answer(session, status, &reply);
-                    return Ok(());
+                    return Ok(reply);
                 }
                 Outcome::Cancelled => {
                     save(&dir, &mut entries)?;

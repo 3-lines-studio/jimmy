@@ -27,6 +27,7 @@ mod worker;
 
 use agent::Agent;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use transport::slack;
@@ -179,7 +180,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    serve_web(&config, agent.bus(), agent.clone());
     let mut source = match source_from_env() {
         Ok(source) => source,
         Err(e) => {
@@ -188,7 +188,8 @@ fn main() {
         }
     };
     let workspace = PathBuf::from(config.workspace.clone());
-    schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    serve_web(&config, agent.bus(), agent.clone(), agenda);
     let mut reaper = reap::Reaper::default();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(60));
@@ -342,7 +343,7 @@ fn usage() -> i32 {
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
 /// always was.
-fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
+fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent, agenda: Sender<String>) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
@@ -368,6 +369,7 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent) {
         agent,
         auth,
         previews.clone(),
+        agenda,
     );
     let listener = match web::listen(port) {
         Ok(listener) => listener,

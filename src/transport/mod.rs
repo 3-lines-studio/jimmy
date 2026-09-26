@@ -62,3 +62,32 @@ pub trait Transport: Send + Sync {
 pub trait EventSource: Send {
     fn recv(&mut self) -> Result<Vec<Event>, String>;
 }
+
+/// Un transporte que no habla con nadie: el turno corre, pero no hay dónde
+/// contestar. Lo usan las tareas de la agenda que no tienen destino y la web,
+/// que lee el log en vez de esperar un mensaje.
+pub struct Null;
+
+impl Transport for Null {
+    fn parse_target(&self, key: &str) -> Result<Session, String> {
+        crate::session_from_key(key).ok_or_else(|| "clave de conversación inválida".into())
+    }
+
+    fn progress(&self, _: &Session) -> Option<Msg> {
+        None
+    }
+
+    fn answer(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+    fn note(&self, _: &Session, _: &str) {}
+
+    fn fail(&self, _: &Session, _: Option<Msg>, _: &str) {}
+
+    fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+        Err("este transporte no baja archivos".into())
+    }
+
+    fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+        Err("este transporte no manda archivos".into())
+    }
+}

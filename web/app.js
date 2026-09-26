@@ -72,6 +72,7 @@ const VISIBLE = 10;
 
 const projectsEl = document.getElementById("projects");
 const previewsEl = document.getElementById("previews");
+const machineEl = document.getElementById("machine");
 const tabsEl = document.getElementById("tabs");
 const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
@@ -235,6 +236,7 @@ async function refresh() {
     runSearch();
   }
   renderPreviews();
+  renderMachine();
   renderTabs();
   renderActions();
   updateTitle();
@@ -274,6 +276,42 @@ function renderPreviews() {
   const previews = state.previews || [];
   previewsEl.hidden = previews.length === 0;
   previewsEl.replaceChildren(...previews.map(previewEl));
+}
+
+function machineRow(label, value, title) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.title = title;
+  const name = document.createElement("span");
+  name.className = "label";
+  name.textContent = label;
+  const amount = document.createElement("span");
+  amount.className = "value";
+  amount.textContent = value;
+  row.append(name, amount);
+  return row;
+}
+
+function renderMachine() {
+  const machine = state.machine;
+  machineEl.hidden = !machine;
+  if (!machine) return;
+  const detail = document.createElement("div");
+  detail.className = "detail";
+  detail.textContent = machineDetail(machine);
+  machineEl.replaceChildren(
+    machineRow(
+      "RAM",
+      machineRatio(machine.memory.used, machine.memory.total),
+      "la memoria del contenedor, cache y kernel incluidos",
+    ),
+    machineRow(
+      "disco",
+      machineRatio(machine.disk.used, machine.disk.total),
+      "el volumen " + state.workspace,
+    ),
+    detail,
+  );
 }
 
 function projectEl(project) {

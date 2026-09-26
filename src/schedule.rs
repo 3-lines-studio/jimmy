@@ -1,6 +1,7 @@
 use crate::agent::Agent;
 use crate::transport::{Null, Session, Transport};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -43,6 +44,7 @@ pub struct Entry {
     pub name: String,
     pub task: Task,
     pub runs: Vec<Run>,
+    pub unread: usize,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -50,6 +52,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 pub fn list(dir: &Path) -> Vec<Entry> {
+    let seen = read_seen(dir);
     let mut entries: Vec<Entry> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -59,11 +62,52 @@ pub fn list(dir: &Path) -> Vec<Entry> {
             let name = entry.path().file_stem()?.to_string_lossy().to_string();
             let task = read_task(&entry.path())?;
             let runs = read_runs(dir, &name);
-            Some(Entry { name, task, runs })
+            let last_seen = seen.get(&name).copied().unwrap_or(0);
+            let unread = runs.iter().filter(|run| run.ts > last_seen).count();
+            Some(Entry {
+                name,
+                task,
+                runs,
+                unread,
+            })
         })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
+}
+
+/// Marca leída la última corrida de una tarea, o la de todas. Lo leído se
+/// guarda por tarea como el momento: todo lo que llegó después es nuevo.
+pub fn mark_read(dir: &Path, name: Option<&str>) -> Result<(), String> {
+    let mut seen = read_seen(dir);
+    let names: Vec<String> = match name {
+        Some(name) => vec![name.to_string()],
+        None => list(dir).into_iter().map(|entry| entry.name).collect(),
+    };
+    for name in names {
+        let runs = read_runs(dir, &name);
+        if runs.is_empty() {
+            continue;
+        }
+        seen.insert(name, last_run(&runs));
+    }
+    write_seen(dir, &seen)
+}
+
+fn seen_path(dir: &Path) -> PathBuf {
+    dir.join("read.json")
+}
+
+fn read_seen(dir: &Path) -> HashMap<String, i64> {
+    std::fs::read_to_string(seen_path(dir))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_seen(dir: &Path, seen: &HashMap<String, i64>) -> Result<(), String> {
+    let text = serde_json::to_string(seen).map_err(|e| e.to_string())?;
+    axe::atomic_write(&seen_path(dir), text.as_bytes()).map_err(|e| e.to_string())
 }
 
 pub fn set_paused(dir: &Path, name: &str, paused: bool) -> Result<(), String> {
@@ -393,6 +437,7 @@ mod tests {
             name: name.into(),
             task: task(None, Some("09:00"), None),
             runs: Vec::new(),
+            unread: 0,
         }
     }
 
@@ -529,6 +574,39 @@ mod tests {
         let (_, session, warning) = outbound(&Reject, &entry("limpieza"));
         assert_eq!(session.key(), "limpieza");
         assert!(warning.is_none());
+    }
+
+    fn unread_of(dir: &Path, name: &str) -> usize {
+        list(dir)
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .unwrap()
+            .unread
+    }
+
+    #[test]
+    fn what_arrived_after_the_last_look_is_new() {
+        let dir = scratch("unread");
+        std::fs::write(dir.join("t.toml"), "at = \"09:00\"\nprompt = \"p\"\n").unwrap();
+        std::fs::write(dir.join("quieta.toml"), "at = \"09:00\"\nprompt = \"p\"\n").unwrap();
+        for ts in [100, 200, 300] {
+            record(&dir, "t", run(ts, "2026-09-14"));
+        }
+        assert_eq!(unread_of(&dir, "t"), 3);
+        assert_eq!(unread_of(&dir, "quieta"), 0, "no hay nada nuevo que mirar");
+
+        mark_read(&dir, Some("t")).unwrap();
+        assert_eq!(unread_of(&dir, "t"), 0);
+
+        record(&dir, "t", run(400, "2026-09-14"));
+        assert_eq!(unread_of(&dir, "t"), 1);
+
+        record(&dir, "quieta", run(500, "2026-09-14"));
+        assert_eq!(unread_of(&dir, "quieta"), 1);
+        mark_read(&dir, None).unwrap();
+        assert_eq!(unread_of(&dir, "t"), 0);
+        assert_eq!(unread_of(&dir, "quieta"), 0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

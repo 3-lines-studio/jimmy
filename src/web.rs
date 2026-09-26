@@ -169,6 +169,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/api/agenda") => agenda(web, &request, stream),
         ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
+        ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
         ("POST", "/api/preview/stop") => stop_preview(web, &request, stream),
@@ -819,6 +820,7 @@ fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
                 "target": entry.task.target,
                 "silent": entry.task.silent,
                 "paused": entry.task.paused,
+                "unread": entry.unread,
                 "runs": shown,
             })
         })
@@ -851,6 +853,18 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     let paused = request.flag("paused");
     match schedule::set_paused(&agenda_dir(web), &name, paused) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "paused": paused })),
+        Err(e) => http::send_error(stream, 400, &e),
+    }
+}
+
+/// Marca leída una tarea, o todas si no viene el nombre.
+fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("name");
+    match schedule::mark_read(&agenda_dir(web), name.as_deref()) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "read": true })),
         Err(e) => http::send_error(stream, 400, &e),
     }
 }
@@ -1393,6 +1407,9 @@ done
             r#"{"name":"x","paused":true}"#
         )
         .starts_with("HTTP/1.1 401"));
+        assert!(
+            post(server.port, "/api/agenda/read", r#"{"name":"x"}"#).starts_with("HTTP/1.1 401")
+        );
         let without = post(server.port, "/api/login", r#"{"email":"otro@ejemplo.com"}"#);
         assert!(without.starts_with("HTTP/1.1 200"), "{without}");
         assert!(
@@ -2381,7 +2398,7 @@ done
             "perezosa",
             "every = \"6h\"\nprompt = \"p\"\npaused = true\n",
         );
-        let runs: String = (0..7)
+        let runs: String = (1..8)
             .map(|i| {
                 format!(
                     "{{\"ts\":{i},\"date\":\"2026-09-14\",\"ms\":{},\"ok\":true,\"text\":\"corrida {i}\"}}\n",
@@ -2401,11 +2418,31 @@ done
         assert_eq!(tasks[0]["target"], "7469057930");
         let runs = tasks[0]["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 5, "sólo se muestran las últimas cinco");
-        assert_eq!(runs[0]["text"], "corrida 6");
-        assert_eq!(runs[4]["text"], "corrida 2");
+        assert_eq!(runs[0]["text"], "corrida 7");
+        assert_eq!(runs[4]["text"], "corrida 3");
         assert_eq!(tasks[1]["name"], "perezosa");
         assert_eq!(tasks[1]["paused"], true);
         assert!(tasks[1]["runs"].as_array().unwrap().is_empty());
+        assert_eq!(tasks[0]["unread"], 7, "nada leído todavía");
+
+        let read = post_with(
+            server.port,
+            "/api/agenda/read",
+            r#"{"name":"memoria"}"#,
+            Some(&cookie),
+        );
+        assert!(read.starts_with("HTTP/1.1 200"), "{read}");
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["unread"], 0);
+
+        let path = server.workspace.join("state/schedule/memoria.jsonl");
+        let mut lines = std::fs::read_to_string(&path).unwrap();
+        lines.push_str(
+            "{\"ts\":99,\"date\":\"2026-09-15\",\"ms\":5,\"ok\":true,\"text\":\"otra\"}\n",
+        );
+        std::fs::write(&path, lines).unwrap();
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["unread"], 1, "la que llegó después cuenta");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

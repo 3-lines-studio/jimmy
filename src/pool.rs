@@ -1,9 +1,10 @@
-//! One worker process per conversation, spawned on demand and kept alive
-//! between turns.
+//! One worker process per turn, spawned when the turn starts and gone when it
+//! ends.
 //!
 //! The pool owns the children and the JSONL pipes; a turn is a command in and
-//! events out until one of them is terminal. A worker that dies is forgotten,
-//! so the next turn spawns a fresh one.
+//! events out until one of them is terminal. Nothing survives a turn, so the
+//! pool is a record of what is running right now and never a pile of idle
+//! processes.
 
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
@@ -12,7 +13,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command as Process, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -29,8 +30,8 @@ pub enum Turn {
 pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
+    key: String,
     pid: i32,
-    busy: AtomicBool,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     events: Mutex<Receiver<Event>>,
@@ -52,21 +53,21 @@ impl Pool {
     }
 
     pub fn turn(
-        self: &Arc<Self>,
+        &self,
         session: &Session,
         conversation: &Conversation,
         command: Command,
         on_event: OnEvent,
     ) -> Result<Turn, String> {
-        let worker = self.ensure(session, conversation)?;
-        worker.send(&command)?;
-        worker.busy.store(true, Ordering::SeqCst);
-        let result = self.run_turn(&worker, on_event);
-        worker.busy.store(false, Ordering::SeqCst);
+        let worker = self.spawn(session, conversation)?;
+        let result = worker
+            .send(&command)
+            .and_then(|_| self.pump(&worker, on_event));
+        self.retire(&worker);
         result
     }
 
-    fn run_turn(&self, worker: &Arc<Worker>, on_event: OnEvent) -> Result<Turn, String> {
+    fn pump(&self, worker: &Arc<Worker>, on_event: OnEvent) -> Result<Turn, String> {
         loop {
             let event = worker.receive()?;
             if !matches!(event, Event::Ready) {
@@ -74,14 +75,8 @@ impl Pool {
             }
             match event {
                 Event::Ready => continue,
-                Event::Done { text } => {
-                    worker.busy.store(false, Ordering::SeqCst);
-                    return Ok(Turn::Answer(text));
-                }
-                Event::Error { message } => {
-                    worker.busy.store(false, Ordering::SeqCst);
-                    return Ok(Turn::Failed(message));
-                }
+                Event::Done { text } => return Ok(Turn::Answer(text)),
+                Event::Error { message } => return Ok(Turn::Failed(message)),
                 _ => continue,
             }
         }
@@ -96,39 +91,28 @@ impl Pool {
         }
     }
 
-    /// Baja el worker de esa conversación y espera a que muera, para que no
-    /// siga escribiendo en una carpeta que estamos por borrar.
+    /// Baja el worker de esa conversación a la fuerza y espera a que muera,
+    /// para que no siga escribiendo en una carpeta que estamos por borrar.
     pub fn kill(&self, key: &str) {
         let worker = self.workers.lock().unwrap().get(key).cloned();
         let Some(worker) = worker else {
             return;
         };
-        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
-        if let Ok(mut child) = worker.child.lock() {
-            let _ = child.wait();
+        if !self.forget(&worker) {
+            return;
         }
-        self.forget(key, worker.pid);
+        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+        wait(&worker);
     }
 
     pub fn running(&self, key: &str) -> bool {
-        self.workers
-            .lock()
-            .unwrap()
-            .get(key)
-            .is_some_and(|worker| worker.busy.load(Ordering::SeqCst))
+        self.workers.lock().unwrap().contains_key(key)
     }
 
-    fn ensure(
-        self: &Arc<Self>,
-        session: &Session,
-        conversation: &Conversation,
-    ) -> Result<Arc<Worker>, String> {
+    /// Un proceso nuevo por turno: arranca en milisegundos y rearma su contexto
+    /// desde el transcript, así que no hay nada que guardar entre turnos.
+    fn spawn(&self, session: &Session, conversation: &Conversation) -> Result<Arc<Worker>, String> {
         let key = session.key();
-        let mut workers = self.workers.lock().unwrap();
-        if let Some(worker) = workers.get(&key) {
-            return Ok(worker.clone());
-        }
-
         let exe = match &self.exe {
             Some(exe) => exe.clone(),
             None => std::env::current_exe().map_err(|e| e.to_string())?,
@@ -156,27 +140,40 @@ impl Pool {
         register(pid);
         let (sender, receiver) = mpsc::channel();
         let worker = Arc::new(Worker {
+            key: key.clone(),
             pid,
-            busy: AtomicBool::new(false),
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
             events: Mutex::new(receiver),
         });
-        workers.insert(key.clone(), worker.clone());
-        drop(workers);
+        self.workers.lock().unwrap().insert(key, worker.clone());
 
-        spawn_reader(self.clone(), key, pid, stdout, sender);
+        spawn_reader(stdout, sender);
         Ok(worker)
     }
 
-    fn forget(&self, key: &str, pid: i32) -> Option<Arc<Worker>> {
-        let mut workers = self.workers.lock().unwrap();
-        if !workers.get(key).is_some_and(|worker| worker.pid == pid) {
-            return None;
+    /// Lo que terminó su turno se saca del registro y se le pide que se vaya:
+    /// muere por su cuenta, con el marcador del turno ya cerrado. El que ya se
+    /// había ido antes no se toca dos veces.
+    fn retire(&self, worker: &Arc<Worker>) {
+        if !self.forget(worker) {
+            return;
         }
-        let worker = workers.remove(key);
-        unregister(pid);
-        worker
+        let _ = worker.send(&Command::Shutdown);
+        wait(worker);
+    }
+
+    fn forget(&self, worker: &Arc<Worker>) -> bool {
+        let mut workers = self.workers.lock().unwrap();
+        if !workers
+            .get(&worker.key)
+            .is_some_and(|it| it.pid == worker.pid)
+        {
+            return false;
+        }
+        workers.remove(&worker.key);
+        unregister(worker.pid);
+        true
     }
 }
 
@@ -200,13 +197,13 @@ impl Worker {
     }
 }
 
-fn spawn_reader(
-    pool: Arc<Pool>,
-    key: String,
-    pid: i32,
-    stdout: ChildStdout,
-    sender: Sender<Event>,
-) {
+fn wait(worker: &Worker) {
+    if let Ok(mut child) = worker.child.lock() {
+        let _ = child.wait();
+    }
+}
+
+fn spawn_reader(stdout: ChildStdout, sender: Sender<Event>) {
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else {
@@ -217,11 +214,6 @@ fn spawn_reader(
             };
             if sender.send(event).is_err() {
                 break;
-            }
-        }
-        if let Some(worker) = pool.forget(&key, pid) {
-            if let Ok(mut child) = worker.child.lock() {
-                let _ = child.wait();
             }
         }
     });
@@ -259,13 +251,26 @@ pub fn kill_all() {
 mod tests {
     use super::*;
     use crate::protocol::Command;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
+    /// El archivo lo escribe un proceso hijo: si lo escribiera éste, el fork de
+    /// cualquier otro test heredaría su descriptor y el exec daría «Text file
+    /// busy».
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut writer = Process::new("sh")
+            .arg("-c")
+            .arg(format!("cat > {p} && chmod 0755 {p}", p = path.display()))
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("#!/bin/sh\n{body}").as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
         path
     }
 
@@ -278,18 +283,6 @@ mod tests {
             title: None,
             read_only: true,
         }
-    }
-
-    /// El olvido de un worker muerto pasa en el hilo que lee su salida, así que
-    /// hay que esperarlo.
-    fn eventually(mut ready: impl FnMut() -> bool) -> bool {
-        for _ in 0..200 {
-            if ready() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        ready()
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -327,13 +320,98 @@ done
                 Turn::Failed(message) => panic!("esperaba respuesta, no {message}"),
             }
         }
-        assert_eq!(pool.workers.lock().unwrap().len(), 1);
-        pool.kill("test");
+        assert!(pool.workers.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_worker_that_dies_is_forgotten() {
+    fn every_turn_gets_its_own_worker() {
+        let dir = scratch("fresh");
+        let exe = script(
+            &dir,
+            "worker.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  printf '{\"event\":\"done\",\"text\":\"%s\"}\\n' \"$$\"
+done
+",
+        );
+        let pool = Pool::new(Vec::new(), Some(exe));
+        let session = Session::channel("test");
+        let conversation = conversation("../workspace");
+        let mut pids = Vec::new();
+        for _ in 0..2 {
+            match pool
+                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .unwrap()
+            {
+                Turn::Answer(text) => pids.push(text),
+                Turn::Failed(message) => panic!("esperaba respuesta, no {message}"),
+            }
+        }
+        assert_ne!(pids[0], pids[1]);
+        assert!(pool.workers.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Al worker se le pide que se vaya en vez de matarlo: así alcanza a cerrar
+    /// su marcador de turno antes de morir.
+    #[test]
+    fn a_turn_ends_by_asking_the_worker_to_leave() {
+        let dir = scratch("leave");
+        let left = dir.join("left");
+        let exe = script(
+            &dir,
+            "worker.sh",
+            &format!(
+                "echo '{{\"event\":\"ready\"}}'
+while read -r line; do
+  case \"$line\" in *shutdown*) echo chau > {}; exit 0 ;; esac
+  printf '{{\"event\":\"done\",\"text\":\"listo\"}}\\n'
+done
+",
+                left.display()
+            ),
+        );
+        let pool = Pool::new(Vec::new(), Some(exe));
+        let session = Session::channel("test");
+        let conversation = conversation("../workspace");
+        pool.turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .unwrap();
+        assert!(left.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_worker_is_running_only_during_its_turn() {
+        let dir = scratch("alive");
+        let exe = script(
+            &dir,
+            "worker.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  printf '{\"event\":\"tool_start\",\"id\":\"1\",\"name\":\"bash\",\"args\":\"{}\"}\\n'
+  printf '{\"event\":\"done\",\"text\":\"listo\"}\\n'
+done
+",
+        );
+        let pool = Pool::new(Vec::new(), Some(exe));
+        let session = Session::channel("test");
+        let conversation = conversation("../workspace");
+        let mut seen = false;
+        pool.turn(&session, &conversation, Command::Resume, &mut |_| {
+            seen = pool.running("test");
+        })
+        .unwrap();
+        assert!(seen);
+        assert!(!pool.running("test"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_worker_that_dies_leaves_no_trace() {
         let dir = scratch("dead");
         let exe = script(&dir, "worker.sh", "exit 0\n");
         let pool = Pool::new(Vec::new(), Some(exe));
@@ -342,7 +420,7 @@ done
         assert!(pool
             .turn(&session, &conversation, Command::Resume, &mut |_| {})
             .is_err());
-        assert!(eventually(|| pool.workers.lock().unwrap().is_empty()));
+        assert!(pool.workers.lock().unwrap().is_empty());
         assert!(pool
             .turn(&session, &conversation, Command::Resume, &mut |_| {})
             .is_err());

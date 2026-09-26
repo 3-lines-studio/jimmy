@@ -11,6 +11,7 @@ use crate::conversations;
 use crate::files;
 use crate::http::{self, Request};
 use crate::log::{Log, Window};
+use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
@@ -36,6 +37,7 @@ const APP: &str = include_str!("../web/app.js");
 const FILES: &str = include_str!("../web/files.js");
 const PROJECT: &str = include_str!("../web/project.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
+const MACHINE: &str = include_str!("../web/machine.js");
 const TOOL: &str = include_str!("../web/tool.js");
 const ICON: &str = include_str!("../web/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
@@ -130,6 +132,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
         ("GET", "/project.js") => asset(stream, JS, PROJECT.as_bytes()),
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
+        ("GET", "/machine.js") => asset(stream, JS, MACHINE.as_bytes()),
         ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
@@ -371,6 +374,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
         &serde_json::json!({
             "user": user,
             "workspace": web.workspace.display().to_string(),
+            "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
         }),
@@ -1357,6 +1361,8 @@ done
         assert!(state.contains("\"berti\""), "{state}");
         assert!(state.contains("\"workspace\""), "{state}");
         assert!(state.contains("\"unversioned\":false"), "{state}");
+        assert!(state.contains("\"machine\""), "{state}");
+        assert!(state.contains("\"disk\""), "{state}");
 
         std::fs::write(server.workspace.join("projects/ken/nota.txt"), "x").unwrap();
         state = get(server.port, "/api/state", Some(&cookie));

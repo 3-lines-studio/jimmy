@@ -210,6 +210,29 @@ textarea:focus {
   display: none;
 }
 
+#machine {
+  flex: none;
+  padding: var(--s2) var(--s4) 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#machine .row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+#machine .value {
+  color: var(--text);
+}
+
+#machine .detail {
+  padding-top: var(--s1);
+  color: var(--faint);
+  font-size: 11px;
+}
+
 #sidebar-search .field {
   display: flex;
   align-items: center;

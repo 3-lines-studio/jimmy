@@ -62,8 +62,16 @@ textarea {
   color: var(--text);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--r-sm);
   padding: 6px 10px;
+}
+
+button {
+  border-radius: var(--r-full);
+}
+
+input,
+textarea {
+  border-radius: var(--r-sm);
 }
 
 button {
@@ -246,7 +254,7 @@ textarea:focus {
 
 .preview:hover {
   background: var(--hover);
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
 }
 
 .preview .link {
@@ -337,7 +345,7 @@ textarea:focus {
   gap: var(--s2);
   height: 34px;
   padding: 0 var(--s1) 0 var(--s2);
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
   color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
@@ -439,7 +447,7 @@ textarea:focus {
   width: 26px;
   height: 26px;
   padding: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-full);
   color: var(--faint);
 }
 
@@ -458,6 +466,7 @@ textarea:focus {
   min-width: 0;
   height: 26px;
   padding: 0 var(--s2);
+  border-radius: var(--r-full);
 }
 
 #new-project {
@@ -542,7 +551,7 @@ main {
   width: 38px;
   height: 38px;
   padding: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
   color: var(--muted);
 }
 
@@ -567,7 +576,7 @@ main {
   height: 34px;
   max-width: 240px;
   padding: 0 var(--s1) 0 var(--s3);
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
   color: var(--faint);
   cursor: pointer;
   white-space: nowrap;
@@ -595,7 +604,7 @@ main {
   width: 22px;
   height: 22px;
   padding: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-full);
   color: var(--faint);
 }
 
@@ -624,7 +633,7 @@ main {
   height: 30px;
   padding: 0 var(--s3);
   border-color: var(--line-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
   font-size: 12.5px;
 }
 
@@ -776,7 +785,7 @@ main {
   width: 22px;
   height: 22px;
   padding: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-full);
   color: var(--faint);
   opacity: 0.5;
 }
@@ -1586,6 +1595,7 @@ main {
   white-space: nowrap;
   font-size: 13px;
   text-align: left;
+  border-radius: var(--r-full);
 }
 
 .files-row svg,

@@ -6,6 +6,7 @@ mod conversations;
 mod files;
 mod http;
 mod log;
+mod machine;
 mod mail;
 mod markdown;
 mod media;

@@ -71,6 +71,25 @@ Those commands write one JSON event per run to
 `stats` reads it and appends the memory state to its report: how many facts,
 the syncs, the renders and misses.
 
+### Moving an instance to facts
+
+The binary keeps reading `notes/memory.md` while `notes/memory/` does not exist,
+so an upgrade needs no migration, and changing your mind is one `rm -rf` away.
+Per instance:
+
+1. `jimmy memo migrate` splits `notes/memory.md` into facts, one file per key:
+   keys without a slash to `notes/memory/`, the rest to
+   `notes/projects/<family>.md`.
+2. Fix what landed in the wrong place: a key that names a project without a
+   slash (`paper`) belongs in `notes/projects/paper.md`, and a catch-all entry
+   like `decisiones-vigentes` is worth splitting into its own topics.
+3. `jimmy memo list` to check, then `jimmy memo sync`.
+4. Drop `jimmy memo demote` from that instance's `state/schedule.toml`: the
+   command is gone.
+
+Facts are per instance: the deploy carries the mechanism and the prompt, not
+what another jimmy learned.
+
 ## Scheduled tasks
 
 `$JIMMY_WORKSPACE/state/schedule.toml` holds tasks the agent runs on a clock. A

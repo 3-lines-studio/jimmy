@@ -18,6 +18,8 @@ use std::time::SystemTime;
 
 pub const GENERAL: &str = "general";
 pub const NEW_TITLE: &str = "nueva conversación";
+pub const INBOX: &str = "agenda";
+pub const INBOX_TITLE: &str = "Agenda";
 
 #[derive(Serialize, Deserialize, Default)]
 struct Meta {
@@ -124,6 +126,24 @@ pub fn create(root: &Path, workspace: &Path, project: &str, title: &str) -> Resu
         },
     )?;
     Ok(key)
+}
+
+/// El buzón de la agenda: una conversación de clave fija donde caen las tareas
+/// agendadas que no tienen destino. Se crea sola la primera vez que hace falta.
+pub fn inbox(root: &Path, workspace: &Path) -> Result<Conversation, String> {
+    let dir = chat_dir(root, INBOX);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        write_meta(
+            root,
+            INBOX,
+            &Meta {
+                project: Some(GENERAL.to_string()),
+                title: Some(INBOX_TITLE.to_string()),
+            },
+        )?;
+    }
+    Ok(get(root, workspace, INBOX))
 }
 
 pub fn rename(root: &Path, key: &str, title: &str) -> Result<(), String> {

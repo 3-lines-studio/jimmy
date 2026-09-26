@@ -1,5 +1,9 @@
 use crate::agent::Agent;
-use crate::transport::Transport;
+use crate::bus::Bus;
+use crate::conversations;
+use crate::log::Log;
+use crate::protocol::Event;
+use crate::transport::{Msg, Session, Transport};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,14 +40,10 @@ struct Task {
 }
 
 impl Task {
-    fn target(&self) -> Result<String, String> {
-        if let Some(target) = &self.target {
-            return Ok(target.clone());
-        }
-        if let Some(chat) = self.chat {
-            return Ok(chat.to_string());
-        }
-        Err(format!("la tarea {} no tiene destino", self.name))
+    fn target(&self) -> Option<String> {
+        self.target
+            .clone()
+            .or_else(|| self.chat.map(|chat| chat.to_string()))
     }
 }
 
@@ -65,15 +65,16 @@ struct Run {
     recent: Vec<i64>,
 }
 
-pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) {
+pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, root: PathBuf, workspace: PathBuf) {
     std::thread::spawn(move || {
         let dir = workspace.join("state");
+        let inbox = Inbox::new(agent.bus(), root, workspace);
         let offset = std::env::var("JIMMY_TZ_OFFSET")
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0);
         loop {
-            if let Err(e) = tick(transport.as_ref(), &agent, &dir, offset) {
+            if let Err(e) = tick(transport.as_ref(), &inbox, &agent, &dir, offset) {
                 eprintln!("jimmy: agenda: {e}");
             }
             std::thread::sleep(TICK);
@@ -81,7 +82,13 @@ pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) {
     });
 }
 
-fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Result<(), String> {
+fn tick(
+    transport: &dyn Transport,
+    inbox: &Inbox,
+    agent: &Agent,
+    dir: &Path,
+    offset: i64,
+) -> Result<(), String> {
     let path = dir.join("schedule.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -102,15 +109,21 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Re
         if !due(task, run, now, &date, &time) {
             continue;
         }
-        let session = match task
-            .target()
-            .and_then(|target| transport.parse_target(&target))
-        {
-            Ok(session) => session,
-            Err(e) => {
-                eprintln!("jimmy: agenda: {}: {e}", task.name);
-                continue;
-            }
+        let (transport, session) = match task.target() {
+            Some(target) => match transport.parse_target(&target) {
+                Ok(session) => (transport, session),
+                Err(e) => {
+                    eprintln!("jimmy: agenda: {}: {e}", task.name);
+                    continue;
+                }
+            },
+            None => match inbox.session() {
+                Ok(session) => (inbox as &dyn Transport, session),
+                Err(e) => {
+                    eprintln!("jimmy: agenda: {}: {e}", task.name);
+                    continue;
+                }
+            },
         };
         run.recent.retain(|stamp| now - stamp < HOUR);
         if run.recent.len() >= MAX_RUNS_PER_HOUR {
@@ -146,6 +159,79 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64) -> Re
         std::fs::write(&state_path, text).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// El buzón de la agenda: las tareas sin destino escriben acá. Lo que escribe
+/// se publica al bus, así que queda en el log de esa conversación y la web lo
+/// muestra como cualquier otro mensaje.
+struct Inbox {
+    bus: Arc<Bus>,
+    root: PathBuf,
+    workspace: PathBuf,
+}
+
+impl Inbox {
+    fn new(bus: Arc<Bus>, root: PathBuf, workspace: PathBuf) -> Self {
+        Self {
+            bus,
+            root,
+            workspace,
+        }
+    }
+
+    fn session(&self) -> Result<Session, String> {
+        let conversation = conversations::inbox(&self.root, &self.workspace)?;
+        Ok(Session::channel(conversation.key))
+    }
+
+    fn say(&self, session: &Session, event: Event) {
+        let conversation = conversations::get(&self.root, &self.workspace, &session.key());
+        let log = Log::in_dir(&conversation.dir);
+        self.bus.publish(&conversation.key, &log, &event);
+    }
+}
+
+impl Transport for Inbox {
+    fn parse_target(&self, key: &str) -> Result<Session, String> {
+        crate::session_from_key(key).ok_or_else(|| "clave de conversación inválida".into())
+    }
+
+    fn progress(&self, _: &Session) -> Option<Msg> {
+        None
+    }
+
+    fn answer(&self, session: &Session, _: Option<Msg>, markdown: &str) {
+        if markdown.trim().is_empty() {
+            return;
+        }
+        self.say(
+            session,
+            Event::Assistant {
+                text: markdown.to_string(),
+            },
+        );
+    }
+
+    fn note(&self, session: &Session, text: &str) {
+        self.fail(session, None, text);
+    }
+
+    fn fail(&self, session: &Session, _: Option<Msg>, text: &str) {
+        self.say(
+            session,
+            Event::Error {
+                message: text.to_string(),
+            },
+        );
+    }
+
+    fn download(&self, _: &str) -> Result<(String, Vec<u8>), String> {
+        Err("la agenda no baja archivos".into())
+    }
+
+    fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
+        Err("la agenda no manda archivos".into())
+    }
 }
 
 fn due(task: &Task, run: &Run, now: i64, date: &str, time: &str) -> bool {
@@ -275,11 +361,44 @@ mod tests {
     }
 
     #[test]
-    fn task_target_falls_back_to_chat() {
+    fn task_target_falls_back_to_chat_and_accepts_none() {
         let mut t = task(None, Some("09:00"), None);
-        assert_eq!(t.target().unwrap(), "1");
+        assert_eq!(t.target().as_deref(), Some("1"));
         t.target = Some("C1/1.2".into());
-        assert_eq!(t.target().unwrap(), "C1/1.2");
+        assert_eq!(t.target().as_deref(), Some("C1/1.2"));
+        t.target = None;
+        t.chat = None;
+        assert_eq!(t.target(), None);
+    }
+
+    #[test]
+    fn the_inbox_creates_its_conversation_and_writes_what_it_answers() {
+        let root = std::env::temp_dir().join(format!("jimmy-agenda-{}", crate::random::hex(4)));
+        let workspace = root.join("workspace");
+        let inbox = Inbox::new(Bus::new(), root.clone(), workspace.clone());
+        let session = inbox.session().unwrap();
+        assert_eq!(session.key(), conversations::INBOX);
+        assert_eq!(inbox.session().unwrap().key(), conversations::INBOX);
+        let conversation = conversations::get(&root, &workspace, conversations::INBOX);
+        assert_eq!(
+            conversation.title.as_deref(),
+            Some(conversations::INBOX_TITLE)
+        );
+        assert_eq!(conversation.project, conversations::GENERAL);
+        assert!(!conversation.read_only);
+        inbox.answer(&session, None, "todo en orden");
+        inbox.answer(&session, None, "   ");
+        inbox.fail(&session, None, "⚠️ se rompió");
+        let path = root
+            .join("chats")
+            .join(conversations::INBOX)
+            .join("conversation.jsonl");
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert!(log.contains("todo en orden"), "{log}");
+        assert!(log.contains(r#""event":"assistant""#), "{log}");
+        assert!(log.contains(r#""event":"error""#), "{log}");
+        assert_eq!(log.lines().count(), 2, "{log}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

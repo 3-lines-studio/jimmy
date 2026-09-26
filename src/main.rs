@@ -188,7 +188,12 @@ fn main() {
         }
     };
     let workspace = PathBuf::from(config.workspace.clone());
-    schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    schedule::spawn(
+        transport.clone(),
+        agent.clone(),
+        config.root.clone(),
+        workspace.clone(),
+    );
     let mut reaper = reap::Reaper::default();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(60));

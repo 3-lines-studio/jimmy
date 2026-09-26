@@ -106,6 +106,11 @@ at = "09:00"
 prompt = "Summarize what is still pending."
 ```
 
+`target` (or `chat`, its older name) is optional. A task with no destination
+writes its reply to the agenda inbox instead: a web conversation called
+"Agenda", created on first use, where the web frontend shows it like any other
+message.
+
 Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
 "HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
 Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is removed

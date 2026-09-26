@@ -53,13 +53,13 @@ function icon(name, size = 16) {
   return svg;
 }
 const NOUN = {
-  read: ["archivo", "archivos"],
-  write: ["archivo", "archivos"],
-  edit: ["edición", "ediciones"],
-  bash: ["comando", "comandos"],
-  search: ["búsqueda", "búsquedas"],
-  fetch: ["página", "páginas"],
-  browse: ["página", "páginas"],
+  read: ["Archivo", "Archivos"],
+  write: ["Archivo", "Archivos"],
+  edit: ["Edición", "Ediciones"],
+  bash: ["Comando", "Comandos"],
+  search: ["Búsqueda", "Búsquedas"],
+  fetch: ["Página", "Páginas"],
+  browse: ["Página", "Páginas"],
 };
 
 let state = { projects: [] };
@@ -93,7 +93,6 @@ const viewersEl = document.getElementById("viewers");
 const composerEl = document.getElementById("composer");
 const typingEl = document.getElementById("typing");
 const inputEl = document.getElementById("input");
-const searchEl = document.getElementById("search");
 const pendingEl = document.getElementById("pending");
 const fileEl = document.getElementById("file");
 const cancelEl = document.getElementById("cancel");
@@ -102,7 +101,6 @@ const toastEl = document.getElementById("toast");
 const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 
 document.getElementById("menu").append(icon("menu", 18));
-document.querySelector("#sidebar-search .field").prepend(icon("search", 15));
 const themeEl = document.getElementById("theme");
 const themeColor = document.querySelector('meta[name="theme-color"]');
 const sunEl = icon("sun", 18);
@@ -125,7 +123,7 @@ async function request(path, options) {
   try {
     response = await fetch(path, options);
   } catch {
-    notify("no hay conexión con jimmy");
+    notify("No Hay Conexión con Jimmy");
     return null;
   }
   if (response.status === 401) {
@@ -134,7 +132,7 @@ async function request(path, options) {
   }
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    notify((data && data.error) || `jimmy contestó ${response.status}`);
+    notify((data && data.error) || `Jimmy Contestó ${response.status}`);
     return null;
   }
   return data;
@@ -188,7 +186,7 @@ function projectPill(name) {
 }
 
 function titleOf(id) {
-  if (isFiles(id)) return "archivos: " + filesProject(id);
+  if (isFiles(id)) return "Archivos: " + filesProject(id);
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
 }
@@ -220,7 +218,6 @@ function runningKeys(state) {
 async function refresh() {
   const data = await api("/api/state");
   if (!data) return;
-  const before = JSON.stringify(state.projects);
   const wasRunning = runningKeys(state);
   state = data;
   for (const project of data.projects) {
@@ -229,7 +226,6 @@ async function refresh() {
       const tab = tabs.get(conversation.key);
       if (!tab || tab.id === activeId) continue;
       tab.attention = "done";
-      searchDirty = true;
     }
   }
   const live = new Set();
@@ -239,12 +235,7 @@ async function refresh() {
   for (const id of [...tabs.keys()]) {
     if (!live.has(id) && !isFiles(id)) closeTab(id);
   }
-  if (searchEl.value.trim().length < 2) {
-    renderSidebar();
-  } else if (searchDirty || JSON.stringify(state.projects) !== before) {
-    searchDirty = false;
-    runSearch();
-  }
+  renderSidebar();
   renderPreviews();
   renderMachine();
   renderTabs();
@@ -269,7 +260,7 @@ function previewEl(preview) {
   link.href = preview.path;
   link.target = "_blank";
   link.rel = "noopener";
-  link.title = "abrir " + preview.path;
+  link.title = "Abrir " + preview.path;
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = preview.name;
@@ -277,7 +268,7 @@ function previewEl(preview) {
   port.className = "port";
   port.textContent = ":" + preview.port;
   link.append(name, port, icon("globe", 14));
-  const stop = iconButton("stop", "parar " + preview.name, () => stopPreview(preview.name));
+  const stop = iconButton("stop", "Parar " + preview.name, () => stopPreview(preview.name));
   row.append(link, stop);
   return row;
 }
@@ -306,21 +297,17 @@ function renderMachine() {
   const machine = state.machine;
   machineEl.hidden = !machine;
   if (!machine) return;
-  const detail = document.createElement("div");
-  detail.className = "detail";
-  detail.textContent = machineDetail(machine);
   machineEl.replaceChildren(
     machineRow(
       "RAM",
       machineRatio(machine.memory.used, machine.memory.total),
-      "la memoria del contenedor, cache y kernel incluidos",
+      "La Memoria del Contenedor, Cache y Kernel Incluidos",
     ),
     machineRow(
-      "disco",
+      "Disco",
       machineRatio(machine.disk.used, machine.disk.total),
-      "el volumen " + state.workspace,
+      "El Volumen " + state.workspace,
     ),
-    detail,
   );
 }
 
@@ -342,17 +329,17 @@ function projectEl(project) {
   caret.className = "caret";
   caret.append(icon("down", 14));
   group.name.className = "name";
-  const add = iconButton("plus", "nueva conversación", async () => {
+  const add = iconButton("plus", "Nueva Conversación", async () => {
     const made = await api("/api/conversations", { project: group.project.name });
     await refresh();
     if (made && made.key) openTab(made.key);
     closeSidebar();
   });
-  const files = iconButton("folder", "ver archivos", () => {
+  const files = iconButton("folder", "Ver Archivos", () => {
     openTab(FILES + group.project.name);
     closeSidebar();
   });
-  const remove = iconButton("close", "quitar proyecto", () => deleteProject(group.project), "danger");
+  const remove = iconButton("close", "Quitar Proyecto", () => deleteProject(group.project), "danger");
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
@@ -397,8 +384,8 @@ function conversationEl(conversation) {
       rename(item);
     };
     item.el.append(
-      iconButton("pencil", "renombrar", () => rename(item)),
-      iconButton("close", "borrar conversación", () => deleteConversation(item.conversation), "danger"),
+      iconButton("pencil", "Renombrar", () => rename(item)),
+      iconButton("close", "Borrar Conversación", () => deleteConversation(item.conversation), "danger"),
     );
   }
   return item;
@@ -438,7 +425,7 @@ function renderSidebar() {
     group.name.title = project.path;
     group.el.classList.toggle("collapsed", !opened.has(project.name));
     const open = expanded.has(project.name);
-    setText(group.more, open ? "ver menos" : "ver más");
+    setText(group.more, open ? "Ver Menos" : "Ver Más");
     group.more.hidden = project.conversations.length <= VISIBLE;
     const seen = new Set();
     let lastItem = null;
@@ -514,132 +501,24 @@ function rename(item) {
 
 async function deleteConversation(conversation) {
   const name = conversation.title || conversation.key;
-  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
+  if (!confirm(`¿Borrar la Conversación "${name}"? Se Pierde el Historial.`)) return;
   await api("/api/delete-conversation", { conversation: conversation.key });
   closeTab(conversation.key);
   await refresh();
 }
 
 async function deleteProject(project) {
-  if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
+  if (!confirm(`¿Quitar "${project.name}" y Todas Sus Conversaciones?`)) return;
   const body = { project: project.name };
   if (project.unversioned) {
-    const warn = `"${project.name}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
-    if (!confirm(`${warn} ¿Lo borro igual?`)) return;
+    const warn = `"${project.name}" No Está en git: lo que Tenga Adentro No Existe en Ningún Otro Lado.`;
+    if (!confirm(`${warn} ¿Lo Borro Igual?`)) return;
     body.force = true;
   }
   for (const conversation of project.conversations) closeTab(conversation.key);
   closeTab(FILES + project.name);
   await api("/api/delete-project", body);
   await refresh();
-}
-
-/* Search */
-
-let searchTimer = null;
-let searchDirty = false;
-
-searchEl.addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(runSearch, 250);
-});
-
-searchEl.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  searchEl.value = "";
-  clearFind();
-  renderSidebar();
-});
-
-async function runSearch() {
-  const query = searchEl.value.trim();
-  if (query.length < 2) {
-    clearFind();
-    renderSidebar();
-    return;
-  }
-  const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
-  renderResults(query, data && data.results ? data.results : []);
-}
-
-function clearFind() {
-  for (const tab of tabs.values()) {
-    tab.find = null;
-    clearMarks(tab.transcript);
-  }
-}
-
-function openResult(conversation, query) {
-  const tab = tabs.get(conversation) || createTab(conversation);
-  tab.find = query;
-  activate(conversation);
-  if (tab.synced) findIn(tab, query);
-}
-
-function renderResults(query, results) {
-  groupEls.clear();
-  projectsEl.replaceChildren();
-  const header = document.createElement("div");
-  header.className = "project";
-  header.textContent = results.length ? `${results.length} resultados` : "sin resultados";
-  projectsEl.append(header);
-  let current = null;
-  let group = null;
-  for (const result of results) {
-    if (result.conversation !== current) {
-      current = result.conversation;
-      group = document.createElement("div");
-      group.className = "result-group";
-      const title = document.createElement("div");
-      title.className = "result-title";
-      title.textContent = result.title || result.conversation;
-      title.onclick = () => openResult(result.conversation, query);
-      group.append(title);
-      projectsEl.append(group);
-    }
-    const snippet = document.createElement("div");
-    snippet.className = "result-snippet";
-    snippet.textContent = result.snippet;
-    snippet.onclick = () => openResult(result.conversation, query);
-    group.append(snippet);
-  }
-}
-
-function findIn(tab, query) {
-  clearMarks(tab.transcript);
-  const needle = query.toLowerCase();
-  if (needle.length < 2) return;
-  const walker = document.createTreeWalker(tab.transcript, NodeFilter.SHOW_TEXT);
-  const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
-  let first = null;
-  for (const node of nodes) {
-    const text = node.nodeValue;
-    const lower = text.toLowerCase();
-    if (!lower.includes(needle)) continue;
-    const fragment = document.createDocumentFragment();
-    let index = 0;
-    let at = lower.indexOf(needle);
-    while (at !== -1) {
-      fragment.append(document.createTextNode(text.slice(index, at)));
-      const mark = document.createElement("mark");
-      mark.textContent = text.slice(at, at + needle.length);
-      fragment.append(mark);
-      if (!first) first = mark;
-      index = at + needle.length;
-      at = lower.indexOf(needle, index);
-    }
-    fragment.append(document.createTextNode(text.slice(index)));
-    node.replaceWith(fragment);
-  }
-  if (first) first.scrollIntoView({ block: "center" });
-}
-
-function clearMarks(root) {
-  for (const mark of root.querySelectorAll("mark")) {
-    mark.replaceWith(document.createTextNode(mark.textContent));
-  }
-  root.normalize();
 }
 
 /* Tabs */
@@ -688,11 +567,11 @@ function createTab(id) {
   transcript.className = "transcript";
   const jump = document.createElement("button");
   jump.className = "jump";
-  jump.textContent = "ir al final ↓";
+  jump.textContent = "Ir al Final ↓";
   jump.hidden = true;
   const earlier = document.createElement("button");
   earlier.className = "earlier";
-  earlier.textContent = "ver anteriores ↑";
+  earlier.textContent = "Ver Anteriores ↑";
   earlier.hidden = true;
   pane.append(transcript, earlier, jump);
   panesEl.append(pane);
@@ -712,7 +591,6 @@ function createTab(id) {
     tools: {},
     follow: true,
     viewers: [],
-    find: null,
     synced: false,
     attention: null,
     count: 0,
@@ -752,7 +630,7 @@ function subscribe(tab) {
 
 function renderEarlier(tab) {
   tab.earlier.hidden = tab.first <= 0;
-  tab.earlier.textContent = tab.loading ? "trayendo…" : "ver anteriores ↑";
+  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver Anteriores ↑";
 }
 
 async function loadEarlier(tab) {
@@ -813,7 +691,7 @@ function activate(id) {
   const tab = tabs.get(id);
   if (tab && !tab.stream && !tab.files) subscribe(tab);
   if (tab) tab.attention = null;
-  if (searchEl.value.trim().length < 2) renderSidebar();
+  renderSidebar();
   renderTabs();
   renderActions();
   renderPending();
@@ -861,8 +739,8 @@ function tabEl(tab) {
   const close = document.createElement("button");
   close.className = "close";
   close.append(icon("close", 15));
-  close.title = "cerrar pestaña";
-  close.setAttribute("aria-label", "cerrar pestaña");
+  close.title = "Cerrar Pestaña";
+  close.setAttribute("aria-label", "Cerrar Pestaña");
   close.onclick = (event) => {
     event.stopPropagation();
     closeTab(tab.id);
@@ -892,11 +770,11 @@ function renderActions() {
   composerEl.hidden = !tab || Boolean(tab.files) || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
-  sendEl.setAttribute("aria-label", running ? "frenar el turno" : "enviar");
+  sendEl.setAttribute("aria-label", running ? "Frenar el Turno" : "Enviar");
   typingEl.hidden = !tab || !tab.typingUser;
-  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} está escribiendo…`;
+  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} Está Escribiendo…`;
   if (tab)
-    viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " mirando" : "";
+    viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " Mirando" : "";
 }
 
 function updateTitle() {
@@ -934,7 +812,6 @@ function render(tab, event) {
       break;
     case "error":
       renderError(tab, event);
-      searchDirty = true;
       if (tab.id !== activeId) {
         tab.attention = "error";
         renderTabs();
@@ -946,7 +823,6 @@ function render(tab, event) {
       break;
     case "done":
       tab.steps = null;
-      searchDirty = true;
       if (tab.id !== activeId) {
         tab.attention = "done";
         renderTabs();
@@ -977,7 +853,6 @@ function render(tab, event) {
       tab.first = event.first || 0;
       tab.synced = true;
       renderEarlier(tab);
-      if (tab.find) findIn(tab, tab.find);
       break;
     default:
       break;
@@ -1080,11 +955,11 @@ function decorate(element, text) {
     const box = document.createElement("div");
     box.className = "code";
     pre.replaceWith(box);
-    box.append(pre, copyButton(code, "copiar el código"));
+    box.append(pre, copyButton(code, "Copiar el Código"));
   }
   const actions = document.createElement("div");
   actions.className = "actions";
-  actions.append(copyButton(text, "copiar el mensaje"));
+  actions.append(copyButton(text, "Copiar el Mensaje"));
   element.append(actions);
 }
 
@@ -1106,7 +981,7 @@ async function copyText(button, text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    notify("no pude copiar");
+    notify("No Pude Copiar");
     return;
   }
   button.classList.add("copied");
@@ -1126,7 +1001,7 @@ function renderError(tab, event) {
 function renderStopped(tab, event) {
   const element = document.createElement("div");
   element.className = "event stopped";
-  element.textContent = `${event.author} frenó el turno`;
+  element.textContent = `${event.author} Frenó el Turno`;
   append(tab, element);
   tab.live = null;
   tab.steps = null;
@@ -1257,7 +1132,7 @@ function finishTool(tab, event) {
   }
   tool.details.classList.add(event.failed ? "failed" : "ok");
   const stat = tool.stat ? tool.stat + " · " : "";
-  tool.meta.textContent = `${stat}${event.failed ? "error" : "ok"} · ${event.ms} ms`;
+  tool.meta.textContent = `${stat}${event.failed ? "Error" : "Ok"} · ${event.ms} ms`;
   if (tool.output) {
     tool.output.textContent = event.text;
   } else {
@@ -1390,7 +1265,7 @@ async function shrink(file) {
 async function attachFiles(files) {
   const conversation = activeId;
   if (!conversation) return;
-  if (files.some((file) => !file.type.startsWith("image/"))) notify("por ahora sólo imágenes");
+  if (files.some((file) => !file.type.startsWith("image/"))) notify("Por Ahora Sólo Imágenes");
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     const name = await uploadImage(conversation, await shrink(file));
@@ -1419,7 +1294,7 @@ function renderPending() {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.append(icon("close", 12));
-    remove.setAttribute("aria-label", "quitar adjunto");
+    remove.setAttribute("aria-label", "Quitar Adjunto");
     remove.onclick = () => {
       list.splice(index, 1);
       renderPending();
@@ -1519,7 +1394,7 @@ const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
 function showTheme() {
   const dark = document.documentElement.dataset.theme !== "light";
-  const title = dark ? "pasar al tema claro" : "pasar al tema oscuro";
+  const title = dark ? "Pasar al Tema Claro" : "Pasar al Tema Oscuro";
   themeEl.title = title;
   themeEl.setAttribute("aria-label", title);
   themeColor.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
@@ -1598,7 +1473,7 @@ function receiveShared() {
   const shared = parts.filter((part) => part).join("\n");
   if (!shared) return;
   if (!activeId || isFiles(activeId) || isReadOnly(activeId)) {
-    notify("compartiste algo: abrí una conversación y pegalo");
+    notify("Compartiste Algo: Abrí una Conversación y Pegalo");
     return;
   }
   inputEl.value = shared;

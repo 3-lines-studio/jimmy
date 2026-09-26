@@ -119,10 +119,10 @@
   <body>
     <form id="login">
       <h1>Jimmy</h1>
-      <input id="email" type="email" placeholder="tu mail" autocomplete="email" autofocus />
-      <span class="ok" id="ok" hidden>si tu mail está en la lista, te llegó un link</span>
-      <span class="error" id="error" hidden>el link venció o ya se usó, pedí otro</span>
-      <button type="submit">mandame el link</button>
+      <input id="email" type="email" placeholder="Tu Mail" autocomplete="email" autofocus />
+      <span class="ok" id="ok" hidden>Si Tu Mail Está en la Lista, Te Llegó un Link</span>
+      <span class="error" id="error" hidden>El Link Venció o Ya Se Usó, Pedí Otro</span>
+      <button type="submit">Mandame el Link</button>
     </form>
     <script>
       const error = document.getElementById("error");
@@ -140,12 +140,12 @@
             body: JSON.stringify({ email: document.getElementById("email").value }),
           });
         } catch {
-          error.textContent = "no hay conexión";
+          error.textContent = "No Hay Conexión";
           error.hidden = false;
           return;
         }
         if (!response.ok) {
-          error.textContent = "no se pudo mandar el mail, probá de nuevo";
+          error.textContent = "No Se Pudo Mandar el Mail, Probá de Nuevo";
           error.hidden = false;
           return;
         }

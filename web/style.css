@@ -194,11 +194,6 @@ textarea:focus {
   display: block;
 }
 
-#sidebar-search {
-  flex: none;
-  padding: var(--s3) var(--s3) var(--s1);
-}
-
 #online {
   flex: none;
   padding: var(--s2) var(--s4) 0;
@@ -212,7 +207,8 @@ textarea:focus {
 
 #machine {
   flex: none;
-  padding: var(--s2) var(--s4) 0;
+  padding: var(--s2) var(--s4) var(--s3);
+  border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 12px;
 }
@@ -225,48 +221,6 @@ textarea:focus {
 
 #machine .value {
   color: var(--text);
-}
-
-#machine .detail {
-  padding-top: var(--s1);
-  color: var(--faint);
-  font-size: 11px;
-}
-
-#sidebar-search .field {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  height: 34px;
-  padding: 0 var(--s3);
-  background: var(--raised);
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  color: var(--faint);
-}
-
-#sidebar-search .field:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--ring);
-}
-
-#sidebar-search svg {
-  flex: none;
-}
-
-#sidebar-search input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  font-size: 13px;
-}
-
-#sidebar-search input:focus {
-  border: 0;
-  box-shadow: none;
 }
 
 #projects {
@@ -510,8 +464,7 @@ textarea:focus {
   display: flex;
   gap: var(--s2);
   flex: none;
-  padding: var(--s3) var(--s3) var(--s4);
-  border-top: 1px solid var(--line);
+  padding: var(--s3) var(--s3) var(--s2);
 }
 
 #new-project input,
@@ -543,37 +496,6 @@ textarea:focus {
 #new-project button:hover {
   background: var(--hover);
   color: var(--text);
-}
-
-/* Resultados de búsqueda */
-
-.result-group {
-  margin-top: var(--s3);
-}
-
-.result-title {
-  padding: 0 var(--s3);
-  overflow: hidden;
-  color: var(--text);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.result-snippet {
-  padding: var(--s2) var(--s3);
-  border-radius: var(--r-sm);
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.result-snippet:hover {
-  background: var(--hover);
 }
 
 /* Main */
@@ -991,13 +913,6 @@ main {
 
 .event.image .caption {
   margin-top: var(--s2);
-}
-
-mark {
-  padding: 0 1px;
-  background: var(--mark);
-  border-radius: 3px;
-  color: var(--text);
 }
 
 /* Pasos del turno, plegados en una línea */
@@ -1553,10 +1468,6 @@ mark {
   #theme svg {
     width: 20px;
     height: 20px;
-  }
-
-  #sidebar-search .field {
-    height: 40px;
   }
 
   #new-project input,

@@ -586,6 +586,7 @@ function createTab(id) {
     loading: false,
     prepending: false,
     stream: null,
+    retries: 0,
     live: null,
     steps: null,
     tools: {},
@@ -611,8 +612,10 @@ function createTab(id) {
   return tab;
 }
 
+const RETRY_CEILING = 30000;
+
 function subscribe(tab) {
-  if (tab.stream) tab.stream.close();
+  unsubscribe(tab);
   const stream = new EventSource(
     `/api/stream?conversation=${encodeURIComponent(tab.id)}&since=${tab.count}`,
   );
@@ -624,8 +627,26 @@ function subscribe(tab) {
     }
     stream.reconnected = true;
     tab.synced = false;
+    tab.retries = 0;
+  };
+  stream.onerror = () => {
+    if (stream.readyState !== EventSource.CLOSED) return;
+    const wait = Math.min(1000 * 2 ** tab.retries, RETRY_CEILING);
+    tab.retries++;
+    setTimeout(() => {
+      if (tab.stream === stream) subscribe(tab);
+    }, wait);
   };
   stream.onmessage = (message) => render(tab, JSON.parse(message.data));
+}
+
+/// Al volver del background el stream puede haber quedado muerto sin avisar: el
+/// navegador lo cierra y el server no siempre se entera. Se rearma, que el
+/// server contesta con lo que falta desde el último evento visto.
+function revive() {
+  const tab = activeId ? tabs.get(activeId) : null;
+  if (tab && !tab.files) subscribe(tab);
+  watchOnline();
 }
 
 function renderEarlier(tab) {
@@ -1454,8 +1475,21 @@ addEventListener("hashchange", () => {
   if (id && knownTab(id)) openTab(id);
 });
 
+const online = { source: null, retries: 0 };
+
 function watchOnline() {
+  if (online.source) online.source.close();
   const source = new EventSource("/api/online");
+  online.source = source;
+  source.onopen = () => (online.retries = 0);
+  source.onerror = () => {
+    if (source.readyState !== EventSource.CLOSED) return;
+    const wait = Math.min(1000 * 2 ** online.retries, RETRY_CEILING);
+    online.retries++;
+    setTimeout(() => {
+      if (online.source === source) watchOnline();
+    }, wait);
+  };
   source.onmessage = (message) => {
     const event = JSON.parse(message.data);
     if (event.event === "online")
@@ -1487,7 +1521,9 @@ async function main() {
   receiveShared();
   setInterval(refresh, 15000);
   addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
+    if (document.hidden) return;
+    refresh();
+    revive();
   });
 }
 

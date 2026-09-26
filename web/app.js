@@ -1339,6 +1339,10 @@ inputEl.addEventListener("paste", async (event) => {
 
 /* Composer */
 
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty("--composer-h", `${composerEl.offsetHeight}px`);
+}).observe(composerEl);
+
 function grow() {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 240) + "px";

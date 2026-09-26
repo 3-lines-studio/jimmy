@@ -545,10 +545,6 @@ main {
   gap: var(--s2);
   height: calc(52px + env(safe-area-inset-top));
   padding: env(safe-area-inset-top) var(--s3) 0;
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line);
 }
 
 #menu {
@@ -560,6 +556,9 @@ main {
   height: 38px;
   padding: 0;
   border-radius: var(--r-full);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   color: var(--muted);
 }
 
@@ -585,6 +584,9 @@ main {
   max-width: 240px;
   padding: 0 var(--s1) 0 var(--s3);
   border-radius: var(--r-full);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   color: var(--faint);
   cursor: pointer;
   white-space: nowrap;
@@ -677,8 +679,8 @@ main {
 .transcript {
   flex: 1;
   overflow-y: auto;
-  padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s5)
-    calc(72px + env(safe-area-inset-bottom));
+  padding: calc(52px + env(safe-area-inset-top) + var(--s5)) var(--s5)
+    calc(var(--composer-h, 76px) + var(--s4));
 }
 
 .transcript > * {
@@ -1177,9 +1179,6 @@ main {
   flex-direction: column;
   gap: var(--s2);
   padding: var(--s3) var(--s4) calc(var(--s4) + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
 }
 
 #typing {
@@ -1202,6 +1201,9 @@ main {
   max-width: var(--measure);
   margin: 0 auto;
   padding: var(--s1);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid transparent;
   border-radius: var(--r-full);
 }
@@ -1324,7 +1326,7 @@ main {
 .jump {
   position: absolute;
   right: var(--s5);
-  bottom: calc(72px + env(safe-area-inset-bottom));
+  bottom: calc(var(--composer-h, 76px) + var(--s2));
   height: 32px;
   padding: 0 var(--s4);
   background: var(--raised);
@@ -1422,7 +1424,8 @@ main {
   }
 
   .transcript {
-    padding: var(--s4) var(--s3) var(--s5);
+    padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s3)
+      calc(var(--composer-h, 76px) + var(--s4));
   }
 
   #composer {

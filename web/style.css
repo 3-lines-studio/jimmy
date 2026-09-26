@@ -462,23 +462,38 @@ textarea:focus {
 
 #new-project {
   display: flex;
-  gap: var(--s2);
+  align-items: center;
+  gap: var(--s1);
   flex: none;
-  padding: var(--s3) var(--s3) var(--s2);
+  margin: var(--s3) var(--s3) var(--s2);
+  padding: var(--s1);
+  background: var(--raised);
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+}
+
+#new-project:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 #new-project input,
 #new-project button {
   height: 34px;
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
 }
 
 #new-project input {
   flex: 1;
   min-width: 0;
   padding: 0 var(--s3);
-  background: var(--raised);
+  background: transparent;
   border-color: transparent;
+}
+
+#new-project input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 #new-project button {
@@ -488,7 +503,7 @@ textarea:focus {
   flex: none;
   width: 34px;
   padding: 0;
-  background: var(--raised);
+  background: transparent;
   border-color: transparent;
   color: var(--muted);
 }
@@ -1170,8 +1185,12 @@ main {
   padding: var(--s1);
   background: var(--panel);
   border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-full);
   box-shadow: var(--shadow-sm);
+}
+
+#composer .box.tall {
+  border-radius: var(--r-lg);
 }
 
 #composer .box:focus-within {
@@ -1186,7 +1205,7 @@ main {
   flex: none;
   width: 32px;
   height: 32px;
-  border-radius: var(--r-md);
+  border-radius: var(--r-full);
   color: var(--faint);
   cursor: pointer;
 }
@@ -1200,7 +1219,7 @@ main {
   flex: 1;
   min-height: 32px;
   max-height: 40dvh;
-  padding: 6px 0;
+  padding: 6px var(--s3);
   background: transparent;
   border: 0;
   resize: none;

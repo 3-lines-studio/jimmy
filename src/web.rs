@@ -852,9 +852,9 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     let window = Log::in_dir(&conversation.dir).window(usize::MAX);
-    let live = web.bus.attach(key, &user);
+    let (id, live) = web.bus.attach(key, &user);
     let result = follow(stream, &window, since, &live);
-    web.bus.detach(key, &user);
+    web.bus.detach(key, id);
     result
 }
 
@@ -887,9 +887,9 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let live = web.bus.watch(&user);
+    let (id, live) = web.bus.watch(&user);
     let result = follow(stream, &Window::default(), 0, &live);
-    web.bus.detach_watch(&user);
+    web.bus.detach_watch(id);
     result
 }
 

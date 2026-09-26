@@ -1473,7 +1473,7 @@ while read -r line; do
 done
 ",
         ));
-        let live = agent.bus().attach("x", "berti");
+        let (_, live) = agent.bus().attach("x", "berti");
         let fake = Fake::default();
         agent
             .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")

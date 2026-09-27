@@ -171,6 +171,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
         ("POST", "/api/rename-project") => rename_project(web, &request, stream),
+        ("POST", "/api/duplicate-project") => duplicate_project(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
         ("POST", "/api/preview/stop") => stop_preview(web, &request, stream),
@@ -491,6 +492,26 @@ fn rename_project(
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
     match conversations::rename_project(&web.root, &web.workspace, from.trim(), to) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
+}
+
+fn duplicate_project(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let from = request.field("project").unwrap_or_default();
+    let to = request.field("name").unwrap_or_default();
+    let to = to.trim();
+    if to.is_empty() || to.contains('/') || to.starts_with('.') {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    match conversations::duplicate(&web.workspace, from.trim(), to) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
         Err(error) => http::send_error(stream, 400, &error),
     }
@@ -1528,6 +1549,85 @@ done
             Some(&cookie),
         );
         assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_project_is_duplicated_with_the_files_inside() {
+        let server = start("duplicate-project");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        std::fs::write(
+            server.workspace.join("projects/ken/nota.txt"),
+            "los mismos archivos",
+        )
+        .unwrap();
+        std::fs::create_dir_all(server.workspace.join("projects/ken/src")).unwrap();
+        std::fs::write(
+            server.workspace.join("projects/ken/src/main.go"),
+            "package main",
+        )
+        .unwrap();
+
+        let copied = post_with(
+            server.port,
+            "/api/duplicate-project",
+            r#"{"project":"ken","name":"ken-2"}"#,
+            Some(&cookie),
+        );
+        assert!(copied.starts_with("HTTP/1.1 200"), "{copied}");
+        assert_eq!(
+            std::fs::read_to_string(server.workspace.join("projects/ken-2/nota.txt")).unwrap(),
+            "los mismos archivos"
+        );
+        assert_eq!(
+            std::fs::read_to_string(server.workspace.join("projects/ken-2/src/main.go")).unwrap(),
+            "package main"
+        );
+        assert!(
+            server.workspace.join("projects/ken/nota.txt").is_file(),
+            "el original queda"
+        );
+
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(state.contains(r#""name":"ken-2""#), "{state}");
+
+        let again = post_with(
+            server.port,
+            "/api/duplicate-project",
+            r#"{"project":"ken","name":"ken-2"}"#,
+            Some(&cookie),
+        );
+        assert!(again.starts_with("HTTP/1.1 400"), "{again}");
+
+        let missing = post_with(
+            server.port,
+            "/api/duplicate-project",
+            r#"{"project":"fantasma","name":"copia"}"#,
+            Some(&cookie),
+        );
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+
+        let general = post_with(
+            server.port,
+            "/api/duplicate-project",
+            r#"{"project":"general","name":"copia"}"#,
+            Some(&cookie),
+        );
+        assert!(general.starts_with("HTTP/1.1 400"), "{general}");
+
+        let unauthenticated = post(
+            server.port,
+            "/api/duplicate-project",
+            r#"{"project":"ken","name":"copia"}"#,
+        );
+        assert!(
+            unauthenticated.starts_with("HTTP/1.1 401"),
+            "{unauthenticated}"
+        );
+        assert!(
+            !server.workspace.join("projects/copia").exists(),
+            "sin sesión no se copia nada"
+        );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

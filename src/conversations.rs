@@ -173,6 +173,38 @@ pub fn rename_project(root: &Path, workspace: &Path, from: &str, to: &str) -> Re
     Ok(())
 }
 
+/// Un proyecto duplicado es otro directorio con los mismos archivos: la copia
+/// es literal, con git y lo que esté ignorado adentro. Las conversaciones no
+/// viajan, son del proyecto original.
+pub fn duplicate(workspace: &Path, from: &str, to: &str) -> Result<(), String> {
+    if from == GENERAL || to == GENERAL {
+        return Err("eso no se duplica".into());
+    }
+    if from == to {
+        return Err("ese proyecto ya existe".into());
+    }
+    let origin = workspace.join("projects").join(from);
+    let copy = workspace.join("projects").join(to);
+    if !origin.is_dir() {
+        return Err(format!("no existe el proyecto {from}"));
+    }
+    if copy.exists() {
+        return Err("ese proyecto ya existe".into());
+    }
+    let out = std::process::Command::new("cp")
+        .arg("-a")
+        .arg("--")
+        .arg(&origin)
+        .arg(&copy)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&copy);
+        return Err("no pude copiar los archivos".into());
+    }
+    Ok(())
+}
+
 const TAIL: u64 = 16 * 1024;
 const SNIPPET: usize = 140;
 

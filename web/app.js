@@ -388,6 +388,7 @@ function projectMenu(group) {
   if (group.project.name !== GENERAL) {
     menu.append(
       menuItem("Renombrar proyecto", () => renameProject(group)),
+      menuItem("Duplicar proyecto", () => duplicateProject(group.project)),
       menuItem("Quitar proyecto", () => deleteProject(group.project), "danger"),
     );
   }
@@ -646,6 +647,15 @@ async function deleteConversation(conversation) {
   if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
   await api("/api/delete-conversation", { conversation: conversation.key });
   closeTab(conversation.key);
+  await refresh();
+}
+
+async function duplicateProject(project) {
+  const from = projectTitle(project.name);
+  const name = prompt(`Nombre del proyecto nuevo, con los mismos archivos que "${from}"`, `${project.name}-2`);
+  if (!name) return;
+  const made = await api("/api/duplicate-project", { project: project.name, name });
+  if (made) notify(`Copié "${from}" en "${projectTitle(made.name)}"`);
   await refresh();
 }
 

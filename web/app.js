@@ -132,7 +132,7 @@ async function request(path, options) {
   try {
     response = await fetch(path, options);
   } catch {
-    notify("No Hay Conexión con Jimmy");
+    notify("No hay conexión con Jimmy");
     return null;
   }
   if (response.status === 401) {
@@ -312,12 +312,12 @@ function renderMachine() {
     machineRow(
       "RAM",
       machineRatio(machine.memory.used, machine.memory.total),
-      "La Memoria del Contenedor, Cache y Kernel Incluidos",
+      "La memoria del contenedor, cache y kernel incluidos",
     ),
     machineRow(
       "Disco",
       machineRatio(machine.disk.used, machine.disk.total),
-      "El Volumen " + state.workspace,
+      "El volumen " + state.workspace,
     ),
   );
 }
@@ -340,17 +340,17 @@ function projectEl(project) {
   caret.className = "caret";
   caret.append(icon("down", 14));
   group.name.className = "name";
-  const add = iconButton("plus", "Nueva Conversación", async () => {
+  const add = iconButton("plus", "Nueva conversación", async () => {
     const made = await api("/api/conversations", { project: group.project.name });
     await refresh();
     if (made && made.key) openTab(made.key);
     closeSidebar();
   });
-  const files = iconButton("folder", "Ver Archivos", () => {
+  const files = iconButton("folder", "Ver archivos", () => {
     openTab(FILES + group.project.name);
     closeSidebar();
   });
-  const remove = iconButton("close", "Quitar Proyecto", () => deleteProject(group.project), "danger");
+  const remove = iconButton("close", "Quitar proyecto", () => deleteProject(group.project), "danger");
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
@@ -396,7 +396,7 @@ function conversationEl(conversation) {
     };
     item.el.append(
       iconButton("pencil", "Renombrar", () => rename(item)),
-      iconButton("close", "Borrar Conversación", () => deleteConversation(item.conversation), "danger"),
+      iconButton("close", "Borrar conversación", () => deleteConversation(item.conversation), "danger"),
     );
   }
   return item;
@@ -436,7 +436,7 @@ function renderSidebar() {
     group.name.title = project.path;
     group.el.classList.toggle("collapsed", !opened.has(project.name));
     const open = expanded.has(project.name);
-    setText(group.more, open ? "Ver Menos" : "Ver Más");
+    setText(group.more, open ? "Ver menos" : "Ver más");
     group.more.hidden = project.conversations.length <= VISIBLE;
     const seen = new Set();
     let lastItem = null;
@@ -579,11 +579,11 @@ function createTab(id) {
   transcript.className = "transcript";
   const jump = document.createElement("button");
   jump.className = "jump";
-  jump.textContent = "Ir al Final ↓";
+  jump.textContent = "Ir al final ↓";
   jump.hidden = true;
   const earlier = document.createElement("button");
   earlier.className = "earlier";
-  earlier.textContent = "Ver Anteriores ↑";
+  earlier.textContent = "Ver anteriores ↑";
   earlier.hidden = true;
   pane.append(transcript, earlier, jump);
   panesEl.append(pane);
@@ -663,7 +663,7 @@ function revive() {
 
 function renderEarlier(tab) {
   tab.earlier.hidden = tab.first <= 0;
-  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver Anteriores ↑";
+  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver anteriores ↑";
 }
 
 async function loadEarlier(tab) {
@@ -773,8 +773,8 @@ function tabEl(tab) {
   const close = document.createElement("button");
   close.className = "close";
   close.append(icon("close", 15));
-  close.title = "Cerrar Pestaña";
-  close.setAttribute("aria-label", "Cerrar Pestaña");
+  close.title = "Cerrar pestaña";
+  close.setAttribute("aria-label", "Cerrar pestaña");
   close.onclick = (event) => {
     event.stopPropagation();
     closeTab(tab.id);
@@ -806,7 +806,7 @@ function renderActions() {
   composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
-  sendEl.setAttribute("aria-label", running ? "Frenar el Turno" : "Enviar");
+  sendEl.setAttribute("aria-label", running ? "Frenar el turno" : "Enviar");
   typingEl.hidden = !tab || !tab.typingUser;
   if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} Está Escribiendo…`;
   if (tab)
@@ -991,11 +991,11 @@ function decorate(element, text) {
     const box = document.createElement("div");
     box.className = "code";
     pre.replaceWith(box);
-    box.append(pre, copyButton(code, "Copiar el Código"));
+    box.append(pre, copyButton(code, "Copiar el código"));
   }
   const actions = document.createElement("div");
   actions.className = "actions";
-  actions.append(copyButton(text, "Copiar el Mensaje"));
+  actions.append(copyButton(text, "Copiar el mensaje"));
   element.append(actions);
 }
 
@@ -1017,7 +1017,7 @@ async function copyText(button, text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    notify("No Pude Copiar");
+    notify("No pude copiar");
     return;
   }
   button.classList.add("copied");
@@ -1168,7 +1168,7 @@ function finishTool(tab, event) {
   }
   tool.details.classList.add(event.failed ? "failed" : "ok");
   const stat = tool.stat ? tool.stat + " · " : "";
-  tool.meta.textContent = `${stat}${event.failed ? "Error" : "Ok"} · ${event.ms} ms`;
+  tool.meta.textContent = `${stat}${event.failed ? "error" : "ok"} · ${event.ms} ms`;
   if (tool.output) {
     tool.output.textContent = event.text;
   } else {
@@ -1301,7 +1301,7 @@ async function shrink(file) {
 async function attachFiles(files) {
   const conversation = activeId;
   if (!conversation) return;
-  if (files.some((file) => !file.type.startsWith("image/"))) notify("Por Ahora Sólo Imágenes");
+  if (files.some((file) => !file.type.startsWith("image/"))) notify("Por ahora sólo imágenes");
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     const name = await uploadImage(conversation, await shrink(file));
@@ -1330,7 +1330,7 @@ function renderPending() {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.append(icon("close", 12));
-    remove.setAttribute("aria-label", "Quitar Adjunto");
+    remove.setAttribute("aria-label", "Quitar adjunto");
     remove.onclick = () => {
       list.splice(index, 1);
       renderPending();
@@ -1439,7 +1439,7 @@ const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
 function showTheme() {
   const dark = document.documentElement.dataset.theme !== "light";
-  const title = dark ? "Pasar al Tema Claro" : "Pasar al Tema Oscuro";
+  const title = dark ? "Pasar al tema claro" : "Pasar al tema oscuro";
   themeEl.title = title;
   themeEl.setAttribute("aria-label", title);
   themeColor.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
@@ -1605,7 +1605,7 @@ function receiveShared() {
   const shared = parts.filter((part) => part).join("\n");
   if (!shared) return;
   if (!activeId || isFiles(activeId) || isReadOnly(activeId)) {
-    notify("Compartiste Algo: Abrí una Conversación y Pegalo");
+    notify("Compartiste algo: abrí una conversación y pegalo");
     return;
   }
   inputEl.value = shared;
@@ -1650,7 +1650,7 @@ document.addEventListener(
     pullDistance = event.touches[0].clientY - pullFrom;
     if (pullDistance <= 0) return endPull(false);
     refreshEl.hidden = false;
-    setText(refreshEl, pullDistance > REFRESH_AT ? "Soltá para Recargar" : "Tirá para Recargar");
+    setText(refreshEl, pullDistance > REFRESH_AT ? "Soltá para recargar" : "Tirá para recargar");
     refreshEl.style.transform = `translate(-50%, ${Math.min(pullDistance, 120)}px)`;
   },
   { passive: true },

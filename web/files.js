@@ -29,7 +29,7 @@ function createFilesTab(id) {
   head.append(back, path);
   const body = document.createElement("div");
   body.className = "files-body";
-  body.append(note("Elegí un Archivo para Leerlo."));
+  body.append(note("Elegí un archivo para leerlo."));
   view.append(head, body);
   pane.append(view, tree);
   panesEl.append(pane);
@@ -61,7 +61,7 @@ async function list(tab, parent, path) {
     "/api/tree?project=" + encodeURIComponent(tab.project) + "&path=" + encodeURIComponent(path);
   const data = await api(query);
   if (!data) {
-    parent.append(note("No Pude Leer Esa Carpeta"));
+    parent.append(note("No pude leer esa carpeta"));
     return;
   }
   if (!data.entries.length) {
@@ -117,18 +117,18 @@ async function openFile(tab, path, entry, element) {
   const response = await fetch(rawUrl(tab.project, path));
   if (tab.file !== path) return;
   if (!response.ok) {
-    tab.body.replaceChildren(note("No Pude Abrir Ese Archivo"));
+    tab.body.replaceChildren(note("No pude abrir ese archivo"));
     return;
   }
   const text = await response.text();
   if (tab.file !== path) return;
   if (!(response.headers.get("content-type") || "").startsWith("text/")) {
-    tab.body.replaceChildren(note("Es un Archivo Binario: No Hay Nada que Mostrar"));
+    tab.body.replaceChildren(note("Es un archivo binario: no hay nada que mostrar"));
     return;
   }
   tab.body.replaceChildren(entry.kind === "markdown" ? markdownOf(text) : codeOf(text, entry.name));
   if (response.headers.get("x-truncated"))
-    tab.body.append(note("Se Ve Sólo el Principio: el Archivo Pasa los 512 KB"));
+    tab.body.append(note("Se ve sólo el principio: el archivo pasa los 512 KB"));
 }
 
 function codeOf(text, name) {
@@ -138,7 +138,7 @@ function codeOf(text, name) {
   const code = document.createElement("code");
   code.innerHTML = highlight(text, extension(name));
   pre.append(code);
-  box.append(pre, copyButton(text, "Copiar el Archivo"));
+  box.append(pre, copyButton(text, "Copiar el archivo"));
   return box;
 }
 

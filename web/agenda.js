@@ -146,7 +146,7 @@ function renderAgendaPane() {
   if (!agendaTasks.length) {
     const empty = document.createElement("div");
     empty.className = "agenda-empty";
-    empty.textContent = "No hay Tareas Agendadas.";
+    empty.textContent = "No hay tareas agendadas.";
     tab.inner.append(empty);
     return;
   }
@@ -158,7 +158,7 @@ function agendaFootEl() {
   const foot = document.createElement("div");
   foot.className = "agenda-foot";
   const button = document.createElement("button");
-  button.textContent = "Marcar Todo Leído";
+  button.textContent = "Marcar todo leído";
   button.onclick = async () => {
     if (await api("/api/agenda/read", {})) await loadAgenda();
   };
@@ -204,7 +204,7 @@ function agendaTaskEl(task, now) {
   last.textContent = agendaLast(task, now);
   meta.append(last);
   if (!task.paused) {
-    meta.append(iconButton("play", "Correr Ahora", () => runAgendaTask(task)));
+    meta.append(iconButton("play", "Correr ahora", () => runAgendaTask(task)));
   }
   meta.append(
     iconButton(task.paused ? "play" : "pause", task.paused ? "Reanudar" : "Pausar", () =>

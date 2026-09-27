@@ -295,10 +295,8 @@ textarea:focus {
   padding: 0 var(--s1) 0 var(--s2);
   margin-top: var(--s5);
   color: var(--faint);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .group:first-child .project,
@@ -1859,6 +1857,7 @@ main {
 .task .pill {
   background: var(--raised);
   color: var(--muted);
+  text-transform: none;
 }
 
 .task .pill.unread {

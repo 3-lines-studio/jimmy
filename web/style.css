@@ -240,7 +240,6 @@ textarea:focus {
 #previews {
   flex: none;
   padding: var(--s2) var(--s2) 0;
-  border-bottom: 1px solid var(--line);
 }
 
 .preview {

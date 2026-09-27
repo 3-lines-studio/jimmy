@@ -14,6 +14,7 @@ const PATHS = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   left: '<path d="m15 18-6-6 6-6"/>',
   pencil:
     '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
@@ -70,6 +71,7 @@ const tabs = new Map();
 let activeId = null;
 let pending = new Map();
 const OPEN_KEY = "jimmy-open-projects";
+const GENERAL = "general";
 
 function readOpenProjects() {
   try {
@@ -132,7 +134,7 @@ async function request(path, options) {
   try {
     response = await fetch(path, options);
   } catch {
-    notify("No Hay Conexión con Jimmy");
+    notify("No hay conexión con Jimmy");
     return null;
   }
   if (response.status === 401) {
@@ -141,7 +143,7 @@ async function request(path, options) {
   }
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    notify((data && data.error) || `Jimmy Contestó ${response.status}`);
+    notify((data && data.error) || `Jimmy contestó ${response.status}`);
     return null;
   }
   return data;
@@ -312,12 +314,12 @@ function renderMachine() {
     machineRow(
       "RAM",
       machineRatio(machine.memory.used, machine.memory.total),
-      "La Memoria del Contenedor, Cache y Kernel Incluidos",
+      "La memoria del contenedor, cache y kernel incluidos",
     ),
     machineRow(
       "Disco",
       machineRatio(machine.disk.used, machine.disk.total),
-      "El Volumen " + state.workspace,
+      "El volumen " + state.workspace,
     ),
   );
 }
@@ -327,36 +329,142 @@ function projectEl(project) {
     el: document.createElement("div"),
     project,
     name: document.createElement("span"),
+    last: document.createElement("span"),
+    avatar: document.createElement("span"),
+    caret: document.createElement("button"),
+    menu: document.createElement("div"),
+    kebab: document.createElement("button"),
     list: document.createElement("div"),
     conversations: new Map(),
     more: document.createElement("button"),
+    renaming: false,
   };
   group.el.className = "group";
   group.list.className = "threads";
-  const header = document.createElement("div");
-  header.className = "project toggle";
-  header.onclick = () => toggleProject(group.project.name);
-  const caret = document.createElement("span");
-  caret.className = "caret";
-  caret.append(icon("down", 14));
+
+  const head = document.createElement("div");
+  head.className = "head";
+  const row = document.createElement("div");
+  row.className = "project";
+  row.onclick = () => openProject(group.project);
+  group.avatar.className = "avatar";
+  const text = document.createElement("span");
+  text.className = "text";
   group.name.className = "name";
-  const add = iconButton("plus", "Nueva Conversación", async () => {
-    const made = await api("/api/conversations", { project: group.project.name });
-    await refresh();
-    if (made && made.key) openTab(made.key);
-    closeSidebar();
-  });
-  const files = iconButton("folder", "Ver Archivos", () => {
-    openTab(FILES + group.project.name);
-    closeSidebar();
-  });
-  const remove = iconButton("close", "Quitar Proyecto", () => deleteProject(group.project), "danger");
+  group.last.className = "last";
+  text.append(group.name, group.last);
+  group.caret = iconButton("down", "Mostrar los hilos", () => toggleProject(group.project.name));
+  group.caret.classList.add("caret");
+  group.kebab = iconButton("dots", "Opciones del Proyecto", () => toggleMenu(group));
+  group.kebab.classList.add("kebab");
+  row.append(group.avatar, text, group.caret, group.kebab);
+
+  group.menu = projectMenu(group);
+  head.append(row, group.menu);
+
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
-  header.append(caret, projectPill(group.project.name), group.name, add, files, remove);
-  group.el.append(header, group.list, group.more);
+  group.el.append(head, group.list, group.more);
   return group;
+}
+
+function projectMenu(group) {
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.hidden = true;
+  const files = () => {
+    openTab(FILES + group.project.name);
+    closeSidebar();
+  };
+  menu.append(
+    menuItem("Nueva conversación", () => newConversation(group.project)),
+    menuItem("Ver archivos", files),
+  );
+  if (group.project.name !== GENERAL) {
+    menu.append(
+      menuItem("Renombrar proyecto", () => renameProject(group)),
+      menuItem("Quitar proyecto", () => deleteProject(group.project), "danger"),
+    );
+  }
+  return menu;
+}
+
+function menuItem(label, action, kind = "") {
+  const button = document.createElement("button");
+  button.className = "item" + (kind ? " " + kind : "");
+  button.textContent = label;
+  button.onclick = (event) => {
+    event.stopPropagation();
+    closeMenu();
+    action();
+  };
+  return button;
+}
+
+let openMenu = null;
+
+function toggleMenu(group) {
+  const opening = openMenu !== group;
+  closeMenu();
+  if (!opening) return;
+  openMenu = group;
+  group.menu.hidden = false;
+  group.kebab.classList.add("open");
+  const menu = group.menu.getBoundingClientRect();
+  const pane = projectsEl.getBoundingClientRect();
+  group.menu.classList.toggle("up", menu.bottom > pane.bottom - 4);
+}
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.menu.hidden = true;
+  openMenu.kebab.classList.remove("open");
+  openMenu = null;
+}
+
+async function openProject(project) {
+  closeMenu();
+  const newest = project.conversations[0];
+  if (!newest) return newConversation(project);
+  openTab(newest.key);
+  closeSidebar();
+}
+
+async function newConversation(project) {
+  const made = await api("/api/conversations", { project: project.name });
+  await refresh();
+  if (made && made.key) openTab(made.key);
+  closeSidebar();
+}
+
+function renameProject(group) {
+  if (group.renaming) return;
+  group.renaming = true;
+  const input = document.createElement("input");
+  input.className = "rename";
+  input.value = group.project.name;
+  group.name.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const value = input.value.trim();
+    if (input.isConnected) input.replaceWith(group.name);
+    group.renaming = false;
+    if (!value || value === group.project.name) return;
+    await api("/api/rename-project", { project: group.project.name, name: value });
+    await refresh();
+  };
+
+  input.onblur = commit;
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") input.blur();
+    if (event.key === "Escape") {
+      input.value = group.project.name;
+      input.blur();
+    }
+  };
 }
 
 function iconButton(name, title, action, kind = "") {
@@ -384,7 +492,10 @@ function conversationEl(conversation) {
   item.el.dataset.conversation = conversation.key;
   item.dot.className = "dot";
   item.title.className = "title";
-  item.el.append(item.dot, item.title);
+  const slot = document.createElement("span");
+  slot.className = "slot";
+  slot.append(item.dot);
+  item.el.append(slot, item.title);
   item.el.onclick = () => {
     openTab(item.conversation.key);
     closeSidebar();
@@ -396,7 +507,7 @@ function conversationEl(conversation) {
     };
     item.el.append(
       iconButton("pencil", "Renombrar", () => rename(item)),
-      iconButton("close", "Borrar Conversación", () => deleteConversation(item.conversation), "danger"),
+      iconButton("close", "Borrar conversación", () => deleteConversation(item.conversation), "danger"),
     );
   }
   return item;
@@ -433,10 +544,25 @@ function renderSidebar() {
     }
     group.project = project;
     setText(group.name, project.name);
+    setText(group.avatar, projectLetter(project.name));
+    group.avatar.style.background = projectColor(project.name);
+    const last = project.last || "";
+    setText(group.last, last);
+    group.last.hidden = !last;
     group.name.title = project.path;
-    group.el.classList.toggle("collapsed", !opened.has(project.name));
+    const collapsed = !opened.has(project.name);
+    group.el.classList.toggle("collapsed", collapsed);
+    group.el.classList.toggle(
+      "active",
+      project.conversations.some((conversation) => conversation.key === activeId),
+    );
+    const caret = collapsed ? "Mostrar los hilos" : "Ocultar los hilos";
+    if (group.caret.title !== caret) {
+      group.caret.title = caret;
+      group.caret.setAttribute("aria-label", caret);
+    }
     const open = expanded.has(project.name);
-    setText(group.more, open ? "Ver Menos" : "Ver Más");
+    setText(group.more, open ? "Ver menos" : "Ver más");
     group.more.hidden = project.conversations.length <= VISIBLE;
     const seen = new Set();
     let lastItem = null;
@@ -462,6 +588,7 @@ function renderSidebar() {
   }
   for (const [name, group] of groupEls) {
     if (alive.has(name)) continue;
+    if (openMenu === group) closeMenu();
     group.el.remove();
     groupEls.delete(name);
   }
@@ -512,18 +639,18 @@ function rename(item) {
 
 async function deleteConversation(conversation) {
   const name = conversation.title || conversation.key;
-  if (!confirm(`¿Borrar la Conversación "${name}"? Se Pierde el Historial.`)) return;
+  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
   await api("/api/delete-conversation", { conversation: conversation.key });
   closeTab(conversation.key);
   await refresh();
 }
 
 async function deleteProject(project) {
-  if (!confirm(`¿Quitar "${project.name}" y Todas Sus Conversaciones?`)) return;
+  if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
   const body = { project: project.name };
   if (project.unversioned) {
-    const warn = `"${project.name}" No Está en git: lo que Tenga Adentro No Existe en Ningún Otro Lado.`;
-    if (!confirm(`${warn} ¿Lo Borro Igual?`)) return;
+    const warn = `"${project.name}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
+    if (!confirm(`${warn} ¿Lo borro igual?`)) return;
     body.force = true;
   }
   for (const conversation of project.conversations) closeTab(conversation.key);
@@ -579,11 +706,11 @@ function createTab(id) {
   transcript.className = "transcript";
   const jump = document.createElement("button");
   jump.className = "jump";
-  jump.textContent = "Ir al Final ↓";
+  jump.textContent = "Ir al final ↓";
   jump.hidden = true;
   const earlier = document.createElement("button");
   earlier.className = "earlier";
-  earlier.textContent = "Ver Anteriores ↑";
+  earlier.textContent = "Ver anteriores ↑";
   earlier.hidden = true;
   pane.append(transcript, earlier, jump);
   panesEl.append(pane);
@@ -663,7 +790,7 @@ function revive() {
 
 function renderEarlier(tab) {
   tab.earlier.hidden = tab.first <= 0;
-  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver Anteriores ↑";
+  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver anteriores ↑";
 }
 
 async function loadEarlier(tab) {
@@ -773,8 +900,8 @@ function tabEl(tab) {
   const close = document.createElement("button");
   close.className = "close";
   close.append(icon("close", 15));
-  close.title = "Cerrar Pestaña";
-  close.setAttribute("aria-label", "Cerrar Pestaña");
+  close.title = "Cerrar pestaña";
+  close.setAttribute("aria-label", "Cerrar pestaña");
   close.onclick = (event) => {
     event.stopPropagation();
     closeTab(tab.id);
@@ -806,9 +933,9 @@ function renderActions() {
   composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
-  sendEl.setAttribute("aria-label", running ? "Frenar el Turno" : "Enviar");
+  sendEl.setAttribute("aria-label", running ? "Frenar el turno" : "Enviar");
   typingEl.hidden = !tab || !tab.typingUser;
-  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} Está Escribiendo…`;
+  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} está escribiendo…`;
   if (tab)
     viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " Mirando" : "";
 }
@@ -991,11 +1118,11 @@ function decorate(element, text) {
     const box = document.createElement("div");
     box.className = "code";
     pre.replaceWith(box);
-    box.append(pre, copyButton(code, "Copiar el Código"));
+    box.append(pre, copyButton(code, "Copiar el código"));
   }
   const actions = document.createElement("div");
   actions.className = "actions";
-  actions.append(copyButton(text, "Copiar el Mensaje"));
+  actions.append(copyButton(text, "Copiar el mensaje"));
   element.append(actions);
 }
 
@@ -1017,7 +1144,7 @@ async function copyText(button, text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    notify("No Pude Copiar");
+    notify("No pude copiar");
     return;
   }
   button.classList.add("copied");
@@ -1037,7 +1164,7 @@ function renderError(tab, event) {
 function renderStopped(tab, event) {
   const element = document.createElement("div");
   element.className = "event stopped";
-  element.textContent = `${event.author} Frenó el Turno`;
+  element.textContent = `${event.author} frenó el turno`;
   append(tab, element);
   tab.live = null;
   tab.steps = null;
@@ -1168,7 +1295,7 @@ function finishTool(tab, event) {
   }
   tool.details.classList.add(event.failed ? "failed" : "ok");
   const stat = tool.stat ? tool.stat + " · " : "";
-  tool.meta.textContent = `${stat}${event.failed ? "Error" : "Ok"} · ${event.ms} ms`;
+  tool.meta.textContent = `${stat}${event.failed ? "error" : "ok"} · ${event.ms} ms`;
   if (tool.output) {
     tool.output.textContent = event.text;
   } else {
@@ -1301,7 +1428,7 @@ async function shrink(file) {
 async function attachFiles(files) {
   const conversation = activeId;
   if (!conversation) return;
-  if (files.some((file) => !file.type.startsWith("image/"))) notify("Por Ahora Sólo Imágenes");
+  if (files.some((file) => !file.type.startsWith("image/"))) notify("Por ahora sólo imágenes");
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     const name = await uploadImage(conversation, await shrink(file));
@@ -1330,7 +1457,7 @@ function renderPending() {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.append(icon("close", 12));
-    remove.setAttribute("aria-label", "Quitar Adjunto");
+    remove.setAttribute("aria-label", "Quitar adjunto");
     remove.onclick = () => {
       list.splice(index, 1);
       renderPending();
@@ -1439,7 +1566,7 @@ const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
 function showTheme() {
   const dark = document.documentElement.dataset.theme !== "light";
-  const title = dark ? "Pasar al Tema Claro" : "Pasar al Tema Oscuro";
+  const title = dark ? "Pasar al tema claro" : "Pasar al tema oscuro";
   themeEl.title = title;
   themeEl.setAttribute("aria-label", title);
   themeColor.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
@@ -1605,7 +1732,7 @@ function receiveShared() {
   const shared = parts.filter((part) => part).join("\n");
   if (!shared) return;
   if (!activeId || isFiles(activeId) || isReadOnly(activeId)) {
-    notify("Compartiste Algo: Abrí una Conversación y Pegalo");
+    notify("Compartiste algo: abrí una conversación y pegalo");
     return;
   }
   inputEl.value = shared;
@@ -1650,7 +1777,7 @@ document.addEventListener(
     pullDistance = event.touches[0].clientY - pullFrom;
     if (pullDistance <= 0) return endPull(false);
     refreshEl.hidden = false;
-    setText(refreshEl, pullDistance > REFRESH_AT ? "Soltá para Recargar" : "Tirá para Recargar");
+    setText(refreshEl, pullDistance > REFRESH_AT ? "Soltá para recargar" : "Tirá para recargar");
     refreshEl.style.transform = `translate(-50%, ${Math.min(pullDistance, 120)}px)`;
   },
   { passive: true },
@@ -1665,6 +1792,8 @@ document.addEventListener(
 );
 
 document.addEventListener("touchcancel", () => endPull(false), { passive: true });
+
+document.addEventListener("click", closeMenu);
 
 async function main() {
   watchOnline();

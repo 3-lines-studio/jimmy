@@ -238,6 +238,14 @@ fn unregister(pid: i32) {
     }
 }
 
+/// Si hay algún turno en curso: la tabla la escriben los que spawnean, así que
+/// también la puede leer el vigilante de la memoria.
+pub fn busy() -> bool {
+    WORKER_PIDS
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) != 0)
+}
+
 /// Signal every worker to go. Called from the signal handler, so it only
 /// touches the lock-free pid array.
 pub fn kill_all() {

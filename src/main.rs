@@ -22,6 +22,7 @@ mod schedule;
 mod skill;
 mod tools;
 mod transport;
+mod watch;
 mod web;
 mod worker;
 
@@ -188,13 +189,31 @@ fn main() {
         }
     };
     let workspace = PathBuf::from(config.workspace.clone());
+    let previews = preview::Previews::new(Path::new(&config.workspace));
     let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
-    serve_web(&config, agent.bus(), agent.clone(), agenda);
+    serve_web(
+        &config,
+        agent.bus(),
+        agent.clone(),
+        agenda,
+        previews.clone(),
+    );
     let mut reaper = reap::Reaper::default();
+    let mut watch = watch::Watch::default();
+    let root = config.root.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(60));
         reaper.reap(std::time::Instant::now());
         memlog::sample(&workspace);
+        let anon = machine::usage(&root).memory.anon;
+        let quiet = !pool::busy() && previews.list().is_empty();
+        if watch.overdue(anon, quiet) {
+            eprintln!(
+                "jimmy: {} MB sin reclamar y sin nadie corriendo: salgo para que me levanten",
+                anon / 1024 / 1024
+            );
+            std::process::exit(1);
+        }
     });
     install_sigterm();
     recover(&agent, transport.clone(), &config.root);
@@ -343,7 +362,13 @@ fn usage() -> i32 {
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
 /// always was.
-fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent, agenda: Sender<String>) {
+fn serve_web(
+    config: &Config,
+    bus: Arc<bus::Bus>,
+    agent: Agent,
+    agenda: Sender<String>,
+    previews: Arc<preview::Previews>,
+) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
@@ -361,7 +386,6 @@ fn serve_web(config: &Config, bus: Arc<bus::Bus>, agent: Agent, agenda: Sender<S
              JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
         );
     }
-    let previews = preview::Previews::new(Path::new(&config.workspace));
     let web = web::Web::new(
         config.root.clone(),
         PathBuf::from(&config.workspace),

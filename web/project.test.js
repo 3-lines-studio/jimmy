@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { projectColor, projectInitials, projectLetter } = require("./project.js");
+const { projectColor, projectInitials, projectLetter, projectTitle } = require("./project.js");
 
 test("el color de un proyecto sale de su nombre, así que no cambia entre recargas", () => {
   assert.equal(projectColor("jimmy"), projectColor("jimmy"));
@@ -21,4 +21,10 @@ test("el círculo lleva la inicial, en mayúscula", () => {
   assert.equal(projectLetter("jimmy"), "J");
   assert.equal(projectLetter("bifrost"), "B");
   assert.equal(projectLetter("ñandú"), "Ñ");
+});
+
+test("el nombre del proyecto se muestra con la primera en mayúscula", () => {
+  assert.equal(projectTitle("jimmy"), "Jimmy");
+  assert.equal(projectTitle("ñandú"), "Ñandú");
+  assert.equal(projectTitle("ken-viejo"), "Ken-viejo");
 });

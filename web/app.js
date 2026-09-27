@@ -203,7 +203,7 @@ function projectPill(name) {
 }
 
 function titleOf(id) {
-  if (isFiles(id)) return "Archivos: " + filesProject(id);
+  if (isFiles(id)) return "Archivos: " + projectTitle(filesProject(id));
   if (isAgenda(id)) return "Agenda";
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
@@ -547,7 +547,7 @@ function renderSidebar() {
       groupEls.set(project.name, group);
     }
     group.project = project;
-    setText(group.name, project.name);
+    setText(group.name, projectTitle(project.name));
     setText(group.avatar, projectLetter(project.name));
     group.avatar.style.background = projectColor(project.name);
     const last = project.last || "";
@@ -650,10 +650,10 @@ async function deleteConversation(conversation) {
 }
 
 async function deleteProject(project) {
-  if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
+  if (!confirm(`¿Quitar "${projectTitle(project.name)}" y todas sus conversaciones?`)) return;
   const body = { project: project.name };
   if (project.unversioned) {
-    const warn = `"${project.name}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
+    const warn = `"${projectTitle(project.name)}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
     if (!confirm(`${warn} ¿Lo borro igual?`)) return;
     body.force = true;
   }

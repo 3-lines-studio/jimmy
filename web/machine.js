@@ -7,7 +7,7 @@ function machineSize(bytes) {
 }
 
 function machineRatio(used, total) {
-  return machineSize(used) + " / " + machineSize(total);
+  return machineSize(used).replace(" GB", "") + "/" + machineSize(total);
 }
 
 function decimal(value) {

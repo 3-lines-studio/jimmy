@@ -187,32 +187,46 @@ textarea:focus {
   display: none;
 }
 
-#machine {
+#base {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
   flex: none;
-  padding: var(--s2) var(--s4) var(--s3);
+  padding: var(--s2) var(--s2) var(--s3);
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 12px;
 }
 
-#machine .row {
+#machine {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: var(--s2);
+}
+
+#machine .stat {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+#machine .stat svg {
+  flex: none;
+  color: var(--faint);
 }
 
 #machine .value {
   color: var(--text);
+  white-space: nowrap;
 }
 
 #footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--s1);
   flex: none;
-  padding: var(--s2) var(--s4) var(--s3);
-  border-top: 1px solid var(--line);
+  margin-left: auto;
 }
 
 #projects {
@@ -221,59 +235,102 @@ textarea:focus {
   padding: var(--s2) var(--s2) var(--s3);
 }
 
-#previews {
+#chips {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
   flex: none;
   padding: var(--s2);
 }
 
+#previews {
+  display: contents;
+}
+
+#previews[hidden] {
+  display: none;
+}
+
+#agenda,
 .preview {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  height: 40px;
-  padding: 0 var(--s2);
-  border-radius: var(--r-md);
+  gap: var(--s1);
+  flex: none;
+  height: 30px;
+  padding: 0 var(--s1) 0 var(--s2);
+  border-radius: var(--r-full);
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
+#agenda:hover,
 .preview:hover {
   background: var(--hover);
-}
-
-.preview .link {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  flex: 1;
-  align-self: stretch;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.preview:hover .link {
   color: var(--text);
 }
 
+#agenda .slot,
+.preview .slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  color: var(--faint);
+}
+
+#agenda .label,
 .preview .name {
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.preview .port {
-  color: var(--faint);
-  font-size: 12px;
+#agenda-badge {
+  margin-left: var(--s1);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--s1);
+  border-radius: var(--r-full);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
 }
 
-.preview .slot {
+#agenda-badge.error {
+  background: var(--err);
+}
+
+.preview .link {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.preview .stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--r-full);
   color: var(--faint);
+}
+
+.preview .stop:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .head {
@@ -1537,10 +1594,6 @@ main {
     height: 40px;
   }
 
-  .preview {
-    height: 40px;
-  }
-
   .files-row,
   .files-dir > summary {
     height: 40px;
@@ -1785,55 +1838,6 @@ main {
 }
 
 /* Agenda */
-
-#agenda {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  flex: none;
-  margin: var(--s2) var(--s2) 0;
-  height: 40px;
-  padding: 0 var(--s2);
-  border-radius: var(--r-md);
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-}
-
-#agenda:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-
-#agenda .label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#agenda .slot {
-  color: var(--faint);
-}
-
-#agenda-badge {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 var(--s1);
-  border-radius: var(--r-full);
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
-}
-
-#agenda-badge.error {
-  background: var(--err);
-}
 
 .pane.agenda {
   overflow-y: auto;

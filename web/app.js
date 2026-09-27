@@ -40,6 +40,8 @@ const PATHS = {
   pause: '<path d="M9 4v16"/><path d="M15 4v16"/>',
   folder:
     '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  disk: '<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>',
 };
 
 function icon(name, size = 16) {
@@ -276,18 +278,16 @@ function previewEl(preview) {
   link.href = preview.path;
   link.target = "_blank";
   link.rel = "noopener";
-  link.title = "Abrir " + preview.path;
+  link.title = "Abrir " + preview.path + " · " + preview.port;
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = preview.name;
-  const port = document.createElement("span");
-  port.className = "port";
-  port.textContent = ":" + preview.port;
   const slot = document.createElement("span");
   slot.className = "slot";
   slot.append(icon("globe", 16));
-  link.append(slot, name, port);
+  link.append(slot, name);
   const stop = iconButton("stop", "Parar " + preview.name, () => stopPreview(preview.name));
+  stop.classList.add("stop");
   row.append(link, stop);
   return row;
 }
@@ -298,18 +298,15 @@ function renderPreviews() {
   previewsEl.replaceChildren(...previews.map(previewEl));
 }
 
-function machineRow(label, value, title) {
-  const row = document.createElement("div");
-  row.className = "row";
-  row.title = title;
-  const name = document.createElement("span");
-  name.className = "label";
-  name.textContent = label;
+function machineStat(name, value, title) {
+  const stat = document.createElement("span");
+  stat.className = "stat";
+  stat.title = title;
   const amount = document.createElement("span");
   amount.className = "value";
   amount.textContent = value;
-  row.append(name, amount);
-  return row;
+  stat.append(icon(name, 13), amount);
+  return stat;
 }
 
 function renderMachine() {
@@ -317,13 +314,13 @@ function renderMachine() {
   machineEl.hidden = !machine;
   if (!machine) return;
   machineEl.replaceChildren(
-    machineRow(
-      "RAM",
+    machineStat(
+      "cpu",
       machineRatio(machine.memory.used, machine.memory.total),
       "La memoria del contenedor, cache y kernel incluidos",
     ),
-    machineRow(
-      "Disco",
+    machineStat(
+      "disk",
       machineRatio(machine.disk.used, machine.disk.total),
       "El volumen " + state.workspace,
     ),

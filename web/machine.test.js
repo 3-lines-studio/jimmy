@@ -11,10 +11,11 @@ test("los megabytes van sin decimales y los gigas con uno", () => {
 test("un uso se muestra contra su tope", () => {
   assert.equal(
     machineRatio(1.9 * 1000 * 1000 * 1000, 32 * 1000 * 1000 * 1000),
-    "1,9 GB / 32 GB",
+    "1,9/32 GB",
   );
   assert.equal(
     machineRatio(2.2 * 1000 * 1000 * 1000, 4.6 * 1000 * 1000 * 1000),
-    "2,2 GB / 4,6 GB",
+    "2,2/4,6 GB",
   );
+  assert.equal(machineRatio(29 * 1000 * 1000, 32 * 1000 * 1000 * 1000), "29 MB/32 GB");
 });

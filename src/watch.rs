@@ -7,7 +7,12 @@
 //! cualquier build reciente.
 
 const LIMIT: u64 = 500 * 1024 * 1024;
-const TICKS: u32 = 5;
+
+/// Cinco vueltas es lo que tarda el reaper en bajar a un huérfano (`reap::TTL`):
+/// la sexta es la del avistamiento y la séptima la del kill, que esta lectura
+/// todavía puede ver alta. Una vuelta más y el que pesa ya no puede ser un
+/// huérfano.
+const TICKS: u32 = 7;
 
 #[derive(Default)]
 pub struct Watch {

@@ -116,7 +116,10 @@ document.querySelector("#logout button").append(icon("logout", 18));
 document.querySelector("#new-project button").append(icon("plus", 17));
 const agendaEl = document.getElementById("agenda");
 agendaEl.prepend(icon("clock", 16));
-agendaEl.onclick = () => openTab(AGENDA);
+agendaEl.onclick = () => {
+  openTab(AGENDA);
+  closeSidebar();
+};
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);

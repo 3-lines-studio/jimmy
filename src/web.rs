@@ -170,6 +170,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
+        ("POST", "/api/rename-project") => rename_project(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
         ("POST", "/api/delete-project") => delete_project(web, &request, stream),
         ("POST", "/api/preview/stop") => stop_preview(web, &request, stream),
@@ -362,6 +363,10 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "name": project.name,
                 "path": project.path.display().to_string(),
                 "unversioned": unversioned(&project.path),
+                "last": project
+                    .conversations
+                    .first()
+                    .and_then(|conversation| conversations::last_message(&conversation.dir)),
                 "conversations": conversations,
             })
         })
@@ -467,6 +472,26 @@ fn delete_conversation(
     match web.agent.delete(&key) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
         Err(error) => http::send_error(stream, 500, &error),
+    }
+}
+
+fn rename_project(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let from = request.field("project").unwrap_or_default();
+    let to = request.field("name").unwrap_or_default();
+    let to = to.trim();
+    if to.is_empty() || to.contains('/') || to.starts_with('.') {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    match conversations::rename_project(&web.root, &web.workspace, from.trim(), to) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Err(error) => http::send_error(stream, 400, &error),
     }
 }
 
@@ -1420,6 +1445,66 @@ done
             get(server.port, "/api/state", Some("jimmy_session=nada")).starts_with("HTTP/1.1 401")
         );
         assert!(get(server.port, "/nada", None).starts_with("HTTP/1.1 404"));
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+
+    #[test]
+    fn the_state_brings_the_last_answer_of_the_project() {
+        let server = start("last");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        let created = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken","title":"una charla"}"#,
+            Some(&cookie),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(created.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let key = body["key"].as_str().unwrap().to_string();
+        std::fs::write(
+            server.root.join("chats").join(&key).join("transcript.jsonl"),
+            "{\"type\":\"message\",\"message\":{\"Role\":\"assistant\",\"Content\":\"quedó el PR #165\"}}\n",
+        )
+        .unwrap();
+
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(state.contains(r#""last":"quedó el PR #165""#), "{state}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_project_is_renamed_with_the_conversations_inside() {
+        let server = start("rename-project");
+        let cookie = login(server.port, "berti@ejemplo.com");
+        post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"ken","title":"una charla"}"#,
+            Some(&cookie),
+        );
+
+        let renamed = post_with(
+            server.port,
+            "/api/rename-project",
+            r#"{"project":"ken","name":"ken-viejo"}"#,
+            Some(&cookie),
+        );
+        assert!(renamed.starts_with("HTTP/1.1 200"), "{renamed}");
+        assert!(!server.workspace.join("projects/ken").exists());
+        assert!(server.workspace.join("projects/ken-viejo").is_dir());
+
+        let state = get(server.port, "/api/state", Some(&cookie));
+        assert!(state.contains(r#""name":"ken-viejo""#), "{state}");
+        assert!(state.contains("una charla"), "{state}");
+
+        let missing = post_with(
+            server.port,
+            "/api/rename-project",
+            r#"{"project":"fantasma","name":"otro"}"#,
+            Some(&cookie),
+        );
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

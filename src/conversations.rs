@@ -140,6 +140,124 @@ pub fn project_dir(workspace: &Path, project: &str) -> PathBuf {
     }
 }
 
+/// Le pone otro nombre a la carpeta del proyecto y a la meta de cada una de sus
+/// conversaciones. `general` no se renombra: es dónde viven las que no son de
+/// nadie.
+pub fn rename_project(
+    root: &Path,
+    workspace: &Path,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
+    if from == GENERAL || to == GENERAL {
+        return Err("ese proyecto no se renombra".into());
+    }
+    if from == to {
+        return Ok(());
+    }
+    let old = workspace.join("projects").join(from);
+    let new = workspace.join("projects").join(to);
+    if !old.is_dir() {
+        return Err(format!("no existe el proyecto {from}"));
+    }
+    if new.exists() {
+        return Err("ese proyecto ya existe".into());
+    }
+    std::fs::rename(&old, &new).map_err(|e| e.to_string())?;
+    for key in discovered(root) {
+        let dir = chat_dir(root, &key);
+        let Some(mut meta) = read_meta(&dir) else {
+            continue;
+        };
+        if meta.project.as_deref() != Some(from) {
+            continue;
+        }
+        meta.project = Some(to.to_string());
+        write_meta(root, &key, &meta)?;
+    }
+    Ok(())
+}
+
+const TAIL: u64 = 16 * 1024;
+const SNIPPET: usize = 140;
+
+/// Lo último que contestó el asistente, en un renglón y sin markdown: es el pie
+/// del proyecto en la sidebar. Mira el final del archivo, que puede ser enorme,
+/// y se queda con la primera línea entera que encuentra.
+pub fn last_message(dir: &Path) -> Option<String> {
+    let text = tail(&dir.join("transcript.jsonl"), TAIL)?;
+    text.lines()
+        .rev()
+        .find_map(said_line)
+        .map(|said| cut(&flatten(&said), SNIPPET))
+}
+
+/// Lo que dijo el asistente en esa línea, si dijo algo: los turnos que sólo
+/// llaman herramientas no cuentan.
+fn said_line(line: &str) -> Option<String> {
+    let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+    let message = entry.get("message")?;
+    if message.get("Role")?.as_str()? != "assistant" {
+        return None;
+    }
+    let content = message.get("Content")?.as_str()?.trim();
+    (!content.is_empty()).then(|| content.to_string())
+}
+
+fn tail(path: &Path, size: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(size);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if start == 0 {
+        return Some(text);
+    }
+    text.split_once('\n').map(|(_, rest)| rest.to_string())
+}
+
+/// Un solo renglón, sin el markdown que en la sidebar no se renderiza.
+fn flatten(text: &str) -> String {
+    let linked = unlink(text);
+    let bare: String = linked.chars().filter(|c| !"`*".contains(*c)).collect();
+    bare.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_start_matches(['#', '>'])
+        .trim()
+        .to_string()
+}
+
+/// `[así](https://ejemplo.com)` se queda con `así`.
+fn unlink(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find("](") else {
+            break;
+        };
+        let after = &rest[open + close + 2..];
+        let Some(end) = after.find(')') else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..open + close]);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn cut(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((at, _)) => text[..at].to_string(),
+        None => text.to_string(),
+    }
+}
+
 fn new_key() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -235,6 +353,123 @@ mod tests {
     fn chat(root: &Path, key: &str) {
         std::fs::create_dir_all(chat_dir(root, key)).unwrap();
         std::fs::write(chat_dir(root, key).join("transcript.jsonl"), "{}\n").unwrap();
+    }
+
+    fn transcript(root: &Path, key: &str, lines: &[&str]) {
+        std::fs::create_dir_all(chat_dir(root, key)).unwrap();
+        std::fs::write(
+            chat_dir(root, key).join("transcript.jsonl"),
+            lines.join("\n") + "\n",
+        )
+        .unwrap();
+    }
+
+    const DIJO: &str = r#"{"type":"message","message":{"Role":"assistant","Content":"%s"}}"#;
+
+    fn said(root: &Path, key: &str) -> Option<String> {
+        last_message(&chat_dir(root, key))
+    }
+
+    #[test]
+    fn the_last_answer_skips_the_turns_that_only_call_tools() {
+        let (root, _) = scratch("last");
+        transcript(
+            &root,
+            "uno",
+            &[
+                &DIJO.replace("%s", "arranco"),
+                r#"{"type":"message","message":{"Role":"user","Content":"dale"}}"#,
+                &DIJO.replace("%s", ""),
+                r#"{"type":"message","message":{"Role":"tool","Content":"salida"}}"#,
+            ],
+        );
+        assert_eq!(said(&root, "uno").as_deref(), Some("arranco"));
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_chat_where_nobody_answered_yet_has_nothing_to_show() {
+        let (root, _) = scratch("sinnada");
+        transcript(
+            &root,
+            "uno",
+            &[r#"{"type":"message","message":{"Role":"user","Content":"hola"}}"#],
+        );
+        assert_eq!(said(&root, "uno"), None);
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_answer_comes_in_one_line_and_without_markdown() {
+        let (root, _) = scratch("renglon");
+        transcript(
+            &root,
+            "uno",
+            &[&DIJO.replace(
+                "%s",
+                "## Listo\\n\\nMirá [el PR](https://github.com/x/y/pull/165) y el `cargo test`: **todo verde**.",
+            )],
+        );
+        assert_eq!(
+            said(&root, "uno").as_deref(),
+            Some("Listo Mirá el PR y el cargo test: todo verde.")
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_long_answer_is_cut_without_breaking_a_character() {
+        let (root, _) = scratch("corte");
+        let largo = "ñ".repeat(400);
+        transcript(&root, "uno", &[&DIJO.replace("%s", &largo)]);
+        let said = said(&root, "uno").unwrap();
+        assert_eq!(said.chars().count(), SNIPPET);
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_transcript_longer_than_the_tail_still_finds_the_last_answer() {
+        let (root, _) = scratch("cola");
+        let mut lines = vec![String::from(
+            r#"{"type":"message","message":{"Role":"assistant","Content":"vieja"}}"#,
+        )];
+        for i in 0..2000 {
+            lines.push(format!(
+                r#"{{"type":"message","message":{{"Role":"tool","Content":"salida {i}"}}}}"#,
+            ));
+        }
+        lines.push(
+            r#"{"type":"message","message":{"Role":"assistant","Content":"la última"}}"#.to_string(),
+        );
+        let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+        transcript(&root, "uno", &borrowed);
+        assert_eq!(said(&root, "uno").as_deref(), Some("la última"));
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn renaming_a_project_moves_the_folder_and_its_conversations() {
+        let (root, workspace) = scratch("renombrar");
+        let key = create(&root, &workspace, "ken", "una charla").unwrap();
+        rename_project(&root, &workspace, "ken", "ken-viejo").unwrap();
+        assert!(!workspace.join("projects/ken").exists());
+        assert!(workspace.join("projects/ken-viejo").is_dir());
+        let listed = projects(&root, &workspace);
+        let moved = listed.iter().find(|p| p.name == "ken-viejo").unwrap();
+        assert_eq!(moved.conversations[0].key, key);
+        assert_eq!(moved.conversations[0].cwd, workspace.join("projects/ken-viejo"));
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_project_that_is_not_there_or_already_exists_is_not_renamed() {
+        let (root, workspace) = scratch("norename");
+        assert!(rename_project(&root, &workspace, "fantasma", "otro").is_err());
+        assert!(rename_project(&root, &workspace, "ken", "bifrost").is_err());
+        assert!(rename_project(&root, &workspace, GENERAL, "otro").is_err());
+        assert!(rename_project(&root, &workspace, "ken", GENERAL).is_err());
+        assert!(workspace.join("projects/ken").is_dir());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[test]

@@ -141,7 +141,7 @@ async function request(path, options) {
   }
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    notify((data && data.error) || `Jimmy Contestó ${response.status}`);
+    notify((data && data.error) || `Jimmy contestó ${response.status}`);
     return null;
   }
   return data;
@@ -512,18 +512,18 @@ function rename(item) {
 
 async function deleteConversation(conversation) {
   const name = conversation.title || conversation.key;
-  if (!confirm(`¿Borrar la Conversación "${name}"? Se Pierde el Historial.`)) return;
+  if (!confirm(`¿Borrar la conversación "${name}"? Se pierde el historial.`)) return;
   await api("/api/delete-conversation", { conversation: conversation.key });
   closeTab(conversation.key);
   await refresh();
 }
 
 async function deleteProject(project) {
-  if (!confirm(`¿Quitar "${project.name}" y Todas Sus Conversaciones?`)) return;
+  if (!confirm(`¿Quitar "${project.name}" y todas sus conversaciones?`)) return;
   const body = { project: project.name };
   if (project.unversioned) {
-    const warn = `"${project.name}" No Está en git: lo que Tenga Adentro No Existe en Ningún Otro Lado.`;
-    if (!confirm(`${warn} ¿Lo Borro Igual?`)) return;
+    const warn = `"${project.name}" no está en git: lo que tenga adentro no existe en ningún otro lado.`;
+    if (!confirm(`${warn} ¿Lo borro igual?`)) return;
     body.force = true;
   }
   for (const conversation of project.conversations) closeTab(conversation.key);
@@ -808,7 +808,7 @@ function renderActions() {
   sendEl.classList.toggle("stop", running && !composerEl.hidden);
   sendEl.setAttribute("aria-label", running ? "Frenar el turno" : "Enviar");
   typingEl.hidden = !tab || !tab.typingUser;
-  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} Está Escribiendo…`;
+  if (tab && tab.typingUser) typingEl.textContent = `${tab.typingUser} está escribiendo…`;
   if (tab)
     viewersEl.textContent = tab.viewers.length > 1 ? tab.viewers.join(", ") + " Mirando" : "";
 }
@@ -1037,7 +1037,7 @@ function renderError(tab, event) {
 function renderStopped(tab, event) {
   const element = document.createElement("div");
   element.className = "event stopped";
-  element.textContent = `${event.author} Frenó el Turno`;
+  element.textContent = `${event.author} frenó el turno`;
   append(tab, element);
   tab.live = null;
   tab.steps = null;

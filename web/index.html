@@ -27,13 +27,6 @@
     <div id="app">
       <div id="backdrop" hidden></div>
       <aside id="sidebar">
-        <header>
-          <strong>Jimmy</strong>
-          <div id="header-actions">
-            <button id="theme"></button>
-            <form id="logout" method="post" action="/api/logout"><button aria-label="Salir" title="Salir"></button></form>
-          </div>
-        </header>
         <form id="new-project">
           <input
             id="project-name"
@@ -51,6 +44,10 @@
         </button>
         <div id="previews" hidden></div>
         <div id="machine" hidden></div>
+        <div id="footer">
+          <button id="theme"></button>
+          <form id="logout" method="post" action="/api/logout"><button aria-label="Salir" title="Salir"></button></form>
+        </div>
       </aside>
 
       <main>

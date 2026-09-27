@@ -143,32 +143,6 @@ textarea:focus {
   border-right: 1px solid var(--line);
 }
 
-#sidebar > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 52px;
-  flex: none;
-  padding: 0 var(--s2) 0 var(--s4);
-  border-bottom: 1px solid var(--line);
-}
-
-#sidebar > header strong {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-#sidebar > header form {
-  display: flex;
-}
-
-#header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-}
-
 #logout button {
   display: flex;
   align-items: center;
@@ -229,6 +203,16 @@ textarea:focus {
 
 #machine .value {
   color: var(--text);
+}
+
+#footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s1);
+  flex: none;
+  padding: var(--s2) var(--s4) var(--s3);
+  border-top: 1px solid var(--line);
 }
 
 #projects {

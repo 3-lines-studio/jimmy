@@ -334,6 +334,7 @@ function projectEl(project) {
     project,
     name: document.createElement("span"),
     last: document.createElement("span"),
+    size: document.createElement("span"),
     avatar: document.createElement("span"),
     caret: document.createElement("button"),
     menu: document.createElement("div"),
@@ -356,12 +357,13 @@ function projectEl(project) {
   text.className = "text";
   group.name.className = "name";
   group.last.className = "last";
+  group.size.className = "size";
   text.append(group.name, group.last);
   group.caret = iconButton("down", "Mostrar los hilos", () => toggleProject(group.project.name));
   group.caret.classList.add("caret");
   group.kebab = iconButton("dots", "Opciones del Proyecto", () => toggleMenu(group));
   group.kebab.classList.add("kebab");
-  row.append(group.avatar, text, group.caret, group.kebab);
+  row.append(group.avatar, text, group.size, group.caret, group.kebab);
 
   group.menu = projectMenu(group);
   head.append(row, group.menu);
@@ -554,6 +556,9 @@ function renderSidebar() {
     const last = project.last || "";
     setText(group.last, last);
     group.last.hidden = !last;
+    const size = project.size ? projectSize(project.size) : "";
+    setText(group.size, size);
+    group.size.hidden = !size;
     group.name.title = project.path;
     const collapsed = !opened.has(project.name);
     group.el.classList.toggle("collapsed", collapsed);

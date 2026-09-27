@@ -13,6 +13,7 @@ use axe::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -203,6 +204,23 @@ pub fn duplicate(workspace: &Path, from: &str, to: &str) -> Result<(), String> {
         return Err("no pude copiar los archivos".into());
     }
     Ok(())
+}
+
+/// Lo que el proyecto ocupa en el volumen: los bloques que reserva cada
+/// archivo, que es lo que descuenta el `df`, y no los bytes que dice tener. No
+/// sigue symlinks, igual que `du`.
+pub fn size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.metadata() {
+            Ok(meta) if meta.is_dir() => size(&entry.path()),
+            Ok(meta) => meta.blocks() * 512,
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 const TAIL: u64 = 16 * 1024;
@@ -612,6 +630,32 @@ mod tests {
         let conversation = get(&root, &workspace, &key);
         assert_eq!(conversation.project, "ken");
         assert_eq!(conversation.title.as_deref(), Some("arrancar ken"));
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn el_peso_suma_lo_de_adentro_y_no_sigue_symlinks() {
+        let (root, workspace) = scratch("peso");
+        let dir = workspace.join("projects/peso");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.go"), "package main").unwrap();
+        assert_eq!(
+            size(&dir),
+            size(&dir.join("src")),
+            "da igual el subdirectorio"
+        );
+
+        let solo_archivos = size(&dir);
+        assert!(solo_archivos > 0);
+        std::os::unix::fs::symlink("/data/workspace", dir.join("afuera")).unwrap();
+        assert_eq!(size(&dir), solo_archivos, "el symlink no se sigue");
+
+        std::fs::write(dir.join("nota.txt"), vec![0u8; 10_000]).unwrap();
+        assert!(
+            size(&dir) >= solo_archivos + 10_000,
+            "un archivo grande suma lo que pide"
+        );
+        assert_eq!(size(&workspace.join("projects/fantasma")), 0);
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 }

@@ -365,6 +365,10 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "name": project.name,
                 "path": project.path.display().to_string(),
                 "unversioned": unversioned(&project.path),
+                "size": match project.name == conversations::GENERAL {
+                    true => 0,
+                    false => conversations::size(&project.path),
+                },
                 "last": project
                     .conversations
                     .iter()
@@ -1178,6 +1182,17 @@ done
         serde_json::from_str(&body_in(response)).unwrap()
     }
 
+    fn weight(state: &str, project: &str) -> u64 {
+        json_in(state)["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == project)
+            .unwrap()["size"]
+            .as_u64()
+            .unwrap()
+    }
+
     fn conversation(port: u16, cookie: &str) -> String {
         let created = post_with(
             port,
@@ -1646,10 +1661,13 @@ done
         assert!(state.contains("\"unversioned\":false"), "{state}");
         assert!(state.contains("\"machine\""), "{state}");
         assert!(state.contains("\"disk\""), "{state}");
+        assert_eq!(weight(&state, "ken"), 0, "el proyecto vacío no pesa");
+        assert_eq!(weight(&state, "general"), 0, "general es el workspace");
 
         std::fs::write(server.workspace.join("projects/ken/nota.txt"), "x").unwrap();
         state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"unversioned\":true"), "{state}");
+        assert!(weight(&state, "ken") > 0, "el archivo suma peso: {state}");
 
         let logout = post(server.port, "/api/logout", "{}");
         assert!(logout.contains("Max-Age=0"), "{logout}");

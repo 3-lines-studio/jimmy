@@ -397,6 +397,12 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.project .size {
+  flex: none;
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .project .caret {
   transition: transform 120ms ease;
 }

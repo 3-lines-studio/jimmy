@@ -316,13 +316,14 @@ function renderMachine() {
   machineEl.replaceChildren(
     machineStat(
       "cpu",
-      machineRatio(machine.memory.used, machine.memory.total),
-      "La memoria del contenedor, cache y kernel incluidos",
+      machineSize(machine.memory.used),
+      machineRatio(machine.memory.used, machine.memory.total) +
+        " · la memoria del contenedor, cache y kernel incluidos",
     ),
     machineStat(
       "disk",
-      machineRatio(machine.disk.used, machine.disk.total),
-      "El volumen " + state.workspace,
+      machinePercent(machine.disk.used, machine.disk.total),
+      machineRatio(machine.disk.used, machine.disk.total) + " · el volumen " + state.workspace,
     ),
   );
 }

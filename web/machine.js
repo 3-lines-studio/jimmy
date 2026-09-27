@@ -7,7 +7,11 @@ function machineSize(bytes) {
 }
 
 function machineRatio(used, total) {
-  return machineSize(used).replace(" GB", "") + "/" + machineSize(total);
+  return machineSize(used) + " / " + machineSize(total);
+}
+
+function machinePercent(used, total) {
+  return Math.round((used / total) * 100) + "%";
 }
 
 function decimal(value) {
@@ -15,5 +19,5 @@ function decimal(value) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { machineSize, machineRatio };
+  module.exports = { machineSize, machineRatio, machinePercent };
 }

@@ -143,12 +143,7 @@ pub fn project_dir(workspace: &Path, project: &str) -> PathBuf {
 /// Le pone otro nombre a la carpeta del proyecto y a la meta de cada una de sus
 /// conversaciones. `general` no se renombra: es dónde viven las que no son de
 /// nadie.
-pub fn rename_project(
-    root: &Path,
-    workspace: &Path,
-    from: &str,
-    to: &str,
-) -> Result<(), String> {
+pub fn rename_project(root: &Path, workspace: &Path, from: &str, to: &str) -> Result<(), String> {
     if from == GENERAL || to == GENERAL {
         return Err("ese proyecto no se renombra".into());
     }
@@ -439,7 +434,8 @@ mod tests {
             ));
         }
         lines.push(
-            r#"{"type":"message","message":{"Role":"assistant","Content":"la última"}}"#.to_string(),
+            r#"{"type":"message","message":{"Role":"assistant","Content":"la última"}}"#
+                .to_string(),
         );
         let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
         transcript(&root, "uno", &borrowed);
@@ -457,7 +453,10 @@ mod tests {
         let listed = projects(&root, &workspace);
         let moved = listed.iter().find(|p| p.name == "ken-viejo").unwrap();
         assert_eq!(moved.conversations[0].key, key);
-        assert_eq!(moved.conversations[0].cwd, workspace.join("projects/ken-viejo"));
+        assert_eq!(
+            moved.conversations[0].cwd,
+            workspace.join("projects/ken-viejo")
+        );
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 

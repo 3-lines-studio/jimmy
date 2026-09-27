@@ -14,6 +14,7 @@ const PATHS = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   left: '<path d="m15 18-6-6 6-6"/>',
   pencil:
     '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
@@ -70,6 +71,7 @@ const tabs = new Map();
 let activeId = null;
 let pending = new Map();
 const OPEN_KEY = "jimmy-open-projects";
+const GENERAL = "general";
 
 function readOpenProjects() {
   try {
@@ -327,36 +329,142 @@ function projectEl(project) {
     el: document.createElement("div"),
     project,
     name: document.createElement("span"),
+    last: document.createElement("span"),
+    avatar: document.createElement("span"),
+    caret: document.createElement("button"),
+    menu: document.createElement("div"),
+    kebab: document.createElement("button"),
     list: document.createElement("div"),
     conversations: new Map(),
     more: document.createElement("button"),
+    renaming: false,
   };
   group.el.className = "group";
   group.list.className = "threads";
-  const header = document.createElement("div");
-  header.className = "project toggle";
-  header.onclick = () => toggleProject(group.project.name);
-  const caret = document.createElement("span");
-  caret.className = "caret";
-  caret.append(icon("down", 14));
+
+  const head = document.createElement("div");
+  head.className = "head";
+  const row = document.createElement("div");
+  row.className = "project";
+  row.onclick = () => openProject(group.project);
+  group.avatar.className = "avatar";
+  const text = document.createElement("span");
+  text.className = "text";
   group.name.className = "name";
-  const add = iconButton("plus", "Nueva conversación", async () => {
-    const made = await api("/api/conversations", { project: group.project.name });
-    await refresh();
-    if (made && made.key) openTab(made.key);
-    closeSidebar();
-  });
-  const files = iconButton("folder", "Ver archivos", () => {
-    openTab(FILES + group.project.name);
-    closeSidebar();
-  });
-  const remove = iconButton("close", "Quitar proyecto", () => deleteProject(group.project), "danger");
+  group.last.className = "last";
+  text.append(group.name, group.last);
+  group.caret = iconButton("down", "Mostrar los hilos", () => toggleProject(group.project.name));
+  group.caret.classList.add("caret");
+  group.kebab = iconButton("dots", "Opciones del Proyecto", () => toggleMenu(group));
+  group.kebab.classList.add("kebab");
+  row.append(group.avatar, text, group.caret, group.kebab);
+
+  group.menu = projectMenu(group);
+  head.append(row, group.menu);
+
   group.more.className = "more";
   group.more.hidden = true;
   group.more.onclick = () => toggleMore(group.project.name);
-  header.append(caret, projectPill(group.project.name), group.name, add, files, remove);
-  group.el.append(header, group.list, group.more);
+  group.el.append(head, group.list, group.more);
   return group;
+}
+
+function projectMenu(group) {
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.hidden = true;
+  const files = () => {
+    openTab(FILES + group.project.name);
+    closeSidebar();
+  };
+  menu.append(
+    menuItem("Nueva conversación", () => newConversation(group.project)),
+    menuItem("Ver archivos", files),
+  );
+  if (group.project.name !== GENERAL) {
+    menu.append(
+      menuItem("Renombrar proyecto", () => renameProject(group)),
+      menuItem("Quitar proyecto", () => deleteProject(group.project), "danger"),
+    );
+  }
+  return menu;
+}
+
+function menuItem(label, action, kind = "") {
+  const button = document.createElement("button");
+  button.className = "item" + (kind ? " " + kind : "");
+  button.textContent = label;
+  button.onclick = (event) => {
+    event.stopPropagation();
+    closeMenu();
+    action();
+  };
+  return button;
+}
+
+let openMenu = null;
+
+function toggleMenu(group) {
+  const opening = openMenu !== group;
+  closeMenu();
+  if (!opening) return;
+  openMenu = group;
+  group.menu.hidden = false;
+  group.kebab.classList.add("open");
+  const menu = group.menu.getBoundingClientRect();
+  const pane = projectsEl.getBoundingClientRect();
+  group.menu.classList.toggle("up", menu.bottom > pane.bottom - 4);
+}
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.menu.hidden = true;
+  openMenu.kebab.classList.remove("open");
+  openMenu = null;
+}
+
+async function openProject(project) {
+  closeMenu();
+  const newest = project.conversations[0];
+  if (!newest) return newConversation(project);
+  openTab(newest.key);
+  closeSidebar();
+}
+
+async function newConversation(project) {
+  const made = await api("/api/conversations", { project: project.name });
+  await refresh();
+  if (made && made.key) openTab(made.key);
+  closeSidebar();
+}
+
+function renameProject(group) {
+  if (group.renaming) return;
+  group.renaming = true;
+  const input = document.createElement("input");
+  input.className = "rename";
+  input.value = group.project.name;
+  group.name.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const value = input.value.trim();
+    if (input.isConnected) input.replaceWith(group.name);
+    group.renaming = false;
+    if (!value || value === group.project.name) return;
+    await api("/api/rename-project", { project: group.project.name, name: value });
+    await refresh();
+  };
+
+  input.onblur = commit;
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") input.blur();
+    if (event.key === "Escape") {
+      input.value = group.project.name;
+      input.blur();
+    }
+  };
 }
 
 function iconButton(name, title, action, kind = "") {
@@ -384,7 +492,10 @@ function conversationEl(conversation) {
   item.el.dataset.conversation = conversation.key;
   item.dot.className = "dot";
   item.title.className = "title";
-  item.el.append(item.dot, item.title);
+  const slot = document.createElement("span");
+  slot.className = "slot";
+  slot.append(item.dot);
+  item.el.append(slot, item.title);
   item.el.onclick = () => {
     openTab(item.conversation.key);
     closeSidebar();
@@ -433,8 +544,23 @@ function renderSidebar() {
     }
     group.project = project;
     setText(group.name, project.name);
+    setText(group.avatar, projectLetter(project.name));
+    group.avatar.style.background = projectColor(project.name);
+    const last = project.last || "";
+    setText(group.last, last);
+    group.last.hidden = !last;
     group.name.title = project.path;
-    group.el.classList.toggle("collapsed", !opened.has(project.name));
+    const collapsed = !opened.has(project.name);
+    group.el.classList.toggle("collapsed", collapsed);
+    group.el.classList.toggle(
+      "active",
+      project.conversations.some((conversation) => conversation.key === activeId),
+    );
+    const caret = collapsed ? "Mostrar los hilos" : "Ocultar los hilos";
+    if (group.caret.title !== caret) {
+      group.caret.title = caret;
+      group.caret.setAttribute("aria-label", caret);
+    }
     const open = expanded.has(project.name);
     setText(group.more, open ? "Ver menos" : "Ver más");
     group.more.hidden = project.conversations.length <= VISIBLE;
@@ -462,6 +588,7 @@ function renderSidebar() {
   }
   for (const [name, group] of groupEls) {
     if (alive.has(name)) continue;
+    if (openMenu === group) closeMenu();
     group.el.remove();
     groupEls.delete(name);
   }
@@ -1665,6 +1792,8 @@ document.addEventListener(
 );
 
 document.addEventListener("touchcancel", () => endPull(false), { passive: true });
+
+document.addEventListener("click", closeMenu);
 
 async function main() {
   watchOnline();

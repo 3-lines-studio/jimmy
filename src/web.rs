@@ -365,8 +365,8 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "unversioned": unversioned(&project.path),
                 "last": project
                     .conversations
-                    .first()
-                    .and_then(|conversation| conversations::last_message(&conversation.dir)),
+                    .iter()
+                    .find_map(|conversation| conversations::last_message(&conversation.dir)),
                 "conversations": conversations,
             })
         })
@@ -1447,7 +1447,6 @@ done
         assert!(get(server.port, "/nada", None).starts_with("HTTP/1.1 404"));
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
-
 
     #[test]
     fn the_state_brings_the_last_answer_of_the_project() {

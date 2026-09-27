@@ -12,4 +12,9 @@ function projectInitials(name) {
   return name.slice(0, 3);
 }
 
-if (typeof module !== "undefined") module.exports = { projectColor, projectInitials };
+function projectLetter(name) {
+  return name.slice(0, 1).toUpperCase();
+}
+
+if (typeof module !== "undefined")
+  module.exports = { projectColor, projectInitials, projectLetter };

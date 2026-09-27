@@ -1460,6 +1460,7 @@ showTheme();
 /* Sidebar drawer */
 
 let drawerInHistory = false;
+let drawerClosing = false;
 
 function hideSidebar() {
   sidebar.classList.remove("open");
@@ -1478,7 +1479,15 @@ function closeSidebar() {
   hideSidebar();
   if (!drawerInHistory) return;
   drawerInHistory = false;
+  drawerClosing = true;
   history.back();
+}
+
+function drawerBack() {
+  if (!drawerClosing) return false;
+  drawerClosing = false;
+  remember();
+  return true;
 }
 
 document.getElementById("menu").onclick = openSidebar;
@@ -1548,12 +1557,14 @@ document.addEventListener(
 );
 
 addEventListener("popstate", () => {
+  if (drawerBack()) return;
   if (!drawerInHistory) return;
   drawerInHistory = false;
   hideSidebar();
 });
 
 addEventListener("hashchange", () => {
+  if (drawerBack()) return;
   const id = decodeURIComponent(location.hash.slice(1));
   if (id === activeId) return;
   if (id && knownTab(id)) openTab(id);

@@ -259,6 +259,7 @@ fn versioned(page: &str) -> String {
         .unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/files.js", &format!("/files.js?v={version}"))
+        .replace("/machine.js", &format!("/machine.js?v={version}"))
         .replace("/agenda.js", &format!("/agenda.js?v={version}"))
         .replace("/project.js", &format!("/project.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
@@ -1307,6 +1308,29 @@ done
         assert!(page.contains("/theme.css?v="), "{page}");
         assert!(page.contains("/style.css?v="), "{page}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn every_asset_in_the_page_carries_the_version() {
+        let page = versioned(INDEX);
+        let assets: Vec<&str> = page
+            .split('"')
+            .filter(|value| {
+                value.starts_with('/') && (value.contains(".js") || value.contains(".css"))
+            })
+            .collect();
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.starts_with("/machine.js?v=")),
+            "{page}"
+        );
+        for asset in assets {
+            assert!(
+                asset.contains("?v="),
+                "{asset} viaja sin versión: los assets van con caché immutable, así que el navegador lo revive viejo"
+            );
+        }
     }
 
     #[test]

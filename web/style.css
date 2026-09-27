@@ -238,22 +238,24 @@ textarea:focus {
 }
 
 #previews {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   flex: none;
-  padding: var(--s2) var(--s2) 0;
+  padding: var(--s2);
 }
 
 .preview {
   display: flex;
   align-items: center;
-  gap: var(--s1);
-  height: 30px;
+  gap: var(--s2);
+  height: 40px;
   padding: 0 var(--s2);
-  margin-bottom: var(--s1);
+  border-radius: var(--r-md);
 }
 
 .preview:hover {
   background: var(--hover);
-  border-radius: var(--r-full);
 }
 
 .preview .link {
@@ -263,9 +265,14 @@ textarea:focus {
   flex: 1;
   align-self: stretch;
   min-width: 0;
-  color: var(--text);
+  color: var(--muted);
   font-size: 13px;
+  font-weight: 600;
   text-decoration: none;
+}
+
+.preview:hover .link {
+  color: var(--text);
 }
 
 .preview .name {
@@ -281,9 +288,8 @@ textarea:focus {
   font-size: 12px;
 }
 
-.preview .link svg {
-  flex: none;
-  color: var(--muted);
+.preview .slot {
+  color: var(--faint);
 }
 
 .head {
@@ -1802,20 +1808,30 @@ main {
   gap: var(--s2);
   flex: none;
   margin: var(--s2) var(--s2) 0;
-  height: 32px;
-  padding: 0 var(--s3);
-  border-radius: var(--r-full);
-  color: var(--text);
-  font-size: 13.5px;
+  height: 40px;
+  padding: 0 var(--s2);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
 }
 
 #agenda:hover {
   background: var(--hover);
+  color: var(--text);
 }
 
-#agenda svg {
-  flex: none;
-  color: var(--muted);
+#agenda .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#agenda .slot {
+  color: var(--faint);
 }
 
 #agenda-badge {

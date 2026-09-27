@@ -117,7 +117,10 @@ document.getElementById("attach").append(icon("clip", 17));
 document.querySelector("#logout button").append(icon("logout", 18));
 document.querySelector("#new-project button").append(icon("plus", 17));
 const agendaEl = document.getElementById("agenda");
-agendaEl.prepend(icon("clock", 16));
+const agendaSlot = document.createElement("span");
+agendaSlot.className = "slot";
+agendaSlot.append(icon("clock", 16));
+agendaEl.prepend(agendaSlot);
 agendaEl.onclick = () => {
   openTab(AGENDA);
   closeSidebar();
@@ -280,7 +283,10 @@ function previewEl(preview) {
   const port = document.createElement("span");
   port.className = "port";
   port.textContent = ":" + preview.port;
-  link.append(name, port, icon("globe", 14));
+  const slot = document.createElement("span");
+  slot.className = "slot";
+  slot.append(icon("globe", 16));
+  link.append(slot, name, port);
   const stop = iconButton("stop", "Parar " + preview.name, () => stopPreview(preview.name));
   row.append(link, stop);
   return row;

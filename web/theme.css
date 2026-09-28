@@ -52,21 +52,21 @@
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono",
     "Roboto Mono", monospace;
 
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
+  --r-sm: 0.375rem;
+  --r-md: 0.625rem;
+  --r-lg: 0.875rem;
   --r-full: 999px;
 
-  --measure: 720px;
+  --measure: 45rem;
 
-  --row: 34px;
+  --row: 2.125rem;
 
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 12px;
-  --s4: 16px;
-  --s5: 24px;
-  --s6: 32px;
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
 }
 
 :root[data-theme="light"] {
@@ -122,6 +122,6 @@
 /* Sin mouse el blanco de toque crece */
 @media (hover: none) {
   :root {
-    --row: 40px;
+    --row: 2.5rem;
   }
 }

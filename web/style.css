@@ -15,7 +15,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.6 var(--sans);
+  font: 0.875rem/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -180,7 +180,7 @@ textarea:focus {
   flex: none;
   padding: var(--s2) var(--s4) 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 #online:empty {
@@ -196,7 +196,7 @@ textarea:focus {
   padding: var(--s2) var(--s2) var(--s3);
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 #machine {
@@ -263,7 +263,7 @@ textarea:focus {
   border-radius: var(--r-full);
   background: var(--raised);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 500;
 }
 
@@ -292,14 +292,14 @@ textarea:focus {
 
 #agenda-badge {
   margin-left: var(--s1);
-  min-width: 16px;
-  height: 16px;
+  min-width: 1rem;
+  height: 1rem;
   padding: 0 var(--s1);
   border-radius: var(--r-full);
   background: var(--accent);
   color: var(--bg);
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 0.625rem;
+  line-height: 1rem;
   text-align: center;
 }
 
@@ -365,7 +365,7 @@ textarea:focus {
   height: 24px;
   border-radius: var(--r-full);
   color: #fff;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
 }
 
@@ -381,7 +381,7 @@ textarea:focus {
 
 .project .name {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 
@@ -392,7 +392,7 @@ textarea:focus {
 .project .size {
   flex: none;
   color: var(--faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .project .caret {
@@ -433,7 +433,7 @@ textarea:focus {
   padding: 0 var(--s2);
   border-radius: var(--r-sm);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: left;
 }
 
@@ -493,7 +493,7 @@ textarea:focus {
   height: var(--row);
   padding: 0 var(--s1) 0 var(--s2);
   color: var(--faint);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .slot {
@@ -544,7 +544,7 @@ textarea:focus {
   padding: 0 var(--s1);
   border-radius: var(--r-full);
   color: #fff;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -756,7 +756,7 @@ main {
 
 #viewers {
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   white-space: nowrap;
 }
 
@@ -765,7 +765,7 @@ main {
   padding: 0 var(--s3);
   border-color: var(--line-strong);
   border-radius: var(--r-full);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 /* Panes */
@@ -831,12 +831,12 @@ main {
 .event.user .author {
   margin-bottom: 4px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
 .event.assistant {
-  font-size: 14.5px;
+  font-size: 0.90625rem;
   line-height: 1.65;
   color: var(--text);
 }
@@ -851,7 +851,7 @@ main {
 
 .event.assistant :where(h2, h3, h4) {
   margin: var(--s4) 0 var(--s2);
-  font-size: 14.5px;
+  font-size: 0.90625rem;
   font-weight: 600;
 }
 
@@ -876,7 +876,7 @@ main {
 .event.assistant code {
   padding: 1px 5px;
   border-radius: var(--r-sm);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .event.assistant pre {
@@ -888,7 +888,7 @@ main {
 .event.assistant pre code {
   padding: 0;
   background: none;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .event.assistant .code {
@@ -975,7 +975,7 @@ main {
 .event.assistant table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .event.assistant th,
@@ -989,7 +989,7 @@ main {
 
 .event.assistant th {
   color: var(--faint);
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -1043,7 +1043,7 @@ main {
 
 .event.stopped {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .event .thumbs {
@@ -1072,7 +1072,7 @@ main {
 
 .steps {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .steps > summary {
@@ -1094,7 +1094,7 @@ main {
 
 .steps .caret {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 0.5625rem;
   transition: transform 120ms ease;
 }
 
@@ -1146,7 +1146,7 @@ main {
   height: 26px;
   padding: 0 var(--s2);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .steps .tool > summary:hover {
@@ -1187,7 +1187,7 @@ main {
   padding: 1px 5px;
   border-radius: var(--r-sm);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
 }
 
 .tool .dir svg {
@@ -1198,7 +1198,7 @@ main {
   margin-left: auto;
   flex: none;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
 }
 
 .tool.failed .meta {
@@ -1220,7 +1220,7 @@ main {
   max-height: 420px;
   overflow: auto;
   color: var(--code);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1228,7 +1228,7 @@ main {
 .diff-path {
   margin-bottom: var(--s2);
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
 }
 
 .diff-line {
@@ -1251,7 +1251,7 @@ main {
 .diff-result {
   margin-top: var(--s3);
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   white-space: pre-wrap;
 }
 
@@ -1308,7 +1308,7 @@ main {
   max-width: var(--measure);
   margin: 0 auto;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 #typing[hidden] {
@@ -1440,7 +1440,7 @@ main {
   border-radius: 50%;
   background: var(--thumb-close);
   color: #fff;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1;
 }
 
@@ -1490,7 +1490,7 @@ main {
   -webkit-backdrop-filter: blur(14px);
   border-radius: var(--r-full);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   pointer-events: none;
   transform: translate(-50%, 0);
 }
@@ -1506,7 +1506,7 @@ main {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.8125rem;
   box-shadow: var(--shadow-md);
   transform: translateX(-50%);
 }
@@ -1572,7 +1572,7 @@ main {
 
   input,
   textarea {
-    font-size: 16px;
+    font-size: 1rem;
   }
 
   #toast {
@@ -1669,7 +1669,7 @@ main {
   flex: none;
   height: var(--row);
   padding: 0 var(--s2) 0 var(--s1);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .files-path {
@@ -1677,7 +1677,7 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font: 12.5px var(--mono);
+  font: 0.78125rem var(--mono);
 }
 
 .files-body {
@@ -1696,7 +1696,7 @@ main {
   padding: 0 var(--s2);
   overflow: hidden;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: left;
   border-radius: var(--r-full);
 }
@@ -1722,7 +1722,7 @@ main {
   margin-left: auto;
   padding-left: var(--s3);
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
 }
 
 .files-dir > summary {
@@ -1742,7 +1742,7 @@ main {
 .files-note {
   padding: var(--s3);
   color: var(--faint);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .files-code {
@@ -1753,7 +1753,7 @@ main {
 .files-code pre {
   margin: 0;
   color: var(--code);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   line-height: 1.55;
 }
 
@@ -1813,7 +1813,7 @@ main {
 .agenda-empty {
   padding: var(--s6) 0;
   color: var(--faint);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: center;
 }
 
@@ -1829,7 +1829,7 @@ main {
   border-radius: var(--r-full);
   border: 1px solid var(--line-strong);
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .agenda-foot button:hover {
@@ -1878,12 +1878,12 @@ main {
 
 .task-when {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }
 
 .task-last {
   color: var(--faint);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1916,7 +1916,7 @@ main {
   flex: none;
   width: 72px;
   color: var(--faint);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1924,7 +1924,7 @@ main {
 .run-text {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   line-height: 1.5;
 }
 
@@ -1942,5 +1942,5 @@ main {
 
 .run-empty {
   color: var(--faint);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
 }

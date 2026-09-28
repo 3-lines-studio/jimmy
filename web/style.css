@@ -1359,7 +1359,7 @@ main {
   flex: 1;
   min-height: var(--row);
   max-height: 40dvh;
-  padding: var(--s1) var(--s3);
+  padding: calc((var(--row) - 1lh) / 2) var(--s3);
   background: transparent;
   border: 0;
   resize: none;

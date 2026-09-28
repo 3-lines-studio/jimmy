@@ -599,7 +599,6 @@ textarea:focus {
   flex: none;
   height: var(--row);
   margin: var(--s3) var(--s3) var(--s2);
-  padding: 0 var(--s1);
   background: var(--raised);
   border: 0;
   border-radius: var(--r-full);
@@ -1324,7 +1323,6 @@ main {
   max-width: var(--measure);
   min-height: var(--row);
   margin: 0 auto;
-  padding: 0 var(--s1);
   background: var(--glass);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);

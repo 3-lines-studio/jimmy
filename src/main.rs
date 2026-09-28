@@ -161,7 +161,7 @@ fn main() {
     axe::sentinel::seed(&config.api_key);
     if transport_name() != "none" && config.allowed.is_empty() {
         eprintln!(
-            "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
+            "jimmy: atención: JIMMY_ALLOWED_USER_IDS está vacío, así que el bot no le contesta a nadie"
         );
     }
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
@@ -239,7 +239,7 @@ fn main() {
             if event.is_bot {
                 continue;
             }
-            if !config.allowed.is_empty() && !config.allowed.contains(&event.sender) {
+            if !config.allowed.contains(&event.sender) {
                 eprintln!("jimmy: ignoré un mensaje de {}", event.sender);
                 continue;
             }
@@ -385,6 +385,9 @@ fn serve_web(
             "jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM nadie puede entrar; \
              JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
         );
+    }
+    if auth.dev {
+        eprintln!("jimmy: JIMMY_WEB_DEV=1: el link de entrada sale en la respuesta");
     }
     let web = web::Web::new(
         config.root.clone(),

@@ -58,6 +58,21 @@ pub fn chat_dir(root: &Path, key: &str) -> PathBuf {
     root.join("chats").join(key)
 }
 
+/// Un key de chat es un nombre, o dos con una barra en el medio, como el
+/// `canal/hilo` de Slack. Cada parte tiene que ser un nombre de los que se ven
+/// en un directorio, así un `..` no saca el camino de `chats/`.
+pub fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('.')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+
 /// Resolves a key that may not have a conversation yet, which is the case of
 /// every chat a transport names for the first time.
 pub fn get(root: &Path, workspace: &Path, key: &str) -> Conversation {
@@ -393,6 +408,20 @@ mod tests {
         std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
         std::fs::create_dir_all(workspace.join("projects/bifrost")).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn a_key_never_leaves_the_chats_directory() {
+        assert!(valid_key("7469057930"));
+        assert!(valid_key("web-1790635496411-f755c8d0"));
+        assert!(valid_key("C0123/1726570000.123456"));
+        assert!(!valid_key(".."));
+        assert!(!valid_key("../../afuera"));
+        assert!(!valid_key("a/../b"));
+        assert!(!valid_key("/etc"));
+        assert!(!valid_key("a//b"));
+        assert!(!valid_key(".oculto"));
+        assert!(!valid_key(""));
     }
 
     fn chat(root: &Path, key: &str) {

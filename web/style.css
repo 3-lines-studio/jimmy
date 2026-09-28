@@ -1780,6 +1780,10 @@ main {
 }
 
 @media (min-width: 761px) {
+  #new-project {
+    margin-top: calc((52px - var(--row)) / 2);
+  }
+
   .files-tree {
     flex: none;
     width: 280px;

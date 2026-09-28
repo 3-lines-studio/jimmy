@@ -1514,6 +1514,10 @@ main {
 /* Mobile */
 
 @media (max-width: 760px) {
+  html {
+    font-size: 112.5%;
+  }
+
   #sidebar {
     display: none;
     width: 100%;

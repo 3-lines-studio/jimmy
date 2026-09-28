@@ -1,10 +1,12 @@
 //! El vigilante de la memoria que ya no se puede culpar a nadie: cuando no hay
-//! workers, ni previews, ni nada corriendo, lo que el proceso principal pesa es
-//! lo que no se suelta, y el reinicio es la única salida.
+//! workers, ni previews, ni nada corriendo, lo que el contenedor pesa es lo que
+//! no se suelta, y el reinicio es la única salida.
 //!
-//! Mide `anon`, que es la memoria de los procesos: la page cache y el slab los
-//! reclama el kernel solo, así que un umbral sobre el total dispararía por
-//! cualquier build reciente.
+//! Mide `memory.current` entero y no el `anon`, porque lo que se cobra es el
+//! cgroup: la page cache y el slab que dejan los builds no los reclama nadie,
+//! que el techo son 32 GB y el kernel no siente presión. `memory.high` y
+//! `memory.reclaim` están montados de solo lectura, así que sólo queda nacer de
+//! nuevo.
 
 const LIMIT: u64 = 500 * 1024 * 1024;
 
@@ -20,10 +22,10 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Una vuelta del reaper. `anon` son los bytes del cgroup que no son cache
-    /// ni kernel, y `quiet` que no hay nadie corriendo.
-    pub fn overdue(&mut self, anon: u64, quiet: bool) -> bool {
-        self.high = if quiet && anon > LIMIT {
+    /// Una vuelta del reaper. `used` son los bytes del cgroup enteros, cache y
+    /// slab adentro, y `quiet` que no hay nadie corriendo.
+    pub fn overdue(&mut self, used: u64, quiet: bool) -> bool {
+        self.high = if quiet && used > LIMIT {
             self.high + 1
         } else {
             0

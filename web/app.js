@@ -26,7 +26,7 @@ const PATHS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   clip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
-  down: '<path d="m19 12-7 7-7-7"/><path d="M12 5v14"/>',
+  "arrow-down": '<path d="m19 12-7 7-7-7"/><path d="M12 5v14"/>',
   stop: '<rect width="13" height="13" x="5.5" y="5.5" rx="2"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
@@ -735,7 +735,7 @@ function createTab(id) {
   const down = document.createElement("button");
   down.className = "down";
   down.setAttribute("aria-label", "Ir al final");
-  down.append(icon("down", 15));
+  down.append(icon("arrow-down", 15));
   down.hidden = true;
   nav.append(up, down);
   pane.append(transcript, nav);

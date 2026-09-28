@@ -258,7 +258,7 @@ textarea:focus {
   align-items: center;
   gap: var(--s1);
   flex: none;
-  height: 30px;
+  height: var(--row);
   padding: 0 var(--s1) 0 var(--s2);
   border-radius: var(--r-full);
   background: var(--raised);
@@ -437,7 +437,7 @@ textarea:focus {
 .menu .item {
   display: flex;
   width: 100%;
-  height: 32px;
+  height: var(--row);
   padding: 0 var(--s2);
   border-radius: var(--r-sm);
   color: var(--text);
@@ -461,7 +461,7 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  height: 34px;
+  height: var(--row);
   padding: 0 var(--s1) 0 var(--s2);
   border-radius: var(--r-md);
   color: var(--muted);
@@ -498,7 +498,7 @@ textarea:focus {
 .more:not([hidden]) {
   display: flex;
   width: 100%;
-  height: 30px;
+  height: var(--row);
   padding: 0 var(--s1) 0 var(--s2);
   color: var(--faint);
   font-size: 12px;
@@ -619,7 +619,7 @@ textarea:focus {
 
 #new-project input,
 #new-project button {
-  height: 34px;
+  height: var(--row);
   border-radius: var(--r-full);
 }
 
@@ -683,8 +683,8 @@ main {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 38px;
-  height: 38px;
+  width: var(--row);
+  height: var(--row);
   padding: 0;
   border-radius: var(--r-full);
   background: var(--glass);
@@ -711,7 +711,7 @@ main {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  height: 34px;
+  height: var(--row);
   max-width: 240px;
   padding: 0 var(--s1) 0 var(--s3);
   border-radius: var(--r-full);
@@ -770,7 +770,7 @@ main {
 }
 
 #tab-actions button {
-  height: 30px;
+  height: var(--row);
   padding: 0 var(--s3);
   border-color: var(--line-strong);
   border-radius: var(--r-full);
@@ -1604,19 +1604,6 @@ main {
 /* Sin mouse: los blancos de toque crecen */
 
 @media (hover: none) {
-  .conversation {
-    height: 40px;
-  }
-
-  .files-row,
-  .files-dir > summary {
-    height: 40px;
-  }
-
-  .tab {
-    height: 40px;
-  }
-
   .icon-btn {
     width: 32px;
     height: 32px;
@@ -1645,8 +1632,7 @@ main {
   }
 
   #theme,
-  #logout button,
-  #menu {
+  #logout button {
     width: 38px;
     height: 38px;
   }
@@ -1654,11 +1640,6 @@ main {
   #theme svg {
     width: 20px;
     height: 20px;
-  }
-
-  #new-project input,
-  #new-project button {
-    height: 40px;
   }
 
   #new-project button {
@@ -1723,7 +1704,7 @@ main {
 
 .files-back {
   flex: none;
-  height: 30px;
+  height: var(--row);
   padding: 0 var(--s2) 0 var(--s1);
   font-size: 13px;
 }
@@ -1748,7 +1729,7 @@ main {
   align-items: center;
   gap: var(--s2);
   width: 100%;
-  height: 30px;
+  height: var(--row);
   padding: 0 var(--s2);
   overflow: hidden;
   white-space: nowrap;

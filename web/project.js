@@ -12,10 +12,6 @@ function projectInitials(name) {
   return name.slice(0, 3);
 }
 
-function projectLetter(name) {
-  return name.slice(0, 1).toUpperCase();
-}
-
 function projectTitle(name) {
   return name.slice(0, 1).toUpperCase() + name.slice(1);
 }
@@ -33,8 +29,8 @@ function projectSize(bytes) {
 if (typeof module !== "undefined")
   module.exports = {
     projectColor,
+    projectHue,
     projectInitials,
-    projectLetter,
     projectTitle,
     projectSize,
   };

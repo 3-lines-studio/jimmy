@@ -41,6 +41,8 @@ const PROJECT: &str = include_str!("../web/project.js");
 const MARKDOWN: &str = include_str!("../web/markdown.js");
 const MACHINE: &str = include_str!("../web/machine.js");
 const TOOL: &str = include_str!("../web/tool.js");
+const AVATAR: &str = include_str!("../web/avatar.js");
+const AVATAR_STYLE: &str = include_str!("../web/avatar.css");
 const ICON: &str = include_str!("../web/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../web/icon-512.png");
@@ -133,6 +135,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
         ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
+        ("GET", "/avatar.css") => asset(stream, CSS, AVATAR_STYLE.as_bytes()),
         ("GET", "/app.js") => asset(stream, JS, APP.as_bytes()),
         ("GET", "/files.js") => asset(stream, JS, FILES.as_bytes()),
         ("GET", "/agenda.js") => asset(stream, JS, AGENDA.as_bytes()),
@@ -140,6 +143,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/markdown.js") => asset(stream, JS, MARKDOWN.as_bytes()),
         ("GET", "/machine.js") => asset(stream, JS, MACHINE.as_bytes()),
         ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
+        ("GET", "/avatar.js") => asset(stream, JS, AVATAR.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
         ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
@@ -265,8 +269,10 @@ fn versioned(page: &str) -> String {
         .replace("/project.js", &format!("/project.js?v={version}"))
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
+        .replace("/avatar.js", &format!("/avatar.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
+        .replace("/avatar.css", &format!("/avatar.css?v={version}"))
         .replace("/icon.svg", &format!("/icon.svg?v={version}"))
         .replace("/icon-192.png", &format!("/icon-192.png?v={version}"))
         .replace(
@@ -1291,6 +1297,13 @@ done
         let project = get(server.port, "/project.js", None);
         assert!(project.starts_with("HTTP/1.1 200"), "{project}");
         assert!(project.contains("function projectColor"), "{project}");
+
+        let avatar = get(server.port, "/avatar.js", None);
+        assert!(avatar.starts_with("HTTP/1.1 200"), "{avatar}");
+        assert!(avatar.contains("function avatarState"), "{avatar}");
+
+        let avatar_style = get(server.port, "/avatar.css", None);
+        assert!(avatar_style.contains("text/css"), "{avatar_style}");
 
         let agenda = get(server.port, "/agenda.js", None);
         assert!(agenda.starts_with("HTTP/1.1 200"), "{agenda}");

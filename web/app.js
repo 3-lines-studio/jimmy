@@ -330,7 +330,7 @@ function projectEl(project) {
     project,
     name: document.createElement("span"),
     size: document.createElement("span"),
-    avatar: document.createElement("span"),
+    avatar: avatarBot(project.name),
     caret: document.createElement("button"),
     menu: document.createElement("div"),
     kebab: document.createElement("button"),
@@ -347,7 +347,6 @@ function projectEl(project) {
   const row = document.createElement("div");
   row.className = "project";
   row.onclick = () => openProject(group.project);
-  group.avatar.className = "avatar";
   const text = document.createElement("span");
   text.className = "text";
   group.name.className = "name";
@@ -537,8 +536,6 @@ function renderSidebar() {
     }
     group.project = project;
     setText(group.name, projectTitle(project.name));
-    setText(group.avatar, projectLetter(project.name));
-    group.avatar.style.background = projectColor(project.name);
     const size = project.size ? projectSize(project.size) : "";
     setText(group.size, size);
     group.size.hidden = !size;
@@ -585,6 +582,37 @@ function renderSidebar() {
     group.el.remove();
     groupEls.delete(name);
   }
+  renderAvatars();
+}
+
+function renderAvatars() {
+  for (const group of groupEls.values())
+    paintAvatar(group.avatar, projectAvatarState(group.project));
+}
+
+function projectAvatarState(project) {
+  const running = project.conversations.some((conversation) => conversation.running);
+  let open = false;
+  let active = false;
+  let attention = null;
+  let busy = false;
+  for (const tab of tabs.values()) {
+    if (projectOf(tab.id) !== project.name) continue;
+    open = true;
+    if (tab.id === activeId) active = true;
+    if (tab.attention) attention = tab.attention;
+    if (!isRunning(tab.id)) continue;
+    if (Date.now() - (tab.lastEvent || 0) > WAITING_MS) continue;
+    busy = true;
+  }
+  return avatarState({
+    open,
+    active,
+    error: attention === "error",
+    done: attention === "done",
+    working: busy,
+    waiting: running && !busy,
+  });
 }
 
 function toggleMore(name) {
@@ -741,6 +769,7 @@ function createTab(id) {
     viewers: [],
     synced: false,
     attention: null,
+    lastEvent: 0,
     count: 0,
   };
   tab.item = tabEl(tab);
@@ -880,6 +909,7 @@ function closeTab(id) {
   tab.item.el.remove();
   pending.delete(id);
   tabs.delete(id);
+  renderAvatars();
   if (activeId !== id) {
     remember();
     renderTabs();
@@ -966,8 +996,19 @@ function updateTitle() {
 
 const NOT_LOGGED = new Set(["delta", "tool_delta", "typing", "presence", "online", "synced"]);
 
+let waitingTimer = 0;
+
+function noteActivity(tab, event) {
+  if (NOT_LOGGED.has(event.event)) return;
+  tab.lastEvent = Date.now();
+  if (!isRunning(tab.id)) return;
+  clearTimeout(waitingTimer);
+  waitingTimer = setTimeout(renderAvatars, WAITING_MS + 60);
+}
+
 function render(tab, event) {
   if (!NOT_LOGGED.has(event.event) && !tab.prepending) tab.count++;
+  noteActivity(tab, event);
   switch (event.event) {
     case "user":
       renderUser(tab, event);
@@ -1716,6 +1757,7 @@ document.addEventListener("click", closeMenu);
 
 async function main() {
   watchOnline();
+  watchPointer();
   await refresh();
   restore();
   renderTabs();

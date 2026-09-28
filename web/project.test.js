@@ -2,8 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert");
 const {
   projectColor,
+  projectHue,
   projectInitials,
-  projectLetter,
   projectTitle,
   projectSize,
 } = require("./project.js");
@@ -23,10 +23,10 @@ test("la pill lleva las tres primeras letras del proyecto", () => {
   assert.equal(projectInitials("go"), "go");
 });
 
-test("el círculo lleva la inicial, en mayúscula", () => {
-  assert.equal(projectLetter("jimmy"), "J");
-  assert.equal(projectLetter("bifrost"), "B");
-  assert.equal(projectLetter("ñandú"), "Ñ");
+test("el tono del proyecto da la vuelta al círculo cromático", () => {
+  assert.equal(projectHue("jimmy"), projectHue("jimmy"));
+  assert.match(String(projectHue("bifrost")), /^\d{1,3}$/);
+  assert.ok(projectHue("heimdall") < 360);
 });
 
 test("el nombre del proyecto se muestra con la primera en mayúscula", () => {

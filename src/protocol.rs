@@ -106,10 +106,10 @@ mod tests {
         };
         assert!(author.is_empty());
         let new: Event =
-            serde_json::from_str(r#"{"event":"user","text":"hola","author":"berti"}"#).unwrap();
+            serde_json::from_str(r#"{"event":"user","text":"hola","author":"bob"}"#).unwrap();
         let Event::User { author, .. } = new else {
             panic!("esperaba un mensaje")
         };
-        assert_eq!(author, "berti");
+        assert_eq!(author, "bob");
     }
 }

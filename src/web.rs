@@ -1063,15 +1063,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("root");
         let workspace = base.join("workspace");
-        std::fs::create_dir_all(root.join("chats/7469057930")).unwrap();
+        std::fs::create_dir_all(root.join("chats/123456789")).unwrap();
         std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
         std::fs::write(
-            root.join("chats/7469057930/conversation.jsonl"),
+            root.join("chats/123456789/conversation.jsonl"),
             "{\"event\":\"user\",\"text\":\"hola\"}\n{\"event\":\"done\",\"text\":\"listo\"}\n",
         )
         .unwrap();
         std::fs::write(
-            root.join("chats/7469057930/transcript.jsonl"),
+            root.join("chats/123456789/transcript.jsonl"),
             "{\"type\":\"message\",\"message\":{\"Role\":\"user\",\"Content\":\"el gato duerme\"}}\n",
         )
         .unwrap();
@@ -1101,7 +1101,7 @@ done
         agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let auth = Auth::new("berti@ejemplo.com, ana@ejemplo.com", &root, None, dev);
+        let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
@@ -1325,7 +1325,7 @@ done
             assert!(png.contains("image/png"), "{png}");
         }
 
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(
@@ -1385,11 +1385,7 @@ done
     #[test]
     fn without_the_dev_flag_the_link_stays_out_of_the_response() {
         let server = start_with("plain", false);
-        let answer = post(
-            server.port,
-            "/api/login",
-            r#"{"email":"berti@ejemplo.com"}"#,
-        );
+        let answer = post(server.port, "/api/login", r#"{"email":"bob@ejemplo.com"}"#);
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         assert!(
             !answer.contains("link"),
@@ -1401,11 +1397,7 @@ done
     #[test]
     fn the_session_cookie_is_http_only_secure_and_lasts_a_month() {
         let server = start("cookie");
-        let answer = post(
-            server.port,
-            "/api/login",
-            r#"{"email":"berti@ejemplo.com"}"#,
-        );
+        let answer = post(server.port, "/api/login", r#"{"email":"bob@ejemplo.com"}"#);
         let magic = link_in(&answer).rsplit('=').next().unwrap().to_string();
         let followed = get(server.port, &format!("/auth?token={magic}"), None);
         let set = followed
@@ -1439,7 +1431,7 @@ done
         assert!(without.starts_with("HTTP/1.1 303"), "{without}");
         assert!(without.contains("Location: /login"), "{without}");
 
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let out = get(server.port, "/preview/loquesea/", Some(&cookie));
         assert!(out.starts_with("HTTP/1.1 404"), "{out}");
         assert!(out.contains("loquesea no está corriendo"), "{out}");
@@ -1456,7 +1448,7 @@ done
             let previews = server.previews.clone();
             move || crate::preview::listen(previews)
         });
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let order = crate::preview::Order {
             op: "start".into(),
@@ -1524,7 +1516,7 @@ done
     #[test]
     fn the_state_brings_the_last_answer_of_the_project() {
         let server = start("last");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -1548,7 +1540,7 @@ done
     #[test]
     fn a_project_is_renamed_with_the_conversations_inside() {
         let server = start("rename-project");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         post_with(
             server.port,
             "/api/conversations",
@@ -1583,7 +1575,7 @@ done
     #[test]
     fn a_project_is_duplicated_with_the_files_inside() {
         let server = start("duplicate-project");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         std::fs::write(
             server.workspace.join("projects/ken/nota.txt"),
             "los mismos archivos",
@@ -1662,14 +1654,14 @@ done
     #[test]
     fn the_state_lists_projects_and_conversations() {
         let server = start("state");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"general\""), "{state}");
-        assert!(state.contains("\"7469057930\""), "{state}");
+        assert!(state.contains("\"123456789\""), "{state}");
         assert!(state.contains("\"read_only\":true"), "{state}");
         assert!(state.contains("\"ken\""), "{state}");
-        assert!(state.contains("\"berti\""), "{state}");
+        assert!(state.contains("\"bob\""), "{state}");
         assert!(state.contains("\"workspace\""), "{state}");
         assert!(state.contains("\"unversioned\":false"), "{state}");
         assert!(state.contains("\"machine\""), "{state}");
@@ -1690,7 +1682,7 @@ done
     #[test]
     fn the_web_creates_and_writes_its_own_conversations() {
         let server = start("write");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -1738,7 +1730,7 @@ done
         }
         assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
         assert!(
-            text.contains("\"author\":\"berti\""),
+            text.contains("\"author\":\"bob\""),
             "el mensaje dice quién lo mandó: {text}"
         );
         assert!(text.contains("\"done\""), "{text}");
@@ -1773,22 +1765,22 @@ done
     #[test]
     fn a_conversation_that_comes_from_a_transport_is_not_written_from_the_web() {
         let server = start("readonly");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let sent = post_with(
             server.port,
             "/api/send",
-            r#"{"conversation":"7469057930","text":"hola"}"#,
+            r#"{"conversation":"123456789","text":"hola"}"#,
             Some(&cookie),
         );
         assert!(sent.starts_with("HTTP/1.1 400"), "{sent}");
         let renamed = post_with(
             server.port,
             "/api/rename",
-            r#"{"conversation":"7469057930","title":"mío"}"#,
+            r#"{"conversation":"123456789","title":"mío"}"#,
             Some(&cookie),
         );
         assert!(renamed.starts_with("HTTP/1.1 400"), "{renamed}");
-        assert!(!server.root.join("chats/7469057930/meta.json").exists());
+        assert!(!server.root.join("chats/123456789/meta.json").exists());
 
         let created = post_with(
             server.port,
@@ -1808,7 +1800,7 @@ done
     #[test]
     fn an_image_goes_up_as_a_name_and_comes_back_whole() {
         let server = start("upload");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let png = b"\x89PNG\r\n\x1a\nlos bytes que sean";
@@ -1858,7 +1850,7 @@ done
     #[test]
     fn an_upload_only_touches_its_own_conversation() {
         let server = start("traversal");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let uploaded = post_bytes(
@@ -1908,7 +1900,7 @@ done
 
         let readonly = post_bytes(
             server.port,
-            "/api/upload?conversation=7469057930&name=a.png",
+            "/api/upload?conversation=123456789&name=a.png",
             b"x",
             Some(&cookie),
         );
@@ -1939,7 +1931,7 @@ done
     #[test]
     fn the_file_tree_lists_a_project_one_level_at_a_time() {
         let server = start("files-tree");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::create_dir_all(ken.join("src/transport")).unwrap();
         std::fs::create_dir_all(ken.join("target")).unwrap();
@@ -2029,7 +2021,7 @@ done
     #[test]
     fn the_file_tree_cannot_leave_the_project() {
         let server = start("files-outside");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::write(server.root.join("afuera.txt"), "mas secreto").unwrap();
         std::fs::write(server.workspace.join("notes.md"), "secreto").unwrap();
@@ -2061,12 +2053,12 @@ done
     #[test]
     fn the_stream_says_who_is_watching() {
         let server = start("presence");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
             stream,
-            "GET /api/stream?conversation=7469057930 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+            "GET /api/stream?conversation=123456789 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
         )
         .unwrap();
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
@@ -2078,7 +2070,7 @@ done
             .collect();
         assert!(
             seen.iter()
-                .any(|line| line.contains("presence") && line.contains("berti")),
+                .any(|line| line.contains("presence") && line.contains("bob")),
             "esperaba quién está mirando: {seen:?}"
         );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
@@ -2087,16 +2079,16 @@ done
     #[test]
     fn the_online_stream_knows_everyone_connected() {
         let server = start("online");
-        let berti = login(server.port, "berti@ejemplo.com");
+        let bob = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
             stream,
-            "GET /api/online HTTP/1.1\r\nHost: jimmy\r\nCookie: {berti}\r\n\r\n"
+            "GET /api/online HTTP/1.1\r\nHost: jimmy\r\nCookie: {bob}\r\n\r\n"
         )
         .unwrap();
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
-        assert!(next_data(&mut lines, "\"online\"").contains("berti"));
+        assert!(next_data(&mut lines, "\"online\"").contains("bob"));
 
         let ana = login(server.port, "ana@ejemplo.com");
         let mut second = connect(server.port);
@@ -2106,14 +2098,14 @@ done
         )
         .unwrap();
         let seen = next_data(&mut lines, "\"online\"");
-        assert!(seen.contains("ana") && seen.contains("berti"), "{seen}");
+        assert!(seen.contains("ana") && seen.contains("bob"), "{seen}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
     fn typing_goes_live_but_is_not_written_down() {
         let server = start("typing");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -2133,7 +2125,7 @@ done
         let readonly = post_with(
             server.port,
             "/api/typing",
-            r#"{"conversation":"7469057930"}"#,
+            r#"{"conversation":"123456789"}"#,
             Some(&cookie),
         );
         assert!(readonly.starts_with("HTTP/1.1 400"), "{readonly}");
@@ -2155,7 +2147,7 @@ done
         );
         assert!(sent.starts_with("HTTP/1.1 200"), "{sent}");
         let seen = next_data(&mut lines, "\"typing\"");
-        assert!(seen.contains("berti"), "{seen}");
+        assert!(seen.contains("bob"), "{seen}");
 
         let log = server
             .root
@@ -2179,23 +2171,19 @@ done
     #[test]
     fn the_stream_opens_at_a_turn_and_the_history_goes_back() {
         let server = start("history");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let mut log = String::new();
         for turn in 0..300 {
             log.push_str(&format!(
                 "{{\"event\":\"user\",\"text\":\"{turn}\"}}\n{{\"event\":\"tool_start\",\"id\":\"{turn}\",\"name\":\"read\",\"args\":\"{{}}\"}}\n{{\"event\":\"done\",\"text\":\"{turn}\"}}\n"
             ));
         }
-        std::fs::write(
-            server.root.join("chats/7469057930/conversation.jsonl"),
-            &log,
-        )
-        .unwrap();
+        std::fs::write(server.root.join("chats/123456789/conversation.jsonl"), &log).unwrap();
 
         let mut stream = connect(server.port);
         write!(
             stream,
-            "GET /api/stream?conversation=7469057930&since=0 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+            "GET /api/stream?conversation=123456789&since=0 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
         )
         .unwrap();
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
@@ -2221,7 +2209,7 @@ done
 
         let body = get(
             server.port,
-            "/api/history?conversation=7469057930&before=702",
+            "/api/history?conversation=123456789&before=702",
             Some(&cookie),
         );
         let earlier: serde_json::Value =
@@ -2235,7 +2223,7 @@ done
 
         let empty = get(
             server.port,
-            "/api/history?conversation=7469057930&before=0",
+            "/api/history?conversation=123456789&before=0",
             Some(&cookie),
         );
         let empty: serde_json::Value =
@@ -2248,12 +2236,12 @@ done
     #[test]
     fn cancel_only_goes_to_a_conversation_you_can_write() {
         let server = start("cancel");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let refused = post_with(
             server.port,
             "/api/cancel",
-            r#"{"conversation":"7469057930"}"#,
+            r#"{"conversation":"123456789"}"#,
             Some(&cookie),
         );
         assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
@@ -2283,7 +2271,7 @@ done
         )
         .unwrap_or_default();
         assert!(
-            log.contains("\"stopped\"") && log.contains("berti"),
+            log.contains("\"stopped\"") && log.contains("bob"),
             "el log dice quién frenó: {log}"
         );
 
@@ -2315,11 +2303,11 @@ done
     #[test]
     fn search_looks_in_what_was_said() {
         let server = start("search");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let found = get(server.port, "/api/search?q=gato", Some(&cookie));
         assert!(found.contains("el gato duerme"), "{found}");
-        assert!(found.contains("7469057930"), "{found}");
+        assert!(found.contains("123456789"), "{found}");
         assert!(found.contains("\"role\":\"user\""), "{found}");
 
         let nothing = get(server.port, "/api/search?q=elefante", Some(&cookie));
@@ -2334,7 +2322,7 @@ done
     #[test]
     fn delete_takes_the_conversation_with_it() {
         let server = start("delete");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -2359,18 +2347,18 @@ done
         let refused = post_with(
             server.port,
             "/api/delete-conversation",
-            r#"{"conversation":"7469057930"}"#,
+            r#"{"conversation":"123456789"}"#,
             Some(&cookie),
         );
         assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
-        assert!(server.root.join("chats/7469057930").is_dir());
+        assert!(server.root.join("chats/123456789").is_dir());
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
     fn a_project_is_deleted_only_when_it_has_nothing_to_lose() {
         let server = start("delete-project");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let projects = server.workspace.join("projects");
 
         std::fs::write(projects.join("ken/nota.txt"), "trabajo sin versionar").unwrap();
@@ -2459,12 +2447,12 @@ done
     #[test]
     fn the_stream_replays_the_backlog_and_then_follows() {
         let server = start("stream");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
             stream,
-            "GET /api/stream?conversation=7469057930 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+            "GET /api/stream?conversation=123456789 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
         )
         .unwrap();
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
@@ -2480,9 +2468,9 @@ done
         assert!(seen[1].contains("\"listo\""), "{seen:?}");
         assert!(seen[2].contains("synced"), "{seen:?}");
 
-        let log = Log::in_dir(&server.root.join("chats/7469057930"));
+        let log = Log::in_dir(&server.root.join("chats/123456789"));
         server.bus.publish(
-            "7469057930",
+            "123456789",
             &log,
             &Event::Assistant {
                 text: "en vivo".into(),
@@ -2499,12 +2487,12 @@ done
     #[test]
     fn the_stream_skips_what_the_watcher_already_has() {
         let server = start("stream-since");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
             stream,
-            "GET /api/stream?conversation=7469057930&since=1 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
+            "GET /api/stream?conversation=123456789&since=1 HTTP/1.1\r\nHost: jimmy\r\nCookie: {cookie}\r\n\r\n"
         )
         .unwrap();
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
@@ -2626,11 +2614,11 @@ done
     #[test]
     fn the_agenda_lists_tasks_with_their_last_runs() {
         let server = start("agenda");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         agenda_file(
             &server,
             "memoria",
-            "at = \"05:00\"\ntarget = \"7469057930\"\nprompt = \"reportá\"\n",
+            "at = \"05:00\"\ntarget = \"123456789\"\nprompt = \"reportá\"\n",
         );
         agenda_file(
             &server,
@@ -2654,7 +2642,7 @@ done
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0]["name"], "memoria");
         assert_eq!(tasks[0]["at"], "05:00");
-        assert_eq!(tasks[0]["target"], "7469057930");
+        assert_eq!(tasks[0]["target"], "123456789");
         let runs = tasks[0]["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 5, "sólo se muestran las últimas cinco");
         assert_eq!(runs[0]["text"], "corrida 7");
@@ -2688,7 +2676,7 @@ done
     #[test]
     fn running_a_task_hands_its_name_to_the_scheduler() {
         let server = start("agenda-run");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         agenda_file(&server, "memoria", "at = \"05:00\"\nprompt = \"p\"\n");
 
         let queued = post_with(
@@ -2716,7 +2704,7 @@ done
     #[test]
     fn pausing_a_task_from_the_web_keeps_the_rest_of_the_file() {
         let server = start("agenda-pause");
-        let cookie = login(server.port, "berti@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         agenda_file(
             &server,
             "memoria",

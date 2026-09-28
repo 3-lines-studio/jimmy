@@ -370,7 +370,7 @@ comma-separated `clave=valor` pairs. The default fragments use `{{usuario}}` and
 `{{asistente}}`:
 
 ```sh
-JIMMY_VARS="usuario=Don Berti,asistente=Jimmy"
+JIMMY_VARS="usuario=Ana,asistente=Jimmy"
 ```
 
 A placeholder with no value is a startup error. Single braces are left alone, so
@@ -409,10 +409,11 @@ packages; `node_modules` inside the workspace also lives on the volume.
 
 ## Self-improvement
 
-Jimmy can read and change its own source. The repo is private, so
-`GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
-fetches it without credentials. Repos live in `projects/<name>/` and changes go
-through a pull request; the workflow — reuse the clone, reset to `dev`, branch,
+Jimmy can read and change its own source. The repo is public, so it clones
+without credentials; `GITHUB_TOKEN` is what lets the agent push a branch and
+open a pull request. `axe` is public too, so the build fetches it without
+credentials. Repos live in `projects/<name>/` and changes go through a pull
+request; the workflow — reuse the clone, reset to `dev`, branch,
 `make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
 in `## Proyectos y git` of `prompts/git.md`.
 
@@ -497,3 +498,7 @@ web/              the browser frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
 prompts/          system prompt fragments, baked into the image
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

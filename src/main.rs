@@ -870,8 +870,8 @@ mod tests {
     #[test]
     fn session_key_round_trips() {
         assert_eq!(
-            session_from_key("7469057930").unwrap(),
-            Session::channel("7469057930")
+            session_from_key("123456789").unwrap(),
+            Session::channel("123456789")
         );
         assert_eq!(
             session_from_key("C1/1699.1").unwrap(),
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn the_default_spec_assembles_with_the_vars_the_agent_gets() {
-        let mut vars = prompt::parse_vars("usuario=Don Berti,asistente=Jimmy");
+        let mut vars = prompt::parse_vars("usuario=Ana,asistente=Jimmy");
         vars.push(("skills".into(), "browse — Nav".into()));
         let out = prompt::assemble(prompt::DEFAULT, &prompt::dirs(Path::new(".")), &vars).unwrap();
         assert!(out.contains("browse — Nav"));

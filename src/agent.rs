@@ -1353,7 +1353,7 @@ done
         ));
         let fake = Fake::default();
         agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "bob")
             .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
@@ -1401,7 +1401,7 @@ done
                 &Session::channel("x"),
                 "hola",
                 Vec::new(),
-                "berti",
+                "bob",
             )
             .unwrap();
 
@@ -1478,10 +1478,10 @@ while read -r line; do
 done
 ",
         ));
-        let (_, live) = agent.bus().attach("x", "berti");
+        let (_, live) = agent.bus().attach("x", "bob");
         let fake = Fake::default();
         agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "bob")
             .unwrap();
 
         let seen: Vec<String> = live
@@ -1492,7 +1492,7 @@ done
             .collect();
         assert!(seen[0].contains("\"user\""), "{seen:?}");
         assert!(seen[0].contains("hola"), "{seen:?}");
-        assert!(seen[0].contains("berti"), "{seen:?}");
+        assert!(seen[0].contains("bob"), "{seen:?}");
         assert!(seen[1].contains("\"assistant\""), "{seen:?}");
         assert!(seen[2].contains("\"done\""), "{seen:?}");
         std::fs::remove_dir_all(&root).unwrap();
@@ -1504,7 +1504,7 @@ done
         agent.use_worker_exe(worker_script("dead.sh", "exit 0\n"));
         let fake = Fake::default();
         assert!(agent
-            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "berti")
+            .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "bob")
             .is_err());
         let failures = fake.failures.lock().unwrap();
         assert_eq!(failures.len(), 1);

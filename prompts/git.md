@@ -7,7 +7,7 @@
 
 El clon es descartable: el flujo resetea y limpia sin piedad, así que nada que no esté pusheado sobrevive. No dejes trabajo sin pushear en `projects/<nombre>/`.
 
-En el repo de jimmy hay dos ramas de deploy: `dev` es la mía y `main` es producción, la que deploya la instancia de la esposa de {{usuario}}. Todo cambio mío va a `dev`; `main` solo recibe promociones que decide {{usuario}}. En el resto de los repos la base sigue siendo `main`.
+En el repo de jimmy hay dos ramas de deploy: `dev` es la mía y `main` es producción, la que deploya la instancia estable. Todo cambio mío va a `dev`; `main` solo recibe promociones que decide {{usuario}}. En el resto de los repos la base sigue siendo `main`.
 
 Flujo para un repo:
 

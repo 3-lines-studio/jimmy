@@ -108,6 +108,6 @@ mod tests {
 
     #[test]
     fn the_null_transport_knows_no_chat() {
-        assert!(Null.parse_target("7469057930").is_err());
+        assert!(Null.parse_target("123456789").is_err());
     }
 }

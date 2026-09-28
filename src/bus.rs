@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn detaching_leaves_the_other_connection_of_the_same_user() {
         let bus = Bus::new();
-        let (gone, dead) = bus.attach("chat", "berti");
-        let (_, live) = bus.attach("chat", "berti");
+        let (gone, dead) = bus.attach("chat", "bob");
+        let (_, live) = bus.attach("chat", "bob");
         drop(dead);
         bus.detach("chat", gone);
         while live.try_recv().is_ok() {}

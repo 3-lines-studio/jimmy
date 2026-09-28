@@ -1198,7 +1198,7 @@ mod tests {
         let (head, body) = seen.join().unwrap();
         assert!(head.starts_with("GET / HTTP/1.1\r\n"), "{head}");
         assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
-        assert!(head.contains("X-Forwarded-Host: jimmy.berti.sh"), "{head}");
+        assert!(head.contains("X-Forwarded-Host: jimmy.bob.sh"), "{head}");
         assert_eq!(body, "hola");
     }
 
@@ -1375,7 +1375,7 @@ mod tests {
     }
 
     fn head_with(target: &str, extra: &[(&str, &str)]) -> Head {
-        let mut headers = vec![("Host".to_string(), "jimmy.berti.sh".to_string())];
+        let mut headers = vec![("Host".to_string(), "jimmy.bob.sh".to_string())];
         for (name, value) in extra {
             headers.push((name.to_string(), value.to_string()));
         }

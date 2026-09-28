@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, interactive-widget=resizes-content"
+    />
+    <title>Jimmy</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0e0e11" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Jimmy" />
+    <link rel="stylesheet" href="/theme.css" />
+    <script>
+      (() => {
+        const saved = localStorage.getItem("jimmy-theme");
+        document.documentElement.dataset.theme =
+          saved || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      })();
+    </script>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.6 var(--mono);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: var(--s2);
+        width: 300px;
+        padding: var(--s5);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-md);
+      }
+
+      h1 {
+        margin: 0 0 var(--s3);
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      input,
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--raised);
+        border: 1px solid transparent;
+        border-radius: var(--r-md);
+        padding: 0 var(--s3);
+        height: 36px;
+      }
+
+      input::placeholder {
+        color: var(--faint);
+      }
+
+      input:focus {
+        outline: none;
+        background: var(--bg);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--ring);
+      }
+
+      button {
+        margin-top: var(--s1);
+        background: var(--accent);
+        color: var(--accent-fg);
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-hover);
+      }
+
+      .error {
+        color: var(--err);
+        font-size: 12px;
+      }
+
+      .ok {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          padding: var(--s4);
+        }
+
+        form {
+          width: 100%;
+          max-width: 380px;
+        }
+
+        input,
+        button {
+          height: 44px;
+          font-size: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <form id="login">
+      <h1>Jimmy</h1>
+      <input id="email" type="email" placeholder="Tu mail" autocomplete="email" autofocus />
+      <span class="ok" id="ok" hidden>Si tu mail está en la lista, te llegó un link</span>
+      <span class="error" id="error" hidden>El link venció o ya se usó, pedí otro</span>
+      <button type="submit">Mandame el link</button>
+    </form>
+    <script>
+      const error = document.getElementById("error");
+      const ok = document.getElementById("ok");
+      if (new URLSearchParams(location.search).has("error")) error.hidden = false;
+      document.getElementById("login").onsubmit = async (event) => {
+        event.preventDefault();
+        ok.hidden = true;
+        error.hidden = true;
+        let response;
+        try {
+          response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: document.getElementById("email").value }),
+          });
+        } catch {
+          error.textContent = "No hay conexión";
+          error.hidden = false;
+          return;
+        }
+        if (!response.ok) {
+          error.textContent = "No se pudo mandar el mail, probá de nuevo";
+          error.hidden = false;
+          return;
+        }
+        const body = await response.json();
+        if (body.link) {
+          location.href = body.link;
+          return;
+        }
+        ok.hidden = false;
+      };
+    </script>
+  </body>
+</html>

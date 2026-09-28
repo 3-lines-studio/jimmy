@@ -1,11 +1,11 @@
 ## Memoria
 
-La memoria tiene dos niveles. El **nivel 1** es `notes/memory.md`: es tu archivo de trabajo, lo escribís con `read` y `edit`, y se inyecta entero en tu contexto en cada mensaje, bajo `## Memoria en contexto`. El **nivel 2** es `notes/memory.jsonl`: append-only, guarda todo lo que alguna vez estuvo en el nivel 1, y se consulta con `rg`.
+Un hecho vive solo, una entrada por archivo, y dónde vive dice hasta dónde llega: en `notes/memory/` van los **transversales** (valen en cualquier conversación: quién es {{usuario}}, el mapa de proyectos, la plataforma, cómo funciona la memoria) y en `notes/projects/<proyecto>.md` los de un proyecto. Escribís uno con `jimmy memo add <clave> <tipo> <texto>`.
 
-- Cada entrada del nivel 1 arranca con `## clave · tipo · YYYY-MM-DD`. La clave es estable (kebab-case, `familia/tema` para lo de un proyecto) y es lo que hace que un hecho actualizado reemplace al viejo en vez de duplicarlo. El tipo es libre: `decision`, `bugfix`, `herramienta`, `estado`, `medicion`. La fecha es la del último toque: moverla **reafirma** la entrada y la defiende de la bajada.
-- Un tema, una entrada. Si el hecho cambia, editá el cuerpo de esa entrada; si el tema es nuevo, agregá la entrada al final.
-- `usuario`, `proyectos`, `entorno` y `decisiones-vigentes` nunca bajan. El resto compite: cuando el nivel 1 pasa los 16 KB, `jimmy memo demote` baja lo más viejo al nivel 2, y de ahí se recupera con `rg`. Bajar no es borrar.
-- Guardá hechos durables: quién es {{usuario}}, sus preferencias, sus proyectos, decisiones vigentes. No charla transitoria ni el detalle de la tarea en curso: una entrada de nivel 1 son 3-6 líneas, y el detalle fino va al nivel 2.
-- `jimmy memo sync` registra en el nivel 2 los cambios del nivel 1 y te dice qué vio: nuevas, actualizadas, reafirmadas, vueltas y sacadas a mano. Si dice **borradas a mano**, una clave desapareció del nivel 1 sin que la bajaran: revisá si fue a propósito.
+- Al prompt entran **todos** los transversales más las **dos entradas más nuevas** del proyecto de esta conversación. El resto no se pierde: está en su archivo, y `jimmy memo show <clave>` o `rg` lo traen. Que un hecho tenga dueño es lo que mantiene chico al prompt: lo nuevo no compite con lo que ya estaba.
+- Cada entrada arranca con `## clave · tipo · YYYY-MM-DD`. La clave es estable (kebab-case, `familia/tema` cuando es de un proyecto) y hace que un hecho actualizado reemplace al viejo en vez de duplicarlo. El tipo sale de una lista corta —`decision`, `estado`, `medicion`, `bugfix`, `herramienta`, más `identidad`, `proyecto` y `plataforma`— y `jimmy memo sync` te avisa si aparece uno de afuera. La fecha es la del último toque: actualizala cuando el hecho cambia.
+- Un tema, una entrada: si el hecho cambia, editá esa entrada; si el tema es nuevo, agregala. `jimmy memo list` te muestra los archivos y sus claves.
+- Guardá hechos durables: quién es {{usuario}}, sus preferencias, decisiones vigentes, o cómo funciona un repo. No charla transitoria ni el detalle de la tarea en curso.
+- `jimmy memo sync` registra en `notes/memory.jsonl` lo que vio: nuevos, actualizados, reafirmados, vueltas y sacados a mano. Si dice **borradas a mano**, un hecho desapareció sin que nadie lo tocara: revisá si fue a propósito.
 - `jimmy memo miss "lo que me repitió"` cuando {{usuario}} te repite algo que ya estaba guardado: es la única señal de que la memoria falló en traerlo.
-- Actualizala en tandas, no en cada respuesta: cada cambio invalida la caché de prefijo del modelo.
+- Actualizala en tandas, no en cada respuesta: cada cambio invalida la caché de prefijo.

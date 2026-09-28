@@ -1,14 +1,20 @@
 # Jimmy
 
-A Telegram personal assistant. It embeds axe as a library and gives it a
-machine of its own: every message it replies to is an axe agent run with the
-full `read`, `write`, `edit`, and `bash` toolset on the container filesystem.
+A personal assistant that lives in a web frontend, with Telegram and Slack as
+optional channels. It embeds axe as a library and gives
+it the machine of its own: every message it replies to is an axe agent run with
+the full `read`, `write`, `edit`, and `bash` toolset on the container
+filesystem.
 
-One session per Telegram chat, stored as append-only JSONL under
-`$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Long polling, so there is no
-public URL and no webhook to configure. Sending a message shows one `pensando`
+One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored as
+append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
+listens by long polling and Slack over Socket Mode, so there is no public URL
+and no webhook to configure. Sending a message shows one `pensando`
 placeholder, which is replaced by the reply when the agent finishes. There is no
-per-token streaming, so the chat does not flicker.
+per-token streaming, so the chat does not flicker. That placeholder carries a
+stop button: pressing it cancels the turn in progress. On a turn that runs long,
+the same message says what the agent is doing — `leyendo src/web.rs` — and
+refreshes itself at most every two minutes.
 
 Replies are converted from Markdown to Telegram HTML: bold and italic, inline
 code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
@@ -21,6 +27,7 @@ Messages that start with a known command are handled before they reach the
 agent:
 
 - `/status` — context used vs. the window, model, commit, workspace.
+- `/compact` — summarize the context now, without waiting for the threshold.
 - `/clear` — archive this chat's transcript so the next message starts fresh.
 - `/help`, `/start` — list the commands.
 
@@ -40,57 +47,105 @@ Telegram voice notes are handled; audio sent as a document is ignored.
 
 ## Memory
 
-Long-term memory has two levels. Level 1 is `$JIMMY_WORKSPACE/notes/memory.md`:
-a plain Markdown file, written by the agent with `read` and `edit`, injected
-whole into the prompt on every message under `## Memoria en contexto`, with a
-16 KiB cap. Level 2 is `notes/memory.jsonl`: append-only, holding every state a
-level-1 entry ever had, searched with `rg`.
+A fact lives on its own, one entry per file, and where it lives says how far it
+reaches. `$JIMMY_WORKSPACE/notes/memory/` holds the cross-cutting facts —who the
+user is, the map of projects, the platform, how memory itself works— and
+`notes/projects/<project>.md` holds the ones that belong to a project.
+`jimmy memo add <key> <kind> <text>` writes one.
 
-Each level-1 entry starts with `## key · kind · YYYY-MM-DD`. The key is what
-makes an updated fact replace the old one instead of duplicating it, so an
-entry is a topic, not a line in a log. `jimmy memo sync` diffs level 1 against
-level 2, appends the changes and reports what it saw; `jimmy memo demote` moves
-the oldest entries down when level 1 outgrows the budget; `jimmy memo miss`
-records a memory that failed to surface (`jimmy memo miss "..."`). Nothing is
+The prompt gets every cross-cutting fact plus the two newest of the project the
+conversation belongs to. The rest is not lost: it stays in its file, and `jimmy
+memo show <key>` or `rg` bring it back. Because a new fact has an owner, it never
+competes with what was already there, and that is what keeps the prompt small: a
+project's manual does not sit in front of every conversation.
+
+Each entry starts with `## key · kind · YYYY-MM-DD`. The key is what makes an
+updated fact replace the old one instead of duplicating it, so an entry is a
+topic, not a line in a log. `notes/memory.jsonl` is append-only and holds every
+state a fact went through: `jimmy memo sync` diffs the facts against it, appends
+the changes and reports what it saw, and `jimmy memo miss` records a memory that
+failed to surface. `jimmy memo list` prints the files and their keys. Nothing is
 ever deleted.
 
-Both commands write one JSON event per run to
+Those commands write one JSON event per run to
 `$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
-`stats` reads it and appends the memory state to its report: level-1 size,
-syncs, demotions, truncated renders and misses.
+`stats` reads it and appends the memory state to its report: how many facts,
+the syncs, the renders and misses.
+
+### Moving an instance to facts
+
+The binary keeps reading `notes/memory.md` while `notes/memory/` does not exist,
+so an upgrade needs no migration, and changing your mind is one `rm -rf` away.
+Per instance:
+
+1. `jimmy memo migrate` splits `notes/memory.md` into facts, one file per key:
+   keys without a slash to `notes/memory/`, the rest to
+   `notes/projects/<family>.md`.
+2. Fix what landed in the wrong place: a key that names a project without a
+   slash (`paper`) belongs in `notes/projects/paper.md`, and a catch-all entry
+   like `decisiones-vigentes` is worth splitting into its own topics.
+3. `jimmy memo list` to check, then `jimmy memo sync`.
+4. Drop `jimmy memo demote` from that instance's `state/schedule.toml`: the
+   command is gone.
+
+Facts are per instance: the deploy carries the mechanism and the prompt, not
+what another jimmy learned.
 
 ## Scheduled tasks
 
-`$JIMMY_WORKSPACE/state/schedule.toml` holds tasks the agent runs on a clock. A
-thread wakes every 60 seconds, re-reads the file, and runs whatever is due.
-Each run is a fresh agent run in a clean context — the system prompt and the
-task's `prompt`, nothing else — and the reply is sent to the task's chat. Runs
-are not written to the chat transcript.
+`$JIMMY_WORKSPACE/state/schedule/` holds one file per task. A thread wakes
+every 60 seconds, reads the directory, and runs whatever is due. Each run is a
+fresh agent run in a clean context — the system prompt and the task's `prompt`,
+nothing else — and runs are not written to the chat transcript.
 
 ```toml
-[[task]]
-name = "morning-report"
-chat = 123456789
+# state/schedule/morning-report.toml
 at = "09:00"
+target = "123456789"
 prompt = "Summarize what is still pending."
 ```
 
+The file name is the task name. The agenda lives in the web frontend: the
+**Agenda** tab is where tasks are listed, run on the spot and paused, and where
+their history is read. `target` (or `chat`, its older name) is only a backup
+alert: with it the reply also goes to that chat, without it the run just leaves
+its result in the history. A target the configured transport does not know — an
+old Telegram chat, say, when the process runs with `JIMMY_TRANSPORT=none` — does
+not cancel the run: it happens anyway and the history says it did not go out.
+
+Every run appends a line to `<task>.jsonl`, next to the file: time, duration and
+the reply. The last twenty are kept. That history is also the state — a task is
+due based on its own runs — so nothing else is written on its behalf.
+
 Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
 "HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
-Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task is removed
-from the file once it fires; a daily task fires once per local date; an interval
-task fires once the interval has elapsed since its last run, so a restart
-catches up on a missed run. A task that fails reports the error to its chat,
-and each task is capped at 6 runs per hour.
+Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task keeps its
+file after it fires, so its result is still there to read; a daily task fires
+once per local date; an interval task fires once the interval has elapsed since
+its last run, so a restart catches up on a missed run. A task that fails records
+the error, and each task is capped at 6 runs per hour. `paused = true` keeps the
+file and stops the clock.
 
-The file is meant to be edited by the agent: ask it to schedule something and it
-appends a block. The tick picks it up without a restart.
+The **Agenda** tab of the web frontend lists the tasks with their last runs, runs
+one on the spot and pauses it. Each task shows how many runs you have not looked
+at yet, the sidebar carries the total, and opening a task — or the "Marcar Todo
+Leído" button — clears it.
+
+A task with `silent = true` only speaks when it has something to say: it skips
+the progress placeholder and an empty reply is not sent (the usual `✅ listo`
+fallback does not apply). It is meant for watchdogs that should report failures
+and stay quiet otherwise. Anything the reply does contain is sent as usual.
+
+The directory is meant to be edited by the agent: ask it to schedule something
+and it writes a file. The tick picks it up without a restart. An older single
+`state/schedule.toml` is migrated on the first boot and left beside it as
+`schedule.toml.old`.
 
 ## Config
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `JIMMY_TRANSPORT` | `telegram` | `telegram` or `slack` |
+| `JIMMY_TRANSPORT` | `none` | `telegram`, `slack` or `none` |
 | `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
 | `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
 | `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |
@@ -102,11 +157,17 @@ appends a block. The tick picks it up without a restart.
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
-| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | directory with Agent Skills (see below) |
+| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | first directory with Agent Skills; the builtin one comes after (see below) |
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
+| `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
+| `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
+| `RESEND_API_KEY` | empty | Resend key that sends the link; without it, and without `JIMMY_WEB_DEV`, nobody gets in |
+| `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>`; required alongside the key, or there is no mail provider |
+| `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
+| `JIMMY_WEB_DEV` | empty | `1` returns the link in the response instead of mailing it; development and tests only |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
-| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
+| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
 | `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 | `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |
@@ -117,6 +178,87 @@ Set `JIMMY_ALLOWED_USER_IDS` before exposing the bot. Empty means any user who
 finds the bot gets shell access to the machine. To find your own id, put any
 placeholder in the list, send the bot a message and read the
 `jimmy: ignoré un mensaje de <id>` line it logs.
+
+### Web
+
+With `JIMMY_WEB_PORT` set, Jimmy also serves the same conversations the
+transports have, plus the ones created in the browser. There are no passwords:
+whoever is in `JIMMY_WEB_EMAILS` asks for a link, the link arrives by mail
+(Resend, with `RESEND_API_KEY` and `JIMMY_WEB_FROM`) and lasts fifteen minutes
+and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
+the response instead, which is how it works locally and in the tests. Sessions
+live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
+
+An image attached in the composer is uploaded as it is picked (10 MB per file) to
+`$JIMMY_ROOT/chats/<key>/uploads/`, and the message carries the file name, not
+the bytes: the log keeps the name and `GET /api/file` serves the file, so the
+image is still there after a reload and on another device. A message can be just
+an image, with no text. The images Jimmy sends with `jimmy send` land in the same
+place and are shown the same way, so a chart or a screenshot it made appears in
+the conversation.
+
+The page is quiet on purpose: the reply is the content, and what the agent did
+on the way is one folded line per run of steps — `6 pasos · 1m 51s` — which
+opens into the individual tool calls. A tool that fails opens its group and says
+so in red. It follows the system theme; the button in the sidebar overrides it
+and remembers.
+
+Searching the sidebar looks through what was said in every conversation, and
+each result opens its transcript with the matches marked.
+
+### Previews
+
+`jimmy preview start <name> --cmd 'command' [--cwd dir]` runs a project as a
+child of the main process and serves it at `/preview/<name>/` on the web port,
+behind the same session as the rest of the UI: no extra domain, no second
+certificate. A preview is never an orphan, which is what keeps the reaper's
+hands off it. The command gets `PORT` and `PREVIEW_NAME` in its environment, and
+the last lines of its output land in
+`$JIMMY_WORKSPACE/state/previews/<name>.log`.
+
+A preview runs bare, the way it would on your machine. The proxy strips the
+prefix on the way in and puts it back on everything that comes out pointing at
+the root — HTML attributes, CSS `url()`, JavaScript string literals and
+redirects — so nothing has to know where it lives. A streamed body, a binary or
+a WebSocket upgrade are copied raw.
+
+What the rewrite cannot see: a JSON payload that carries paths, or a path built
+at runtime by the app. Start the project with its strict-port flag so it cannot
+drift to another port.
+
+A preview that nobody visits takes itself down after thirty minutes: every
+request through the proxy resets that clock, so looking at it or iterating on it
+keeps it up. A redeploy takes the rest. They are for looking at work in progress,
+not for hosting. `jimmy preview list` shows what is up — and how long since the
+last visit — and `jimmy preview stop <name>` takes one down. Names are slugs:
+lowercase, digits and dashes.
+
+The sidebar lists the running previews above the projects, each one a link that
+opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel
+refreshes with the rest of the sidebar.
+
+### Recipes
+
+A project's start-up line is worth writing once. `$JIMMY_WORKSPACE/state/previews.toml`
+holds one recipe per name, and then `jimmy preview start <name>` needs no `--cmd`:
+
+```toml
+[bifrost]
+about = "the App Router demo: Vite build, Go SSR"
+cwd = "projects/bifrost/example/app-router-demo"
+cmd = "make dev"
+```
+
+`cwd` is relative to the workspace and defaults to it. `about` is only for the
+listing. `jimmy preview recipes` prints them all with their command, and a
+`--cmd` given on the spot wins over the recipe, so one-off previews still work.
+When a name has no recipe and no command, the error lists the recipes that do
+exist instead of just saying no.
+
+The command runs with a clean environment: `PATH`, `HOME`, `LANG`, `TZ`, plus
+`PORT` and `PREVIEW_NAME`. It does not inherit jimmy's own environment, so a
+preview cannot read jimmy's secrets by accident — what a project needs, it
+declares in its own recipe, in plain sight.
 
 ### Slack app
 
@@ -143,10 +285,12 @@ skills/charts/SKILL.md
 skills/charts/render_chart.py
 ```
 
-The image ships none. `JIMMY_SKILLS` (default `$JIMMY_ROOT/skills`) is the only
-path jimmy knows; each instance populates its own volume, typically by cloning a
-private skills repo there. The agent lists skills with `jimmy skill list` and
-loads one with `jimmy skill load <name>`.
+`skills/` in the repo ships in the image at `/usr/local/share/jimmy/skills`, so
+every instance gets them from a deploy. `JIMMY_SKILLS` (default
+`$JIMMY_ROOT/skills`, on the volume) comes first and shadows the builtin ones:
+that is where an instance keeps its own. The prompt carries the index —one line
+per skill, from the frontmatter— and the agent loads one with
+`jimmy skill load <name>`. `jimmy skill list` does the same by hand.
 
 ## Data tools
 
@@ -226,7 +370,7 @@ comma-separated `clave=valor` pairs. The default fragments use `{{usuario}}` and
 `{{asistente}}`:
 
 ```sh
-JIMMY_VARS="usuario=Don Berti,asistente=Jimmy"
+JIMMY_VARS="usuario=Ana,asistente=Jimmy"
 ```
 
 A placeholder with no value is a startup error. Single braces are left alone, so
@@ -239,19 +383,21 @@ change while the process lives, so the model's prefix cache stays warm.
 
 The image ships:
 
-- `wax` for fetching pages as Markdown, pinned by the `WAX_VERSION` build arg.
-  Chromium is installed and `WAX_NO_SANDBOX=1` is set, so pages that need
-  rendering work inside the container. The system prompt already tells the
-  agent to fetch with `wax <url>`.
+- `search` and `fetch`, from axe itself: DuckDuckGo and a page-to-Markdown
+  reader. Chromium is installed, so pages that build themselves with
+  JavaScript get rendered. `browse` drives that same Chromium when the agent
+  needs a session, a click, or a screenshot.
 - mise, with a global config copied from `mise.toml` to
   `/root/.config/mise/config.toml`: `go`, `node`, `python`, `bun`, `uv`,
-  `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`. The
-  shims live in `/root/.local/share/mise/shims` and are on `PATH`.
-- Rust nightly with `cargo` (rustup, minimal profile) in `/root/.cargo`, so the
-  agent can build and test itself. `git` is configured to authenticate to
+  `github-cli` (`gh`), `jq`, `ripgrep` (`rg`), `fd`, `golangci-lint`, `rust`
+  and `mr-boxington`. The shims live in `/root/.local/share/mise/shims` and are
+  on `PATH` ahead of `/root/.cargo/bin`, so Cargo commands go through `mbx`.
+- Rust nightly with `cargo` (minimal profile, `rustfmt` and `clippy`) comes
+  from that mise config, and `mr-boxington` caches builds across projects, so
+  the agent can build and test itself. `git` is configured to authenticate to
   GitHub through `gh`, which reads `GITHUB_TOKEN`.
 
-Edit `mise.toml` or bump `WAX_VERSION` and rebuild to change the versions.
+Edit `mise.toml` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
 `/data`, so they do not survive a Railway redeploy.
 
@@ -263,10 +409,11 @@ packages; `node_modules` inside the workspace also lives on the volume.
 
 ## Self-improvement
 
-Jimmy can read and change its own source. The repo is private, so
-`GITHUB_TOKEN` is what lets it clone and push; `axe` is public, so the build
-fetches it without credentials. Repos live in `projects/<name>/` and changes go
-through a pull request; the workflow — reuse the clone, reset to `dev`, branch,
+Jimmy can read and change its own source. The repo is public, so it clones
+without credentials; `GITHUB_TOKEN` is what lets the agent push a branch and
+open a pull request. `axe` is public too, so the build fetches it without
+credentials. Repos live in `projects/<name>/` and changes go through a pull
+request; the workflow — reuse the clone, reset to `dev`, branch,
 `make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
 in `## Proyectos y git` of `prompts/git.md`.
 
@@ -302,7 +449,7 @@ Requires Docker: the `Makefile` targets wrap `docker build` and `docker run`.
 `make build` runs `docker build -t jimmy .`. axe is a pinned git dependency, so
 the build fetches it from GitHub. The build must use nightly Rust because axe's
 manifest declares a nightly `cargo-features` entry; the image installs nightly
-with rustup.
+with mise.
 
 `make run` mounts `./data` at `/data`, so sessions and the workspace persist
 across restarts.
@@ -311,7 +458,7 @@ To follow a newer axe, bump the `rev` in `Cargo.toml`:
 
 ```sh
 git -C ../axe rev-parse origin/main   # copy the sha into Cargo.toml
-cargo +nightly build --release        # refreshes Cargo.lock
+cargo build --release                 # refreshes Cargo.lock
 ```
 
 ## Railway
@@ -338,15 +485,20 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 
 ```
 src/main.rs       config, event loop, per-session locking, memo/send/skill CLIs
-src/transport/    the transport seam, with the Telegram adapter
+src/transport/    the transport seam, with the Telegram and Slack adapters
 src/agent.rs      axe turn loop, runtime context, session persistence
 src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
-src/memo.rs       the two-level memory: sync, demote, miss
+src/memo.rs       the memory facts: render, sync, add, migrate, miss
 src/prompt.rs     assemble the system prompt from fragments
-bin/              the CLIs the agent gets: search, recall, browse, stats
+bin/              the CLIs the agent gets: browse, gen-image, recall, stats
+web/              the browser frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
 prompts/          system prompt fragments, baked into the image
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).

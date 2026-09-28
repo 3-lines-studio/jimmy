@@ -1,0 +1,203 @@
+.bot {
+  --s: 24px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: calc(var(--s) * 0.13);
+  border-radius: var(--r-full);
+  background: radial-gradient(
+    circle at 34% 26%,
+    hsl(var(--h) 70% 72%),
+    hsl(var(--h) 62% 52%) 46%,
+    hsl(var(--h) 58% 34%) 100%
+  );
+  box-shadow:
+    inset 0 calc(var(--s) * -0.07) calc(var(--s) * 0.14) hsl(var(--h) 60% 22% / 0.6),
+    inset 0 1px 1px hsl(var(--h) 80% 92% / 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.bot::before {
+  content: "";
+  position: absolute;
+  left: 19%;
+  top: 15%;
+  width: 44%;
+  height: 28%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.6), transparent);
+  transform: rotate(-20deg);
+  pointer-events: none;
+}
+
+.bot .eye {
+  display: block;
+  translate: var(--dx, 0px) var(--dy, 0px);
+}
+
+.bot .eye i {
+  display: block;
+  width: calc(var(--s) * 0.145);
+  height: calc(var(--s) * 0.26);
+  border-radius: var(--r-full);
+  background: #fff;
+  box-shadow: 0 0 calc(var(--s) * 0.1) rgba(255, 255, 255, 0.25);
+  animation:
+    blink var(--blink, 4.2s) infinite var(--delay, 0s),
+    gaze 11s ease-in-out infinite var(--gaze, 0s);
+}
+
+@keyframes blink {
+  0%,
+  92%,
+  100% {
+    scale: 1 1;
+  }
+  95% {
+    scale: 1 0.12;
+  }
+}
+
+@keyframes gaze {
+  0%,
+  30%,
+  42%,
+  100% {
+    translate: 0 0;
+  }
+  12% {
+    translate: calc(var(--s) * -0.09) 0;
+  }
+  22% {
+    translate: calc(var(--s) * 0.09) 0;
+  }
+  60% {
+    translate: 0 calc(var(--s) * 0.06);
+  }
+}
+
+.bot.focused .eye i {
+  animation: blink var(--blink, 4.2s) infinite var(--delay, 0s);
+}
+
+.bot.working {
+  animation: hop 1.15s ease-in-out infinite var(--hop, 0s);
+}
+
+@keyframes hop {
+  0%,
+  58%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  70% {
+    transform: translateY(calc(var(--s) * -0.16)) scale(0.93, 1.09);
+  }
+  82% {
+    transform: translateY(0) scale(1.09, 0.89);
+  }
+  92% {
+    transform: translateY(calc(var(--s) * -0.04)) scale(0.98, 1.02);
+  }
+}
+
+.bot.waiting {
+  animation: thinking 2.6s ease-in-out infinite;
+}
+
+.bot.waiting .eye {
+  translate: var(--dx, 0px) calc(var(--dy, 0px) - var(--s) * 0.07);
+}
+
+.bot.waiting .eye i {
+  animation: blink 6s infinite var(--delay, 0s);
+}
+
+@keyframes thinking {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(calc(var(--s) * -0.05)) rotate(2deg);
+  }
+}
+
+.bot.done {
+  animation: cheer 2.1s ease-in-out infinite;
+}
+
+.bot.done .eye i {
+  animation: none;
+  scale: 1 0.7;
+}
+
+@keyframes cheer {
+  0%,
+  62%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  74% {
+    transform: translateY(calc(var(--s) * -0.22)) scale(0.94, 1.08);
+  }
+  86% {
+    transform: translateY(0) scale(1.07, 0.92);
+  }
+}
+
+.bot.error {
+  animation: shake 1.7s ease-in-out infinite;
+}
+
+.bot.error .eye i {
+  animation: none;
+  height: calc(var(--s) * 0.1);
+  opacity: 0.92;
+}
+
+@keyframes shake {
+  0%,
+  70%,
+  100% {
+    transform: translateX(0) rotate(0);
+  }
+  76% {
+    transform: translateX(calc(var(--s) * -0.05)) rotate(-4deg);
+  }
+  84% {
+    transform: translateX(calc(var(--s) * 0.05)) rotate(4deg);
+  }
+  92% {
+    transform: translateX(calc(var(--s) * -0.02)) rotate(-2deg);
+  }
+}
+
+.bot.sleeping {
+  animation: breath 4.3s ease-in-out infinite;
+}
+
+.bot.sleeping .eye i {
+  animation: none;
+  height: calc(var(--s) * 0.08);
+  opacity: 0.85;
+}
+
+@keyframes breath {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(1.03, 0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bot,
+  .bot .eye i {
+    animation: none !important;
+  }
+}

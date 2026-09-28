@@ -2,9 +2,11 @@
 name = "jimmy"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "6c02a311d758e3e14171f5476e4a0dc152fd36ed" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "99eb97065891f277584de2597be74fdbdd2bb597" }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"

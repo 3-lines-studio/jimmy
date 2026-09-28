@@ -5,6 +5,7 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock /build/jimmy/
 COPY src /build/jimmy/src
+COPY web /build/jimmy/web
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 
@@ -13,22 +14,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates libcurl4 bash git curl less unzip xz-utils bzip2 gzip \
-        build-essential chromium tini \
+        build-essential chromium tini ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-
-ARG WAX_VERSION=v0.3.2
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) asset=wax-linux-x86_64 ;; \
-         arm64) asset=wax-linux-aarch64 ;; \
-         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
-       esac \
-    && base="https://github.com/3-lines-studio/wax/releases/download/${WAX_VERSION}" \
-    && curl -fsSL -o "/tmp/$asset" "$base/$asset" \
-    && curl -fsSL -o /tmp/SHA256SUMS "$base/SHA256SUMS" \
-    && (cd /tmp && grep " $asset$" SHA256SUMS | sha256sum -c -) \
-    && install -m 0755 "/tmp/$asset" /usr/local/bin/wax \
-    && rm -f "/tmp/$asset" /tmp/SHA256SUMS
 
 ARG BQX_VERSION=v0.3.2
 ARG PGX_VERSION=v0.2.1
@@ -36,22 +23,29 @@ RUN curl -fsSL https://ax.3lines.studio/install.sh -o /tmp/ax-install.sh \
     && AX_PREFIX=/usr/local VERSION="$BQX_VERSION" sh /tmp/ax-install.sh bqx \
     && AX_PREFIX=/usr/local VERSION="$PGX_VERSION" sh /tmp/ax-install.sh pgx \
     && rm /tmp/ax-install.sh
+ARG HEIMDALL_VERSION=v0.1.0
+RUN curl -fsSL "https://github.com/3-lines-studio/heimdall/releases/download/${HEIMDALL_VERSION}/heimdall-linux-x64.tar.gz" \
+      | tar -xz -C /usr/local/bin heimdall \
+    && chmod 0755 /usr/local/bin/heimdall \
+    && ln -sf /usr/local/bin/heimdall /usr/local/bin/doppler \
+    && heimdall help > /dev/null \
+    && doppler help > /dev/null
 
-ENV RUSTUP_HOME=/root/.rustup
-ENV CARGO_HOME=/root/.cargo
 ENV CARGO_TARGET_DIR=/tmp/cargo-target
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly -c rustfmt -c clippy
 
 ENV MISE_DATA_DIR=/root/.local/share/mise
 ENV MISE_CONFIG_DIR=/root/.config/mise
 ENV MISE_YES=1
-ENV PATH=/root/.cargo/bin:/root/.local/share/mise/shims:/root/.local/bin:$PATH
+ENV PATH=/root/.local/share/mise/shims:/root/.cargo/bin:/root/.local/bin:$PATH
 RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
 
+ENV MBX_GC_MAX_SIZE=10GiB
+ENV MBX_GC_INCREMENTAL_MAX_SIZE=10GiB
+
 RUN export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 VENV=/opt/browse-venv \
-    && uv venv "$VENV" \
+    && uv venv --clear "$VENV" \
     && uv pip install --python "$VENV/bin/python" playwright \
     && "$VENV/bin/playwright" install ffmpeg
 
@@ -69,13 +63,11 @@ COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY prompts /usr/local/share/jimmy/prompts
-COPY --chmod=0755 bin/search /usr/local/bin/search
+COPY skills /usr/local/share/jimmy/skills
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
-ENV WAX_NO_SANDBOX=1
-
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["jimmy"]

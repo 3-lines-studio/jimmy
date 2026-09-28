@@ -597,21 +597,21 @@ textarea:focus {
   align-items: center;
   gap: var(--s1);
   flex: none;
+  height: var(--row);
   margin: var(--s3) var(--s3) var(--s2);
-  padding: var(--s1);
+  padding: 0 var(--s1);
   background: var(--raised);
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--r-full);
 }
 
 #new-project:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--ring);
 }
 
 #new-project input,
 #new-project button {
-  height: var(--row);
+  height: 100%;
   border-radius: var(--r-full);
 }
 
@@ -1322,12 +1322,13 @@ main {
   gap: var(--s1);
   width: 100%;
   max-width: var(--measure);
+  min-height: var(--row);
   margin: 0 auto;
-  padding: var(--s1);
+  padding: 0 var(--s1);
   background: var(--glass);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--r-full);
 }
 
@@ -1336,8 +1337,7 @@ main {
 }
 
 #composer .box:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--ring);
 }
 
 #attach {
@@ -1361,7 +1361,7 @@ main {
   flex: 1;
   min-height: var(--row);
   max-height: 40dvh;
-  padding: 6px var(--s3);
+  padding: var(--s1) var(--s3);
   background: transparent;
   border: 0;
   resize: none;

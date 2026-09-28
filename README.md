@@ -161,13 +161,13 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
 | `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
-| `RESEND_API_KEY` | empty | Resend key that sends the link; empty shows the link on screen |
-| `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>` |
+| `RESEND_API_KEY` | empty | Resend key that sends the link; without it, and without `JIMMY_WEB_DEV`, nobody gets in |
+| `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>`; required alongside the key, or there is no mail provider |
 | `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
 | `JIMMY_WEB_DEV` | empty | `1` returns the link in the response instead of mailing it; development and tests only |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
-| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders |
+| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
 | `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 | `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |

@@ -668,14 +668,14 @@ const TABS_KEY = "jimmy-tabs";
 function readTabs() {
   try {
     const value = JSON.parse(localStorage.getItem(TABS_KEY) || "{}");
-    return { open: value.open || [], active: value.active || null };
+    return { open: value.open || [] };
   } catch {
-    return { open: [], active: null };
+    return { open: [] };
   }
 }
 
 function remember() {
-  localStorage.setItem(TABS_KEY, JSON.stringify({ open: [...tabs.keys()], active: activeId }));
+  localStorage.setItem(TABS_KEY, JSON.stringify({ open: [...tabs.keys()] }));
   history.replaceState(null, "", activeId ? "#" + encodeURIComponent(activeId) : location.pathname);
 }
 
@@ -689,8 +689,7 @@ function restore() {
     seen.add(id);
     if (!tabs.has(id)) createTab(id);
   }
-  const active = [hash, saved.active].find((id) => tabs.has(id)) || tabs.keys().next().value;
-  if (active) activate(active);
+  if (tabs.has(hash)) activate(hash);
   else if (hash) remember();
 }
 

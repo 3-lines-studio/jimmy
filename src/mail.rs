@@ -113,13 +113,13 @@ mod tests {
         let (base, received) = fake_resend();
         let mail = Mail::new("clave".into(), "Jimmy <jimmy@ejemplo.com>".into(), &base);
 
-        mail.send_link("berti@ejemplo.com", "https://jimmy.ejemplo/auth?token=abc")
+        mail.send_link("bob@ejemplo.com", "https://jimmy.ejemplo/auth?token=abc")
             .unwrap();
         let request = received.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(request.starts_with("POST /emails "), "{request}");
         assert!(request.contains("Authorization: Bearer clave"), "{request}");
         assert!(
-            request.contains("\"to\":[\"berti@ejemplo.com\"]"),
+            request.contains("\"to\":[\"bob@ejemplo.com\"]"),
             "{request}"
         );
         assert!(

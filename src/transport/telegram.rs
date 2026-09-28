@@ -579,11 +579,10 @@ mod tests {
     #[test]
     fn the_author_is_the_name_telegram_shows() {
         let named: User =
-            serde_json::from_str(r#"{"id": 1, "first_name": "Berti", "username": "bertilxi"}"#)
-                .unwrap();
-        assert_eq!(author(&named), "Berti");
-        let handle: User = serde_json::from_str(r#"{"id": 1, "username": "bertilxi"}"#).unwrap();
-        assert_eq!(author(&handle), "@bertilxi");
+            serde_json::from_str(r#"{"id": 1, "first_name": "Bob", "username": "nico"}"#).unwrap();
+        assert_eq!(author(&named), "Bob");
+        let handle: User = serde_json::from_str(r#"{"id": 1, "username": "nico"}"#).unwrap();
+        assert_eq!(author(&handle), "@nico");
         let bare: User = serde_json::from_str(r#"{"id": 1}"#).unwrap();
         assert_eq!(author(&bare), "1");
     }

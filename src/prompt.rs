@@ -117,10 +117,10 @@ mod tests {
             "identidad",
             "Sos {{asistente}}, el asistente de {{usuario}}.\n",
         );
-        let vars = vars(&[("usuario", "Don Berti"), ("asistente", "Jimmy")]);
+        let vars = vars(&[("usuario", "Ana"), ("asistente", "Jimmy")]);
         assert_eq!(
             assemble("identidad", &[dir], &vars).unwrap(),
-            "Sos Jimmy, el asistente de Don Berti."
+            "Sos Jimmy, el asistente de Ana."
         );
     }
 
@@ -151,8 +151,8 @@ mod tests {
     #[test]
     fn parses_clave_valor_pairs() {
         assert_eq!(
-            parse_vars("usuario=Don Berti, asistente = Jimmy"),
-            vars(&[("usuario", "Don Berti"), ("asistente", "Jimmy")])
+            parse_vars("usuario=Ana, asistente = Jimmy"),
+            vars(&[("usuario", "Ana"), ("asistente", "Jimmy")])
         );
         assert_eq!(parse_vars("basura"), Vec::<(String, String)>::new());
     }

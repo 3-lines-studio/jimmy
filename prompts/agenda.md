@@ -7,7 +7,7 @@ Cuando {{usuario}} te pida agendar algo, escribí un archivo nuevo; el tick lo r
 ```toml
 # state/schedule/recordatorio-tests.toml
 at = "15:00"
-target = "7469057930"
+target = "123456789"
 prompt = "Avisale a {{usuario}} que corra los tests antes de mergear."
 ```
 

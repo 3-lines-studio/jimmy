@@ -68,7 +68,7 @@ env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
     JIMMY_WORKSPACE="$WORK/root/workspace" \
     JIMMY_PROMPT=jimmy \
     JIMMY_WEB_PORT="$WEB_PORT" \
-    JIMMY_WEB_EMAILS=berti@ejemplo.com JIMMY_WEB_DEV=1 \
+    JIMMY_WEB_EMAILS=bob@ejemplo.com JIMMY_WEB_DEV=1 \
     JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \
     AXE_BASE="http://127.0.0.1:$MODEL_PORT/v1" \
     AXE_MODEL=fake \
@@ -83,7 +83,7 @@ printf '%s\n' '{"update_id":1,"message":{"message_id":7,"chat":{"id":999},"from"
 sleep 9
 
 say "el estado y el stream, con la conversación ya existiendo"
-python3 "$HERE/sse.py" "$WEB_PORT" berti@ejemplo.com 999 25 >"$WORK/sse.log" 2>&1 &
+python3 "$HERE/sse.py" "$WEB_PORT" bob@ejemplo.com 999 25 >"$WORK/sse.log" 2>&1 &
 SSE_PID=$!
 PIDS+=($SSE_PID)
 sleep 2
@@ -112,7 +112,7 @@ rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
 say "un adjunto por la web"
-python3 "$HERE/attachment.py" "$WEB_PORT" berti@ejemplo.com ken "$BIN" "$WORK/root" "$WORK/asistente.png" >"$WORK/attachment.log" 2>&1
+python3 "$HERE/attachment.py" "$WEB_PORT" bob@ejemplo.com ken "$BIN" "$WORK/root" "$WORK/asistente.png" >"$WORK/attachment.log" 2>&1
 cat "$WORK/attachment.log"
 ATTACH_KEY=$(rg -o '^KEY \S+' "$WORK/attachment.log" | cut -d' ' -f2)
 ATTACH_NAME=$(rg -o '^NAME \S+' "$WORK/attachment.log" | cut -d' ' -f2)
@@ -131,7 +131,7 @@ rg -q '^FILE2 image/png ' "$WORK/attachment.log"
 check "la imagen del asistente también se sirve" $?
 
 say "el árbol de archivos de un proyecto, por la web"
-python3 "$HERE/files.py" "$WEB_PORT" berti@ejemplo.com ken "$WORK/root" >"$WORK/files.log" 2>&1
+python3 "$HERE/files.py" "$WEB_PORT" bob@ejemplo.com ken "$WORK/root" >"$WORK/files.log" 2>&1
 cat "$WORK/files.log"
 rg -q '^TREE src:dir, logo.png:image, nota.txt:text$' "$WORK/files.log"
 check "el árbol lista lo que hay y no lo que se esconde" $?

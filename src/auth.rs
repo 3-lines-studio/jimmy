@@ -192,17 +192,17 @@ fn a_session_that_expired_does_not_let_anyone_in() {
     std::fs::write(
         root.join("sessions.json"),
         format!(
-            r#"{{"vieja":{{"email":"berti@ejemplo.com","expires":{old}}},
-                 "nueva":{{"email":"berti@ejemplo.com","expires":{fresh}}}}}"#
+            r#"{{"vieja":{{"email":"bob@ejemplo.com","expires":{old}}},
+                 "nueva":{{"email":"bob@ejemplo.com","expires":{fresh}}}}}"#
         ),
     )
     .unwrap();
 
-    let auth = Auth::new("berti@ejemplo.com", &root, None, false);
+    let auth = Auth::new("bob@ejemplo.com", &root, None, false);
     assert!(auth.user("vieja").is_none(), "la vieja ya venció");
-    assert_eq!(auth.user("nueva").as_deref(), Some("berti@ejemplo.com"));
+    assert_eq!(auth.user("nueva").as_deref(), Some("bob@ejemplo.com"));
 
-    let opened = auth.open_session("berti@ejemplo.com");
+    let opened = auth.open_session("bob@ejemplo.com");
     assert!(auth.user(&opened).is_some());
     let saved = std::fs::read_to_string(root.join("sessions.json")).unwrap();
     assert!(
@@ -226,9 +226,9 @@ mod tests {
 
     #[test]
     fn only_the_listed_mails_get_a_link() {
-        let (auth, root) = auth("links", "Berti@Ejemplo.com, ana@ejemplo.com");
+        let (auth, root) = auth("links", "Bob@Ejemplo.com, ana@ejemplo.com");
         assert!(
-            auth.request_link("berti@ejemplo.com").is_some(),
+            auth.request_link("bob@ejemplo.com").is_some(),
             "sin importar mayúsculas"
         );
         assert!(auth.request_link("otro@ejemplo.com").is_none());
@@ -238,30 +238,27 @@ mod tests {
 
     #[test]
     fn a_link_serves_once_and_the_session_survives() {
-        let (auth, root) = auth("once", "berti@ejemplo.com");
-        let token = auth.request_link("berti@ejemplo.com").unwrap();
+        let (auth, root) = auth("once", "bob@ejemplo.com");
+        let token = auth.request_link("bob@ejemplo.com").unwrap();
         assert_eq!(
             auth.consume_link(&token).as_deref(),
-            Some("berti@ejemplo.com")
+            Some("bob@ejemplo.com")
         );
         assert_eq!(auth.consume_link(&token), None, "no sirve dos veces");
 
-        let session = auth.open_session("berti@ejemplo.com");
-        assert_eq!(auth.user(&session).as_deref(), Some("berti@ejemplo.com"));
+        let session = auth.open_session("bob@ejemplo.com");
+        assert_eq!(auth.user(&session).as_deref(), Some("bob@ejemplo.com"));
         let reloaded = Sessions::load(&root);
-        assert_eq!(
-            reloaded.user(&session).as_deref(),
-            Some("berti@ejemplo.com")
-        );
+        assert_eq!(reloaded.user(&session).as_deref(), Some("bob@ejemplo.com"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn asking_twice_in_a_row_does_not_send_twice() {
-        let (auth, root) = auth("cooldown", "berti@ejemplo.com");
-        assert!(auth.request_link("berti@ejemplo.com").is_some());
+        let (auth, root) = auth("cooldown", "bob@ejemplo.com");
+        assert!(auth.request_link("bob@ejemplo.com").is_some());
         assert!(
-            auth.request_link("berti@ejemplo.com").is_none(),
+            auth.request_link("bob@ejemplo.com").is_none(),
             "muy seguido"
         );
         std::fs::remove_dir_all(&root).unwrap();

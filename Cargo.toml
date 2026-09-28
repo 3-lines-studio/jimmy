@@ -2,6 +2,7 @@
 name = "jimmy"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 axe = { git = "https://github.com/3-lines-studio/axe", rev = "99eb97065891f277584de2597be74fdbdd2bb597" }

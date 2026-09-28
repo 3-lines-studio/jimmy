@@ -524,8 +524,8 @@ mod tests {
     #[test]
     fn a_chat_without_metadata_is_general_and_read_only() {
         let (root, workspace) = scratch("general");
-        chat(&root, "7469057930");
-        let conversation = get(&root, &workspace, "7469057930");
+        chat(&root, "123456789");
+        let conversation = get(&root, &workspace, "123456789");
         assert_eq!(conversation.project, GENERAL);
         assert_eq!(conversation.cwd, workspace);
         assert!(conversation.read_only);

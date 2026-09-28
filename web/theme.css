@@ -60,6 +60,8 @@
 
   --measure: 720px;
 
+  --row: 34px;
+
   --s1: 4px;
   --s2: 8px;
   --s3: 12px;
@@ -117,4 +119,11 @@
   --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.14);
   --backdrop: rgba(15, 23, 42, 0.35);
   --thumb-close: rgba(0, 0, 0, 0.6);
+}
+
+/* Sin mouse el blanco de toque crece */
+@media (hover: none) {
+  :root {
+    --row: 40px;
+  }
 }

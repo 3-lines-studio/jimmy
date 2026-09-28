@@ -259,7 +259,7 @@ textarea:focus {
   gap: var(--s1);
   flex: none;
   height: var(--row);
-  padding: 0 var(--s1) 0 var(--s2);
+  padding: 0 var(--s2);
   border-radius: var(--r-full);
   background: var(--raised);
   color: var(--muted);

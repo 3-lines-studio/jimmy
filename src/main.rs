@@ -205,12 +205,12 @@ fn main() {
         std::thread::sleep(Duration::from_secs(60));
         reaper.reap(std::time::Instant::now());
         memlog::sample(&workspace);
-        let anon = machine::usage(&root).memory.anon;
+        let memory = machine::usage(&root).memory;
         let quiet = !pool::busy() && previews.list().is_empty();
-        if watch.overdue(anon, quiet) {
+        if watch.overdue(memory.used, quiet) {
             eprintln!(
-                "jimmy: {} MB sin reclamar y sin nadie corriendo: salgo para que me levanten",
-                anon / 1024 / 1024
+                "jimmy: {} MB en el cgroup sin nadie corriendo: salgo para que me levanten",
+                memory.used / 1024 / 1024
             );
             std::process::exit(1);
         }

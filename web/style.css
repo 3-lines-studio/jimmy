@@ -678,9 +678,6 @@ main {
   height: var(--row);
   padding: 0;
   border-radius: var(--r-full);
-  background: var(--glass);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   color: var(--muted);
 }
 
@@ -1495,10 +1492,6 @@ main {
   transform: translate(-50%, 0);
 }
 
-#backdrop {
-  display: none;
-}
-
 #toast {
   position: fixed;
   left: 50%;
@@ -1519,24 +1512,17 @@ main {
 
 @media (max-width: 760px) {
   #sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    z-index: 20;
-    width: min(78vw, 288px);
-    transform: translateX(-100%);
-    transition: transform 0.2s ease;
+    display: none;
+    width: 100%;
+    border-right: 0;
   }
 
-  #sidebar.open {
-    transform: none;
+  body.home #sidebar {
+    display: flex;
   }
 
-  #backdrop:not([hidden]) {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 10;
-    background: var(--backdrop);
+  body.home main {
+    display: none;
   }
 
   #menu {

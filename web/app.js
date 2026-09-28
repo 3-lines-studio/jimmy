@@ -94,8 +94,6 @@ const machineEl = document.getElementById("machine");
 const tabsEl = document.getElementById("tabs");
 const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
-const sidebar = document.getElementById("sidebar");
-const backdrop = document.getElementById("backdrop");
 const tabActionsEl = document.getElementById("tab-actions");
 const viewersEl = document.getElementById("viewers");
 const composerEl = document.getElementById("composer");
@@ -108,7 +106,7 @@ const onlineEl = document.getElementById("online");
 const toastEl = document.getElementById("toast");
 const finePointer = matchMedia("(hover: hover) and (pointer: fine)");
 
-document.getElementById("menu").append(icon("menu", 18));
+document.getElementById("menu").append(icon("left", 18));
 const themeEl = document.getElementById("theme");
 const themeColor = document.querySelector('meta[name="theme-color"]');
 const sunEl = icon("sun", 18);
@@ -124,10 +122,7 @@ const agendaSlot = document.createElement("span");
 agendaSlot.className = "slot";
 agendaSlot.append(icon("clock", 16));
 agendaEl.prepend(agendaSlot);
-agendaEl.onclick = () => {
-  openTab(AGENDA);
-  closeSidebar();
-};
+agendaEl.onclick = () => openTab(AGENDA);
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);
@@ -378,10 +373,7 @@ function projectMenu(group) {
   const menu = document.createElement("div");
   menu.className = "menu";
   menu.hidden = true;
-  const files = () => {
-    openTab(FILES + group.project.name);
-    closeSidebar();
-  };
+  const files = () => openTab(FILES + group.project.name);
   menu.append(
     menuItem("Nueva conversación", () => newConversation(group.project)),
     menuItem("Ver archivos", files),
@@ -434,14 +426,12 @@ async function openProject(project) {
   const newest = project.conversations[0];
   if (!newest) return newConversation(project);
   openTab(newest.key);
-  closeSidebar();
 }
 
 async function newConversation(project) {
   const made = await api("/api/conversations", { project: project.name });
   await refresh();
   if (made && made.key) openTab(made.key);
-  closeSidebar();
 }
 
 function renameProject(group) {
@@ -502,10 +492,7 @@ function conversationEl(conversation) {
   slot.className = "slot";
   slot.append(item.dot);
   item.el.append(slot, item.title);
-  item.el.onclick = () => {
-    openTab(item.conversation.key);
-    closeSidebar();
-  };
+  item.el.onclick = () => openTab(item.conversation.key);
   if (!conversation.read_only) {
     item.title.ondblclick = (event) => {
       event.stopPropagation();
@@ -872,7 +859,6 @@ function activate(id) {
   if (previous && previous.id !== id) unsubscribe(previous);
   activeId = id;
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
-  placeholderEl.hidden = tabs.size > 0;
   const tab = tabs.get(id);
   if (tab && !tab.stream && !tab.files && !tab.agenda) subscribe(tab);
   if (isAgenda(id)) loadAgenda();
@@ -901,16 +887,21 @@ function closeTab(id) {
     return;
   }
   const next = tabs.keys().next().value;
-  if (next) {
-    activate(next);
-  } else {
-    activeId = null;
-    placeholderEl.hidden = false;
-    remember();
-    renderTabs();
-    renderActions();
-    renderPending();
-  }
+  if (next) return activate(next);
+  activeId = null;
+  deselect();
+}
+
+function deselect() {
+  const tab = activeId ? tabs.get(activeId) : null;
+  if (tab) unsubscribe(tab);
+  activeId = null;
+  for (const other of tabs.values()) other.pane.hidden = true;
+  renderSidebar();
+  renderTabs();
+  renderActions();
+  renderPending();
+  remember();
 }
 
 function tabEl(tab) {
@@ -948,6 +939,8 @@ function renderTabs() {
     place(tabsEl, tab.item.el, last);
     last = tab.item.el;
   }
+  placeholderEl.hidden = activeId !== null;
+  document.body.classList.toggle("home", activeId === null);
 }
 
 function renderActions() {
@@ -1616,117 +1609,15 @@ lightQuery.addEventListener("change", () => {
 
 showTheme();
 
-/* Sidebar drawer */
+/* Volver a la lista */
 
-let drawerInHistory = false;
-let drawerClosing = false;
-
-function hideSidebar() {
-  sidebar.classList.remove("open");
-  backdrop.hidden = true;
-}
-
-function openSidebar() {
-  sidebar.classList.add("open");
-  backdrop.hidden = false;
-  if (drawerInHistory) return;
-  history.pushState({ drawer: true }, "", location.href);
-  drawerInHistory = true;
-}
-
-function closeSidebar() {
-  hideSidebar();
-  if (!drawerInHistory) return;
-  drawerInHistory = false;
-  drawerClosing = true;
-  history.back();
-}
-
-function drawerBack() {
-  if (!drawerClosing) return false;
-  drawerClosing = false;
-  remember();
-  return true;
-}
-
-document.getElementById("menu").onclick = openSidebar;
-backdrop.onclick = closeSidebar;
-
-/* Arrastrar hacia la derecha para abrirla */
-
-const DRAWER_AT = 72;
-const narrow = matchMedia("(max-width: 760px)");
-
-let drawerFrom = null;
-let drawerFromY = 0;
-let drawerMoved = 0;
-
-function drawerEnd(open) {
-  drawerFrom = null;
-  sidebar.style.transition = "transform 0.2s ease";
-  sidebar.style.transform = open ? "translateX(0)" : "";
-  if (open) openSidebar();
-  setTimeout(() => {
-    sidebar.style.transition = "";
-    sidebar.style.transform = "";
-  }, 250);
-}
-
-document.addEventListener(
-  "touchstart",
-  (event) => {
-    if (!narrow.matches || sidebar.classList.contains("open")) return;
-    if (event.touches.length !== 1) return;
-    if (event.touches[0].clientX > innerWidth / 3) return;
-    if (event.target.closest("pre, .table-wrap, #composer")) return;
-    drawerFrom = event.touches[0].clientX;
-    drawerFromY = event.touches[0].clientY;
-    drawerMoved = 0;
-    sidebar.style.transition = "none";
-  },
-  { passive: true },
-);
-
-document.addEventListener(
-  "touchmove",
-  (event) => {
-    if (drawerFrom === null) return;
-    drawerMoved = event.touches[0].clientX - drawerFrom;
-    const vertical = Math.abs(event.touches[0].clientY - drawerFromY);
-    if (drawerMoved <= 0 || vertical > drawerMoved) return drawerEnd(false);
-    sidebar.style.transform = `translateX(calc(-100% + ${drawerMoved}px))`;
-  },
-  { passive: true },
-);
-
-document.addEventListener(
-  "touchend",
-  () => {
-    if (drawerFrom !== null) drawerEnd(drawerMoved > DRAWER_AT);
-  },
-  { passive: true },
-);
-
-document.addEventListener(
-  "touchcancel",
-  () => {
-    if (drawerFrom !== null) drawerEnd(false);
-  },
-  { passive: true },
-);
-
-addEventListener("popstate", () => {
-  if (drawerBack()) return;
-  if (!drawerInHistory) return;
-  drawerInHistory = false;
-  hideSidebar();
-});
+document.getElementById("menu").onclick = deselect;
 
 addEventListener("hashchange", () => {
-  if (drawerBack()) return;
   const id = decodeURIComponent(location.hash.slice(1));
   if (id === activeId) return;
-  if (id && knownTab(id)) openTab(id);
+  if (id && knownTab(id)) return openTab(id);
+  if (!id && activeId) deselect();
 });
 
 const online = { source: null, retries: 0 };
@@ -1828,6 +1719,7 @@ async function main() {
   watchOnline();
   await refresh();
   restore();
+  renderTabs();
   receiveShared();
   loadAgenda();
   setInterval(refresh, 15000);

@@ -1458,27 +1458,35 @@ main {
   position: absolute;
   right: var(--s5);
   bottom: calc(var(--composer-h, 76px) + var(--s2));
-  height: 32px;
-  padding: 0 var(--s4);
+  flex-direction: column;
   background: var(--raised);
   border: 1px solid var(--line);
   border-radius: var(--r-full);
-  color: var(--accent);
   box-shadow: var(--shadow-md);
+  overflow: hidden;
 }
 
-.earlier {
-  position: absolute;
-  top: calc(52px + env(safe-area-inset-top) + var(--s2));
-  left: 50%;
-  transform: translateX(-50%);
+.jump:not([hidden]) {
+  display: flex;
+}
+
+.jump button:not([hidden]) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
   height: 32px;
-  padding: 0 var(--s4);
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--r-full);
+  padding: 0;
+  border-radius: 0;
   color: var(--accent);
-  box-shadow: var(--shadow-md);
+}
+
+.jump button:disabled {
+  opacity: 0.4;
+}
+
+.jump .up:not([hidden]) + .down {
+  border-top: 1px solid var(--line);
 }
 
 #refresh {

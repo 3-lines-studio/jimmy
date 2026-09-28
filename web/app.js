@@ -26,6 +26,7 @@ const PATHS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   clip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  down: '<path d="m19 12-7 7-7-7"/><path d="M12 5v14"/>',
   stop: '<rect width="13" height="13" x="5.5" y="5.5" rx="2"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
@@ -723,23 +724,30 @@ function createTab(id) {
   pane.className = "pane";
   const transcript = document.createElement("div");
   transcript.className = "transcript";
-  const jump = document.createElement("button");
-  jump.className = "jump";
-  jump.textContent = "Ir al final ↓";
-  jump.hidden = true;
-  const earlier = document.createElement("button");
-  earlier.className = "earlier";
-  earlier.textContent = "Ver anteriores ↑";
-  earlier.hidden = true;
-  pane.append(transcript, earlier, jump);
+  const nav = document.createElement("div");
+  nav.className = "jump";
+  nav.hidden = true;
+  const up = document.createElement("button");
+  up.className = "up";
+  up.setAttribute("aria-label", "Ver anteriores");
+  up.append(icon("up", 15));
+  up.hidden = true;
+  const down = document.createElement("button");
+  down.className = "down";
+  down.setAttribute("aria-label", "Ir al final");
+  down.append(icon("down", 15));
+  down.hidden = true;
+  nav.append(up, down);
+  pane.append(transcript, nav);
   panesEl.append(pane);
 
   const tab = {
     id,
     pane,
     transcript,
-    jump,
-    earlier,
+    nav,
+    up,
+    down,
     first: 0,
     loading: false,
     prepending: false,
@@ -758,14 +766,16 @@ function createTab(id) {
   tabs.set(id, tab);
   transcript.addEventListener("scroll", () => {
     tab.follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 120;
-    jump.hidden = tab.follow;
+    tab.down.hidden = tab.follow;
+    renderNav(tab);
   });
-  jump.onclick = () => {
+  down.onclick = () => {
     tab.follow = true;
-    jump.hidden = true;
+    tab.down.hidden = true;
+    renderNav(tab);
     transcript.scrollTop = transcript.scrollHeight;
   };
-  earlier.onclick = () => loadEarlier(tab);
+  up.onclick = () => loadEarlier(tab);
 
   return tab;
 }
@@ -807,27 +817,28 @@ function revive() {
   watchOnline();
 }
 
-function renderEarlier(tab) {
-  tab.earlier.hidden = tab.first <= 0;
-  tab.earlier.textContent = tab.loading ? "Trayendo…" : "Ver anteriores ↑";
+function renderNav(tab) {
+  tab.up.hidden = tab.first <= 0;
+  tab.up.disabled = tab.loading;
+  tab.nav.hidden = tab.up.hidden && tab.down.hidden;
 }
 
 async function loadEarlier(tab) {
   if (tab.loading || tab.first <= 0) return;
   tab.loading = true;
-  renderEarlier(tab);
+  renderNav(tab);
   const data = await api(
     `/api/history?conversation=${encodeURIComponent(tab.id)}&before=${tab.first}`,
   );
   tab.loading = false;
   if (!data || !data.events.length) {
     tab.first = 0;
-    renderEarlier(tab);
+    renderNav(tab);
     return;
   }
   prepend(tab, data.events);
   tab.first = data.first;
-  renderEarlier(tab);
+  renderNav(tab);
 }
 
 /// Los eventos viejos van arriba, en orden, y la vista se queda donde estaba:
@@ -858,7 +869,7 @@ function clearTab(tab) {
   tab.count = 0;
   tab.first = 0;
   tab.synced = false;
-  renderEarlier(tab);
+  renderNav(tab);
 }
 
 function activate(id) {
@@ -1034,7 +1045,7 @@ function render(tab, event) {
       tab.count = event.count || 0;
       tab.first = event.first || 0;
       tab.synced = true;
-      renderEarlier(tab);
+      renderNav(tab);
       break;
     default:
       break;
@@ -1042,8 +1053,12 @@ function render(tab, event) {
 }
 
 function scroll(tab) {
-  if (tab.follow) tab.transcript.scrollTop = tab.transcript.scrollHeight;
-  else tab.jump.hidden = false;
+  if (tab.follow) {
+    tab.transcript.scrollTop = tab.transcript.scrollHeight;
+    return;
+  }
+  tab.down.hidden = false;
+  renderNav(tab);
 }
 
 function append(tab, element) {

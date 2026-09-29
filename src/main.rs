@@ -331,10 +331,49 @@ fn main() {
     }
 }
 
+/// Lo que hay en el volumen, en JSON: proyectos, conversaciones y lo que la
+/// lista necesita saber de cada uno. Es lo que el control plane copia a su base
+/// para poder mostrar la lista sin abrir el sandbox, y lo lee el mismo código
+/// que arma la lista de acá, así no hay dos layouts.
+fn index_json(root: &Path, workspace: &Path) -> Result<String, String> {
+    let proyectos: Vec<serde_json::Value> = conversations::projects(root, workspace)
+        .into_iter()
+        .map(|proyecto| {
+            let general = proyecto.name == conversations::GENERAL;
+            let conversaciones: Vec<serde_json::Value> = proyecto
+                .conversations
+                .iter()
+                .map(|conversacion| {
+                    serde_json::json!({
+                        "key": conversacion.key,
+                        "project": conversacion.project,
+                        "title": conversacion.title,
+                        "read_only": conversacion.read_only,
+                        "last": conversations::last_message(&conversacion.dir),
+                        "touched_at": conversacion
+                            .updated()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|desde| desde.as_secs())
+                            .unwrap_or(0),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "name": proyecto.name,
+                "size": if general { 0 } else { conversations::size(&proyecto.path) },
+                "unversioned": crate::workspace::unversioned(&proyecto.path),
+                "conversations": conversaciones,
+            })
+        })
+        .collect();
+    serde_json::to_string(&serde_json::json!({ "projects": proyectos })).map_err(|e| e.to_string())
+}
+
 fn conversations_command(args: &[String]) -> i32 {
     let root = root_from_env();
     let workspace = workspace_from_env();
     let result = match args.first().map(String::as_str) {
+        Some("--json") => index_json(&root, &workspace).map(|texto| println!("{texto}")),
         Some("new") => match args.get(1) {
             Some(project) => {
                 let title = args
@@ -377,7 +416,9 @@ fn conversations_command(args: &[String]) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("uso: jimmy conversations [new <proyecto> [título] | rename <clave> <título>]");
+    eprintln!(
+        "uso: jimmy conversations [--json | new <proyecto> [título] | rename <clave> <título>]"
+    );
     2
 }
 
@@ -880,6 +921,45 @@ fn clamp(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El índice que lee el control plane desde el sandbox sale con lo que la
+    /// lista necesita, y lo arma el mismo código que la arma acá.
+    #[test]
+    fn el_indice_de_la_org_sale_con_lo_que_la_lista_necesita() {
+        let base = std::env::temp_dir().join(format!("jimmy-indice-{}", crate::random::hex(4)));
+        let root = base.join("root");
+        let workspace = base.join("workspace");
+        std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
+        std::fs::write(workspace.join("projects/ken/nota.md"), "hola").unwrap();
+        std::fs::create_dir_all(root.join("chats/web-1")).unwrap();
+        std::fs::write(
+            root.join("chats/web-1/meta.json"),
+            r#"{"project":"ken","title":"una charla"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("chats/web-1/transcript.jsonl"),
+            "{\"type\":\"message\",\"message\":{\"Role\":\"assistant\",\"Content\":\"listo\"}}\n",
+        )
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&index_json(&root, &workspace).unwrap()).unwrap();
+        let proyectos = json["projects"].as_array().unwrap();
+        assert_eq!(proyectos.len(), 2, "general y ken: {proyectos:?}");
+        assert_eq!(proyectos[0]["name"], "general");
+        let ken = proyectos.iter().find(|p| p["name"] == "ken").unwrap();
+        assert_eq!(ken["unversioned"], true);
+        assert!(ken["size"].as_u64().unwrap() > 0);
+        let charla = &ken["conversations"][0];
+        assert_eq!(charla["key"], "web-1");
+        assert_eq!(charla["project"], "ken");
+        assert_eq!(charla["title"], "una charla");
+        assert_eq!(charla["read_only"], false);
+        assert_eq!(charla["last"], "listo");
+        assert!(charla["touched_at"].as_u64().unwrap() > 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn an_unknown_command_never_starts_the_bot() {

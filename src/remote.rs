@@ -182,6 +182,61 @@ pub fn ensure(org: &str, store: &Store) -> Result<Option<SandboxInfo>, String> {
     Ok(Some(listo))
 }
 
+/// Copia a la base el índice de lo que hay en el volumen de la org: una sola
+/// operación, porque el que sabe leer el layout es el CLI que corre adentro.
+/// El control plane no abre el volumen para esto, y si el sandbox no contesta
+/// el índice se queda como estaba.
+pub fn sincronizar(
+    cliente: &Tensorlake,
+    sandbox: &str,
+    store: &Store,
+    org: &str,
+) -> Result<(), String> {
+    let salida = cliente.run(
+        sandbox,
+        MOUNT,
+        &format!(
+            "JIMMY_ROOT={MOUNT} JIMMY_WORKSPACE={MOUNT}/workspace {BIN}/jimmy conversations --json"
+        ),
+        120,
+        &mut |_| {},
+    )?;
+    let json: serde_json::Value =
+        serde_json::from_str(salida.trim()).map_err(|e| format!("no entiendo el índice: {e}"))?;
+    let proyectos: Vec<crate::store::IndexProject> = json["projects"]
+        .as_array()
+        .ok_or("el índice vino sin proyectos")?
+        .iter()
+        .map(|proyecto| crate::store::IndexProject {
+            name: proyecto["name"].as_str().unwrap_or_default().to_string(),
+            size: proyecto["size"].as_u64().unwrap_or(0),
+            unversioned: proyecto["unversioned"].as_bool().unwrap_or(false),
+            conversations: proyecto["conversations"]
+                .as_array()
+                .map(|conversaciones| conversaciones.iter().map(conversacion).collect())
+                .unwrap_or_default(),
+        })
+        .collect();
+    store.sync_index(org, &proyectos)
+}
+
+fn conversacion(json: &serde_json::Value) -> crate::store::IndexConversation {
+    let texto = |campo: &str| {
+        json[campo]
+            .as_str()
+            .filter(|valor| !valor.is_empty())
+            .map(str::to_string)
+    };
+    crate::store::IndexConversation {
+        key: json["key"].as_str().unwrap_or_default().to_string(),
+        project: json["project"].as_str().unwrap_or_default().to_string(),
+        title: texto("title"),
+        read_only: json["read_only"].as_bool().unwrap_or(true),
+        last: texto("last"),
+        touched_at: json["touched_at"].as_i64().unwrap_or(0),
+    }
+}
+
 /// La máquina de una org, que ya está despierta: sus archivos y sus comandos
 /// van por el mismo cliente, así que las herramientas no saben que está lejos.
 /// Hoy el turno no la usa —el worker corre adentro del sandbox, con su volumen

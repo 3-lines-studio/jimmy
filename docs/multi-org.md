@@ -51,16 +51,23 @@ id sea de tipo texto y no un entero.
 | `memberships` | `org_id`, `user_id`, `role`, únicos por par |
 | `sessions` | `token`, `user_id`, `expires_at` |
 
-Las que faltan —`projects`, `conversations`, `schedules`, `sandboxes` y
-`turns`— entran con los pasos 3 y 6, con el mismo encabezado.
+Las que faltan —`schedules`, `sandboxes` y `turns`— entran con los pasos que
+vienen, con el mismo encabezado.
 
 El transcript y el log de cada conversación no van acá: van al FS de la org,
-que es donde se producen y donde sobreviven a la suspensión del sandbox. Y
-tampoco van a la DB los proyectos ni el índice de conversaciones: cada org tiene
-**su directorio** (`orgs.dir`), y adentro está todo lo suyo —sus `chats/`, su
-`workspace/`, sus `files/`—, así el aislamiento sale del sistema de archivos y no
-de un `WHERE org_id = ?` que se puede olvidar. La org que se quedó la raíz (la
-primera) usa el workspace de siempre; las demás arrancan con el suyo, vacío.
+que es donde se producen y donde sobreviven a la suspensión del sandbox. Cada
+org tiene **su directorio** (`orgs.dir`), y adentro está todo lo suyo —sus
+`chats/`, su `workspace/`, sus `files/`—, así el aislamiento sale del sistema de
+archivos y no de un `WHERE org_id = ?` que se puede olvidar. La org que se quedó
+la raíz (la primera) usa el workspace de siempre; las demás arrancan con el
+suyo, vacío.
+
+`projects` y `conversations` son la excepción, y son una **copia**: el FS sigue
+mandando, pero cuando el trabajo vive en un sandbox el control plane no puede
+leer su volumen sin despertarlo, y armar el sidebar a fuerza de listados son
+viajes de ~200 ms cada uno. El índice se sincroniza entero desde adentro —una
+sola operación, `jimmy conversations --json`, que arma la lista con el mismo
+código que la arma adentro— y la web la muestra sin tocar el sandbox.
 
 La base es SQLite en el volumen (`jimmy.db`), con el esquema armado al abrir y
 sin migraciones, igual que heimdall: un proceso escribe, la concurrencia es
@@ -335,9 +342,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    el volumen y el worker arranca ahí por la API de procesos. Los archivos que
    toca son los suyos y la agenda corre igual que la web. Sin fila, el trabajo
    corre acá.
-7. **La web leyendo el volumen**: el log lo sigue escribiendo el control plane,
-   pero los proyectos, los archivos y los adjuntos son del volumen. Necesita el
-   `Machine` de axe y, para el sidebar, el índice en la base.
+7. **A medias** — La web leyendo el volumen: el índice de la org ya está en la
+   base, sincronizado desde adentro en cada turno. Falta que los proyectos, los
+   archivos y los adjuntos salgan del volumen —el `Machine` de axe— y que lo que
+   la web escribe lo escriba ahí. El log lo sigue escribiendo el control plane.
 8. **Los adjuntos de los dos lados**: lo que el usuario sube tiene que llegar al
    volumen, y lo que manda el asistente (`jimmy send`) tiene que poder la web
    mostrarlo.

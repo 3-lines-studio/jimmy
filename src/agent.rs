@@ -6,7 +6,7 @@ use crate::pool::Pool;
 use crate::protocol::{self, Event};
 use crate::sandbox::{Sandbox, Turn};
 use crate::store::Store;
-use crate::tensorlake::{SandboxInfo, MOUNT};
+use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
 use crate::workspace::Place;
@@ -176,6 +176,21 @@ impl Agent {
             return Ok(None);
         };
         crate::remote::ensure(org, store)
+    }
+
+    /// Copia a la base el índice de lo que hay en el volumen de la org: es lo
+    /// que la web muestra sin abrir el sandbox. Que no se pueda no rompe el
+    /// turno: el índice se queda como estaba y se reintenta en el próximo.
+    fn sincronizar(&self, listo: &SandboxInfo) {
+        let (Some(store), Some(org)) = (&self.store, &self.org) else {
+            return;
+        };
+        let Some(cliente) = Tensorlake::from_env() else {
+            return;
+        };
+        if let Err(error) = crate::remote::sincronizar(&cliente, &listo.name, store, org) {
+            eprintln!("jimmy: no pude sincronizar el índice de {org}: {error}");
+        }
     }
 
     /// La conversación como la ve el worker adentro del sandbox: los mismos
@@ -366,6 +381,9 @@ impl Agent {
             },
             sandbox.as_ref(),
         );
+        if let Some(listo) = &sandbox {
+            self.sincronizar(listo);
+        }
         self.flush_media(session);
         match turn {
             Ok(Turn::Answer(text)) => {
@@ -512,6 +530,9 @@ impl Agent {
             },
             sandbox.as_ref(),
         )?;
+        if let Some(listo) = &sandbox {
+            self.sincronizar(listo);
+        }
         match turn {
             Turn::Answer(text) => Ok(text),
             Turn::Failed(message) => Err(message),

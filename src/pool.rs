@@ -855,6 +855,21 @@ mod remoto {
             "el archivo del modelo quedó de este lado"
         );
 
+        // El índice: lo que la web muestra sin abrir el volumen.
+        crate::remote::sincronizar(&cliente, "turno-adentro", &store, &org.id).unwrap();
+        let indice = store.index(&org.id).unwrap();
+        assert_eq!(indice.len(), 1, "sólo el proyecto general: {indice:?}");
+        assert_eq!(indice[0].name, "general");
+        let charla = indice[0]
+            .conversations
+            .iter()
+            .find(|charla| charla.key == "adentro-del-sandbox")
+            .expect("la conversación está en el índice");
+        assert!(
+            charla.last.as_deref().unwrap_or_default().contains("hola"),
+            "el índice no trae el último mensaje: {charla:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

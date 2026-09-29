@@ -46,6 +46,31 @@ CREATE TABLE IF NOT EXISTS machines (
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    unversioned INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE (org_id, name)
+);
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    project TEXT NOT NULL,
+    title TEXT,
+    read_only INTEGER NOT NULL DEFAULT 0,
+    last TEXT,
+    touched_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE (org_id, key)
+);
 CREATE TABLE IF NOT EXISTS memberships (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -756,6 +781,7 @@ fn is_member(db: &Connection, org: &str, user: &str) -> Result<bool, String> {
 /// Dónde vive el trabajo de una org: el proveedor, el nombre de su máquina y
 /// el filesystem que monta, que es su volumen. Sin fila, el trabajo corre acá.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct Machine {
     pub org_id: String,
     pub provider: String,
@@ -810,6 +836,179 @@ impl Store {
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+    }
+}
+
+/// Lo que hay adentro de una org, para poder mostrarlo sin abrir su volumen ni
+/// despertarla: el volumen manda, esto es una copia.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexProject {
+    pub name: String,
+    pub size: u64,
+    pub unversioned: bool,
+    pub conversations: Vec<IndexConversation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexConversation {
+    pub key: String,
+    pub project: String,
+    pub title: Option<String>,
+    pub read_only: bool,
+    pub last: Option<String>,
+    /// Cuándo se tocó lo de adentro: es lo que ordena la lista.
+    pub touched_at: i64,
+}
+
+impl Store {
+    /// Lo que hay en la org, como quedó en la última sincronización. Lo usa la
+    /// web, que es el paso que sigue: mostrar la lista sin despertar el sandbox.
+    #[allow(dead_code)]
+    pub fn index(&self, org: &str) -> Result<Vec<IndexProject>, String> {
+        let db = self.db.lock().unwrap();
+        let mut proyectos: Vec<IndexProject> = Vec::new();
+        let mut statement = db
+            .prepare(
+                "SELECT name, size, unversioned FROM projects
+                 WHERE org_id = ?1 AND deleted_at IS NULL ORDER BY name",
+            )
+            .map_err(|e| e.to_string())?;
+        let filas = statement
+            .query_map(params![org], |row| {
+                Ok(IndexProject {
+                    name: row.get(0)?,
+                    size: row.get::<_, i64>(1)?.max(0) as u64,
+                    unversioned: row.get(2)?,
+                    conversations: Vec::new(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for fila in filas {
+            proyectos.push(fila.map_err(|e| e.to_string())?);
+        }
+
+        let mut statement = db
+            .prepare(
+                "SELECT key, project, title, read_only, last, touched_at FROM conversations
+                 WHERE org_id = ?1 AND deleted_at IS NULL
+                 ORDER BY touched_at DESC, key DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let filas = statement
+            .query_map(params![org], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    IndexConversation {
+                        key: row.get(0)?,
+                        project: row.get(1)?,
+                        title: row.get(2)?,
+                        read_only: row.get(3)?,
+                        last: row.get(4)?,
+                        touched_at: row.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for fila in filas {
+            let (project, conversation) = fila.map_err(|e| e.to_string())?;
+            if let Some(proyecto) = proyectos.iter_mut().find(|otro| otro.name == project) {
+                proyecto.conversations.push(conversation);
+            }
+        }
+        Ok(proyectos)
+    }
+
+    /// La conversación, como quedó en la última sincronización.
+    #[allow(dead_code)]
+    pub fn conversation_index(
+        &self,
+        org: &str,
+        key: &str,
+    ) -> Result<Option<IndexConversation>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT key, project, title, read_only, last, touched_at FROM conversations
+             WHERE org_id = ?1 AND key = ?2 AND deleted_at IS NULL",
+            params![org, key],
+            |row| {
+                Ok(IndexConversation {
+                    key: row.get(0)?,
+                    project: row.get(1)?,
+                    title: row.get(2)?,
+                    read_only: row.get(3)?,
+                    last: row.get(4)?,
+                    touched_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// Reemplaza el índice de la org con lo que se acaba de leer de su volumen.
+    /// Lo que ya no está se da de baja: la fila queda, que la baja es lógica.
+    pub fn sync_index(&self, org: &str, projects: &[IndexProject]) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let ahora = now();
+        tx.execute(
+            "UPDATE projects SET deleted_at = ?1 WHERE org_id = ?2 AND deleted_at IS NULL",
+            params![ahora, org],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE conversations SET deleted_at = ?1 WHERE org_id = ?2 AND deleted_at IS NULL",
+            params![ahora, org],
+        )
+        .map_err(|e| e.to_string())?;
+        for proyecto in projects {
+            tx.execute(
+                "INSERT INTO projects (id, org_id, name, size, unversioned, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT(org_id, name) DO UPDATE SET
+                     size = excluded.size,
+                     unversioned = excluded.unversioned,
+                     updated_at = excluded.updated_at,
+                     deleted_at = NULL",
+                params![
+                    ulid::new(),
+                    org,
+                    proyecto.name,
+                    proyecto.size as i64,
+                    proyecto.unversioned,
+                    ahora
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            for conversacion in &proyecto.conversations {
+                tx.execute(
+                    "INSERT INTO conversations (id, org_id, key, project, title, read_only, last,
+                                               touched_at, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                     ON CONFLICT(org_id, key) DO UPDATE SET
+                         project = excluded.project,
+                         title = excluded.title,
+                         read_only = excluded.read_only,
+                         last = excluded.last,
+                         touched_at = excluded.touched_at,
+                         updated_at = excluded.updated_at,
+                         deleted_at = NULL",
+                    params![
+                        ulid::new(),
+                        org,
+                        conversacion.key,
+                        conversacion.project,
+                        conversacion.title,
+                        conversacion.read_only,
+                        conversacion.last,
+                        conversacion.touched_at,
+                        ahora
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 }
 
@@ -948,7 +1147,15 @@ mod tests {
     fn todas_las_tablas_tienen_las_mismas_marcas() {
         let store = store("uniform");
         let db = store.db.lock().unwrap();
-        for table in ["users", "orgs", "memberships", "sessions", "machines"] {
+        for table in [
+            "users",
+            "orgs",
+            "memberships",
+            "sessions",
+            "machines",
+            "projects",
+            "conversations",
+        ] {
             let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
             let rows: Vec<(String, String)> = statement
                 .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))
@@ -1204,6 +1411,100 @@ mod tests {
             "las nuevas quedan"
         );
     }
+    fn proyecto(
+        name: &str,
+        size: u64,
+        unversioned: bool,
+        conversations: Vec<IndexConversation>,
+    ) -> IndexProject {
+        IndexProject {
+            name: name.to_string(),
+            size,
+            unversioned,
+            conversations,
+        }
+    }
+
+    fn charla(project: &str, key: &str, last: &str, touched_at: i64) -> IndexConversation {
+        IndexConversation {
+            key: key.to_string(),
+            project: project.to_string(),
+            title: Some("charla".into()),
+            read_only: false,
+            last: Some(last.to_string()),
+            touched_at,
+        }
+    }
+
+    /// El índice es una copia del volumen: se reemplaza entero en cada
+    /// sincronización, así lo que se fue no queda colgado en la lista.
+    #[test]
+    fn el_indice_de_una_org_sigue_al_volumen() {
+        let store = store("indice");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        assert!(store.index(&org.id).unwrap().is_empty());
+
+        store
+            .sync_index(
+                &org.id,
+                &[
+                    proyecto(
+                        "general",
+                        0,
+                        false,
+                        vec![
+                            charla("general", "web-vieja", "hola", 10),
+                            charla("general", "web-nueva", "chau", 20),
+                        ],
+                    ),
+                    proyecto("ken", 1024, true, vec![]),
+                ],
+            )
+            .unwrap();
+
+        let indice = store.index(&org.id).unwrap();
+        assert_eq!(indice.len(), 2);
+        assert_eq!(indice[0].name, "general");
+        let charlas = &indice[0].conversations;
+        assert_eq!(charlas[0].key, "web-nueva", "la última va primero");
+        assert_eq!(charlas[1].key, "web-vieja");
+        assert_eq!(indice[1].size, 1024);
+        assert!(indice[1].unversioned);
+        assert_eq!(
+            store
+                .conversation_index(&org.id, "web-vieja")
+                .unwrap()
+                .unwrap()
+                .last
+                .as_deref(),
+            Some("hola")
+        );
+
+        // El volumen cambió: ken se fue y la charla no tiene último mensaje.
+        let general = || {
+            vec![proyecto(
+                "general",
+                0,
+                false,
+                vec![charla("general", "web-nueva", "chau", 20)],
+            )]
+        };
+        store.sync_index(&org.id, &general()).unwrap();
+        let indice = store.index(&org.id).unwrap();
+        assert_eq!(indice.len(), 1, "ken ya no está");
+        assert!(
+            store
+                .conversation_index(&org.id, "web-vieja")
+                .unwrap()
+                .is_none(),
+            "la charla que se fue tampoco"
+        );
+
+        // Y sincronizar lo mismo no duplica nada.
+        store.sync_index(&org.id, &general()).unwrap();
+        assert_eq!(store.index(&org.id).unwrap()[0].conversations.len(), 1);
+    }
+
     #[test]
     fn una_org_puede_tener_su_maquina() {
         let store = store("maquinas");

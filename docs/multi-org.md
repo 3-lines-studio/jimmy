@@ -189,25 +189,34 @@ si el proceso se muere a mitad de un turno, el reclamo viejo se suelta solo.
 
 ## La imagen y el binario
 
-El agente corre adentro del sandbox, así que **el binario tiene que estar ahí**.
-Hoy se publica en el volumen de la org: `<raíz>/.jimmy/<huella>/jimmy`, con los
-prompts y las skills al lado, una vez por versión —el nombre lleva la huella del
-binario, así que un cambio de código no puede quedar enmascarado por el viejo—.
-Cuesta unos segundos la primera vez de cada versión y nada después; el POC midió
+El agente corre adentro del sandbox, así que **ahí adentro tiene que estar el
+mismo agente**: el binario, los prompts, las skills y los CLIs que el modelo
+corre por bash (`browse`, `recall`, `stats`, `gen-image`), en los mismos paths
+que usa el control plane (`/usr/local/bin/jimmy`, `/usr/local/share/jimmy/...`).
+Así lo que el modelo corre por bash es el mismo agente que el que arma el turno,
+y no una copia vieja.
+
+Hoy se publica desde el control plane: la copia queda en el volumen de la org
+(`/work/.jimmy/<huella>/`), una vez por versión —el nombre es la huella del
+binario, así que un cambio de código no puede quedar enmascarado por el viejo—,
+y cada sandbox nuevo la instala en su disco (un `cp -a`, medio segundo) al
+arrancar el primer turno. Cuesta unos segundos por org y versión: el POC midió
 la subida de 11,9 MB en 1,07-8,34 s.
 
-La otra forma es la imagen: `jimmy-min` ya se construye con el binario y los
-prompts adentro (`img-jimmy/Dockerfile`), y entonces publicar una versión es
-reconstruir la imagen y volver a crear los sandboxes (1,1 s, con el volumen
-intacto). Queda elegir; por ahora el volumen porque no hay builds en el medio.
+La otra forma es la imagen: `img-jimmy/Dockerfile` ya arma una con el binario y
+los prompts adentro, y entonces publicar una versión es reconstruirla (27 s
+medidos para la del POC) y volver a crear los sandboxes (1,1 s, con el volumen
+intacto). Queda elegir; hoy el volumen porque no hay builds en el medio y
+porque el agente entra en el sandbox sin depender de un paso de release.
 
-La imagen actual tiene lo mínimo — `debian:bookworm-slim` con `git`, `curl`,
-`ca-certificates`, `python3`, `jq` y `ripgrep` — y le falta lo que el agente usa
-todos los días: `node`, `bun`, `fd`, un compilador (Rust, Go, `build-essential`)
-y Chromium para el `browse`. Medido el 29-09 sobre `jimmy-min`: están `jq`,
-`rg`, `python3`, `git`, `curl` y el `jimmy` del POC (viejo); no están `fd`,
-`node`, `bun`, `gcc`, `make` ni `chromium`. Con el agente adentro, esa imagen es
-su entorno: lo que no esté ahí, el modelo no lo tiene.
+Lo que falta de cualquier manera es **el entorno**: la imagen del POC trae lo
+mínimo (`debian:bookworm-slim` con `git`, `curl`, `jq`, `ripgrep`, `python3`) y
+le falta lo que el agente usa todos los días — `node`, `bun`, `fd`, un
+compilador (Rust, Go, `build-essential`), Chromium con su venv para el `browse`,
+`ffmpeg` —. Medido el 29-09 sobre `jimmy-min`: están `jq`, `rg`, `python3`,
+`git`, `curl` y un `jimmy` viejo; no están `fd`, `node`, `bun`, `gcc`, `make`
+ni `chromium`. Con el agente adentro, esa imagen es su entorno: lo que no esté
+ahí, el modelo no lo tiene.
 
 ## heimdall
 
@@ -338,9 +347,9 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    mostrarlo.
 9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
    CLI— y su fila en `machines`.
-10. **La imagen del sandbox**: la del POC no tiene lo que el agente necesita
-    (node, bun, gcc, chromium) y sí tiene un jimmy viejo adentro. Y queda
-    decidir si el agente se publica por imagen o por volumen.
+10. **La imagen del sandbox**: el entorno del agente (toolchains, Chromium con
+    su venv, `ffmpeg`) y, con eso, decidir si el agente se publica por imagen o
+    se sigue instalando desde el volumen.
 11. **El proxy del modelo** en el control plane: la clave deja de viajar al
     sandbox y ahí caen los medidores.
 12. heimdall por org y su UI.

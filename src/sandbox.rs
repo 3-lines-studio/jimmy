@@ -48,7 +48,7 @@ pub trait Sandbox: Send + Sync {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
-        sandbox: Option<&str>,
+        sandbox: Option<&crate::tensorlake::SandboxInfo>,
     ) -> Result<Turn, String>;
 
     /// Interrumpe el turno de esa conversación, si hay uno corriendo.

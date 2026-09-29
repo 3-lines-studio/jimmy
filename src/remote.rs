@@ -10,7 +10,13 @@ use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use axe::machine::{resolve, Entry, Machine};
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Los paths del agente adentro del sandbox: los mismos que usa el control
+/// plane, así lo que el modelo corre por bash es lo mismo de los dos lados.
+const BIN: &str = "/usr/local/bin";
+const SHARE: &str = "/usr/local/share/jimmy";
 
 pub struct Remote {
     cliente: Arc<Tensorlake>,
@@ -57,71 +63,87 @@ pub fn al_sandbox(root: &Path, path: &Path) -> String {
     }
 }
 
-/// Las versiones que ya están en el volumen de ese sandbox, para no preguntar
-/// por la API en cada turno. La subida es idempotente, así que una instancia
-/// que no se acuerde no rompe nada: sube de nuevo.
-static SUBIDO: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// Lo que ya se hizo en un sandbox, para no preguntar por la API en cada
+/// turno: lo publicado (una vez por versión, en el volumen, que sobrevive) y lo
+/// instalado (una vez por sandbox, en su disco, que no). Las dos cosas son
+/// idempotentes: una instancia que no se acuerde las repite y no rompe nada.
+static HECHO: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-fn ya_esta(sandbox: &str, huella: &str) -> bool {
-    let mut subido = SUBIDO.lock().unwrap();
-    subido
-        .get_or_insert_with(HashSet::new)
-        .contains(&format!("{sandbox}/{huella}"))
+fn ya_hecho(clave: &str) -> bool {
+    let mut hecho = HECHO.lock().unwrap();
+    hecho.get_or_insert_with(HashSet::new).contains(clave)
 }
 
-fn recordar(sandbox: &str, huella: &str) {
-    let mut subido = SUBIDO.lock().unwrap();
-    subido
+fn recordar(clave: &str) {
+    let mut hecho = HECHO.lock().unwrap();
+    hecho
         .get_or_insert_with(HashSet::new)
-        .insert(format!("{sandbox}/{huella}"));
+        .insert(clave.to_string());
 }
 
-/// El agente adentro del sandbox: el binario y lo que lee del disco —los
-/// prompts y las skills—, en el volumen de la org. Se sube una vez por versión
-/// y el turno corre de ahí, así que el sandbox es el mismo agente y no una
-/// parte: los archivos que toca son los del volumen y no hay viajes por HTTP.
-pub fn publicar(cliente: &Tensorlake, sandbox: &str, exe: &Path) -> Result<String, String> {
+/// El agente adentro del sandbox: el binario, los prompts, las skills y los
+/// CLIs que el modelo corre por bash, en los mismos paths que de este lado, así
+/// adentro se usa igual que acá y no hay dos agentes. La copia queda en el
+/// volumen —una vez por versión, con la huella del binario como nombre— y cada
+/// sandbox nuevo la instala en su disco desde ahí, que es lo que hace que un
+/// sandbox recién creado tenga el agente listo sin subir nada de nuevo.
+pub fn publicar(cliente: &Tensorlake, sandbox: &SandboxInfo, exe: &Path) -> Result<String, String> {
     let bytes = std::fs::read(exe).map_err(|e| format!("no pude leer {exe:?}: {e}"))?;
     let huella = huella(&bytes);
-    let dir = format!("{MOUNT}/.jimmy/{huella}");
-    let path = format!("{dir}/jimmy");
-    if ya_esta(sandbox, &huella) {
-        return Ok(path);
-    }
-    if cliente.list_files(sandbox, &dir).is_err() {
-        cliente.write_file(sandbox, &path, &bytes)?;
-        cliente.run(
-            sandbox,
-            MOUNT,
-            &format!("chmod 0755 {path}"),
-            60,
-            &mut |_| {},
-        )?;
-        for (local, destino) in contenido()? {
-            let archivo = std::fs::read(&local).map_err(|e| format!("{local:?}: {e}"))?;
-            cliente.write_file(sandbox, &format!("{MOUNT}/{destino}"), &archivo)?;
+    let copia = format!("{MOUNT}/.jimmy/{huella}");
+    let publicado = format!("publicado:{}:{huella}", sandbox.name);
+    if !ya_hecho(&publicado) {
+        if cliente.list_files(&sandbox.name, &copia).is_err() {
+            cliente.write_file(&sandbox.name, &format!("{copia}/bin/jimmy"), &bytes)?;
+            for (local, destino) in archivos()? {
+                let datos = std::fs::read(&local).map_err(|e| format!("{local:?}: {e}"))?;
+                cliente.write_file(&sandbox.name, &format!("{copia}/{destino}"), &datos)?;
+            }
         }
+        recordar(&publicado);
     }
-    recordar(sandbox, &huella);
-    Ok(path)
+    let instalado = format!("instalado:{}:{huella}", sandbox.id);
+    if !ya_hecho(&instalado) {
+        cliente.run(&sandbox.name, MOUNT, &instalar(&copia), 120, &mut |_| {})?;
+        recordar(&instalado);
+    }
+    Ok(format!("{BIN}/jimmy"))
 }
 
-/// Los archivos que el agente lee del disco y no están adentro del binario: los
-/// prompts y las skills, que de este lado viven en la imagen y del otro tienen
-/// que estar en el volumen.
-fn contenido() -> Result<Vec<(std::path::PathBuf, String)>, String> {
+/// De la copia del volumen a los paths del sistema, que son los mismos que usa
+/// el control plane: `/usr/local/bin/jimmy`, `/usr/local/share/jimmy/{prompts,skills}`.
+fn instalar(copia: &str) -> String {
+    format!(
+        "set -e; mkdir -p {BIN} {SHARE}/prompts {SHARE}/skills; \
+         cp -a {copia}/bin/. {BIN}/; \
+         cp -a {copia}/share/prompts/. {SHARE}/prompts/; \
+         cp -a {copia}/share/skills/. {SHARE}/skills/; \
+         chmod 0755 {BIN}/jimmy"
+    )
+}
+
+/// Lo que el agente lee del disco y no está adentro del binario: los prompts,
+/// las skills y los CLIs. De este lado viven en la imagen del control plane y
+/// del otro tienen que estar en el sandbox.
+fn archivos() -> Result<Vec<(PathBuf, String)>, String> {
     let mut archivos = Vec::new();
-    for (dir, nombre) in [
-        (crate::prompt::BUILTIN, "prompts"),
-        (crate::skill::BUILTIN, "skills"),
+    for (dir, destino) in [
+        (crate::prompt::BUILTIN, "share/prompts"),
+        (crate::skill::BUILTIN, "share/skills"),
     ] {
         let raiz = Path::new(dir);
         if !raiz.is_dir() {
             continue;
         }
         juntar(raiz, &mut |relativo| {
-            archivos.push((raiz.join(&relativo), format!("{nombre}/{relativo}")));
+            archivos.push((raiz.join(&relativo), format!("{destino}/{relativo}")));
         })?;
+    }
+    for cli in ["browse", "recall", "stats", "gen-image"] {
+        let path = PathBuf::from(BIN).join(cli);
+        if path.is_file() {
+            archivos.push((path, format!("bin/{cli}")));
+        }
     }
     Ok(archivos)
 }

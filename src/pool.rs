@@ -14,7 +14,7 @@
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
 use crate::sandbox::{OnEvent, Sandbox, Turn};
-use crate::tensorlake::{Tensorlake, MOUNT};
+use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use crate::transport::Session;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -69,7 +69,7 @@ impl Pool {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
-        sandbox: Option<&str>,
+        sandbox: Option<&SandboxInfo>,
     ) -> Result<Turn, String> {
         let worker = self.spawn(session, conversation, env, sandbox)?;
         let result = worker
@@ -139,7 +139,7 @@ impl Pool {
         session: &Session,
         conversation: &Conversation,
         env: &[(String, String)],
-        sandbox: Option<&str>,
+        sandbox: Option<&SandboxInfo>,
     ) -> Result<Arc<Worker>, String> {
         match sandbox {
             Some(sandbox) => self.spawn_remoto(session, conversation, env, sandbox),
@@ -199,12 +199,13 @@ impl Pool {
         session: &Session,
         conversation: &Conversation,
         env: &[(String, String)],
-        sandbox: &str,
+        listo: &SandboxInfo,
     ) -> Result<Arc<Worker>, String> {
         let key = session.key();
+        let sandbox = listo.name.as_str();
         let cliente =
             Arc::new(Tensorlake::from_env().ok_or("esta org necesita TENSORLAKE_API_KEY")?);
-        let binario = crate::remote::publicar(&cliente, sandbox, &self.exe()?)?;
+        let binario = crate::remote::publicar(&cliente, listo, &self.exe()?)?;
         let mut entorno: BTreeMap<String, String> = env.iter().cloned().collect();
         entorno
             .entry("PATH".into())
@@ -285,7 +286,7 @@ impl Sandbox for Pool {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
-        sandbox: Option<&str>,
+        sandbox: Option<&SandboxInfo>,
     ) -> Result<Turn, String> {
         Pool::turn(self, session, conversation, env, command, on_event, sandbox)
     }
@@ -668,6 +669,7 @@ mod remoto {
     use crate::store::Store;
     use crate::workspace::place;
     use crate::Agent;
+    use std::path::Path;
 
     /// Baja el sandbox aunque la prueba falle a mitad: el plan de prueba deja
     /// uno solo por vez.
@@ -742,6 +744,47 @@ mod remoto {
             "no hubo respuesta: {respuesta:?}"
         );
 
+        let cliente = Arc::new(Tensorlake::from_env().unwrap());
+        let sandbox = cliente
+            .find("turno-adentro")
+            .unwrap()
+            .expect("el sandbox quedó de la corrida");
+        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
+
+        // El agente adentro es el mismo de acá, y en los mismos paths: si no,
+        // lo que el modelo corre por bash no es el agente.
+        let donde = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                "command -v jimmy; command -v browse; jimmy skill list | head -3",
+                60,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(donde.contains("/usr/local/bin/jimmy"), "{donde}");
+        assert!(donde.contains("/usr/local/bin/browse"), "{donde}");
+        assert!(donde.contains("browse"), "el CLI no ve las skills: {donde}");
+        let instalado = cliente
+            .read_file("turno-adentro", "/usr/local/bin/jimmy")
+            .unwrap();
+        assert_eq!(
+            instalado,
+            std::fs::read(exe()).unwrap(),
+            "el jimmy del sandbox no es el mismo binario"
+        );
+        let prompt = cliente
+            .read_file(
+                "turno-adentro",
+                "/usr/local/share/jimmy/prompts/identidad.md",
+            )
+            .unwrap();
+        assert_eq!(
+            prompt,
+            std::fs::read(Path::new(crate::prompt::BUILTIN).join("identidad.md")).unwrap(),
+            "los prompts del sandbox no son los de acá"
+        );
+
         // El segundo turno aprovecha el sandbox despierto y el binario ya
         // publicado: es el tiempo que importa, y de paso comprueba que el
         // transcript del volumen es el que el worker lee para seguir.
@@ -757,13 +800,6 @@ mod remoto {
         let caliente = segundo.elapsed();
         eprintln!("turno frío: {frio:?} · turno caliente: {caliente:?} · dijo: {otra:?}");
         assert!(otra.contains("hola.txt"), "no siguió el hilo: {otra:?}");
-
-        let cliente = Arc::new(Tensorlake::from_env().unwrap());
-        let sandbox = cliente
-            .find("turno-adentro")
-            .unwrap()
-            .expect("el sandbox quedó de la corrida");
-        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
 
         let transcript = cliente
             .read_file(

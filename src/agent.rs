@@ -183,9 +183,9 @@ impl Agent {
     fn en_el_sandbox(
         &self,
         mut conversation: conversations::Conversation,
-        sandbox: Option<&str>,
+        en_sandbox: bool,
     ) -> conversations::Conversation {
-        if sandbox.is_some() {
+        if en_sandbox {
             conversation.cwd =
                 PathBuf::from(crate::remote::al_sandbox(&self.root, &conversation.cwd));
         }
@@ -233,9 +233,9 @@ impl Agent {
     /// Con qué se reconstruye el worker: la config del agente más el lugar
     /// donde le toca correr. Si el turno va a un sandbox, ese lugar es su
     /// volumen, y los paths son los de adentro.
-    fn worker_env(&self, sandbox: Option<&str>) -> Vec<(String, String)> {
-        match sandbox {
-            Some(_) => worker_env(
+    fn worker_env(&self, en_sandbox: bool) -> Vec<(String, String)> {
+        match en_sandbox {
+            true => worker_env(
                 &self.base,
                 &self.model,
                 &self.api_key,
@@ -243,7 +243,7 @@ impl Agent {
                 Path::new(MOUNT),
                 &format!("{MOUNT}/workspace"),
             ),
-            None => worker_env(
+            false => worker_env(
                 &self.base,
                 &self.model,
                 &self.api_key,
@@ -344,7 +344,7 @@ impl Agent {
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
         let sandbox = match self.wake() {
-            Ok(listo) => listo.map(|listo| listo.name),
+            Ok(listo) => listo,
             Err(error) => {
                 let message = format!("⚠️ {error}");
                 transport.fail(session, live.take(), &message);
@@ -353,8 +353,8 @@ impl Agent {
                 return Err(error);
             }
         };
-        let env = self.worker_env(sandbox.as_deref());
-        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.as_deref());
+        let env = self.worker_env(sandbox.is_some());
+        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
         let turn = self.pool.turn(
             session,
             &del_worker,
@@ -364,7 +364,7 @@ impl Agent {
                 live.on(event);
                 self.bus.publish(&conversation.key, &log, event)
             },
-            sandbox.as_deref(),
+            sandbox.as_ref(),
         );
         self.flush_media(session);
         match turn {
@@ -487,9 +487,9 @@ impl Agent {
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
-        let sandbox = self.wake()?.map(|listo| listo.name);
-        let env = self.worker_env(sandbox.as_deref());
-        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.as_deref());
+        let sandbox = self.wake()?;
+        let env = self.worker_env(sandbox.is_some());
+        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
         let status = if silent {
             None
         } else {
@@ -510,7 +510,7 @@ impl Agent {
                 live.on(event);
                 self.bus.publish(&conversation.key, &log, event)
             },
-            sandbox.as_deref(),
+            sandbox.as_ref(),
         )?;
         match turn {
             Turn::Answer(text) => Ok(text),

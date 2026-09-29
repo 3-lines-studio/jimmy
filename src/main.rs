@@ -18,6 +18,7 @@ mod prompt;
 mod protocol;
 mod random;
 mod reap;
+mod sandbox;
 mod schedule;
 mod skill;
 mod tools;

@@ -2,8 +2,9 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::log::Log;
 use crate::media;
-use crate::pool::{Pool, Turn};
+use crate::pool::Pool;
 use crate::protocol::{self, Event};
+use crate::sandbox::{Sandbox, Turn};
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
 use axe::run::{self, Outcome, RunOptions, Sink};
@@ -35,7 +36,7 @@ pub struct Agent {
     cwd: String,
     fragments: String,
     context: String,
-    pool: Arc<Pool>,
+    pool: Arc<dyn Sandbox>,
     bus: Arc<Bus>,
     /// Un candado por conversación: un turno a la vez, el que llega espera.
     turns: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
@@ -55,7 +56,7 @@ impl Agent {
     ) -> Self {
         let cwd = workspace.clone();
         let context = runtime_context(&model, &base, &root, &workspace, &cwd);
-        let pool = Pool::new(
+        let pool: Arc<dyn Sandbox> = Pool::new(
             worker_env(&base, &model, &api_key, context_window, &root, &workspace),
             None,
         );

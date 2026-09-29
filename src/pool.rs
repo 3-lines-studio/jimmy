@@ -8,6 +8,7 @@
 
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
+use crate::sandbox::{OnEvent, Sandbox, Turn};
 use crate::transport::Session;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -19,15 +20,6 @@ use std::sync::{Arc, Mutex};
 
 const WORKER_SLOTS: usize = 64;
 static WORKER_PIDS: [AtomicI32; WORKER_SLOTS] = [const { AtomicI32::new(0) }; WORKER_SLOTS];
-
-pub enum Turn {
-    Answer(String),
-    Failed(String),
-}
-
-/// What the caller wants to do with every event on the way to the end of the
-/// turn: jimmy writes them down as the conversation's log.
-pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
     key: String,
@@ -174,6 +166,30 @@ impl Pool {
         workers.remove(&worker.key);
         unregister(worker.pid);
         true
+    }
+}
+
+impl Sandbox for Pool {
+    fn turn(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        command: Command,
+        on_event: OnEvent,
+    ) -> Result<Turn, String> {
+        Pool::turn(self, session, conversation, command, on_event)
+    }
+
+    fn cancel(&self, key: &str) {
+        Pool::cancel(self, key);
+    }
+
+    fn kill(&self, key: &str) {
+        Pool::kill(self, key);
+    }
+
+    fn running(&self, key: &str) -> bool {
+        Pool::running(self, key)
     }
 }
 

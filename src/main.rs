@@ -28,6 +28,7 @@ mod ulid;
 mod watch;
 mod web;
 mod worker;
+mod workspace;
 
 use agent::Agent;
 use std::path::{Path, PathBuf};

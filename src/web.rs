@@ -10,13 +10,14 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::files;
 use crate::http::{self, Request};
-use crate::log::{Log, Window};
+use crate::log::Window;
 use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::schedule;
 use crate::transport::Null;
+use crate::workspace::{self, Local, Workspace};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -379,32 +380,20 @@ fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     )
 }
 
-/// De quién es lo que se está mirando: el directorio de la org activa y su
-/// workspace. Todo lo que toca conversaciones o proyectos sale de acá, así no
-/// hay forma de leer lo de otra org por descuido.
-struct Scope {
-    root: PathBuf,
-    workspace: PathBuf,
-}
-
+/// El workspace de la org activa: lo que la web necesita de las cosas de una
+/// org sale de acá, y no de un camino que la web arme por su cuenta.
 impl Web {
-    fn scope(&self, request: &Request) -> Scope {
-        let org = current_user(self, request)
-            .and_then(|user| self.auth.store().active_org(&user.id).ok().flatten());
+    fn workspace(&self, request: &Request) -> Local {
         // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
         // propio directorio, con sus conversaciones y su workspace adentro.
-        match org {
+        match current_user(self, request)
+            .and_then(|user| self.auth.store().active_org(&user.id).ok().flatten())
+        {
             Some(org) if org.dir != "." => {
                 let root = self.root.join(&org.dir);
-                Scope {
-                    workspace: root.join("workspace"),
-                    root,
-                }
+                Local::new(root.clone(), root.join("workspace"))
             }
-            _ => Scope {
-                workspace: self.workspace.clone(),
-                root: self.root.clone(),
-            },
+            _ => Local::new(self.root.clone(), self.workspace.clone()),
         }
     }
 }
@@ -413,7 +402,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     let Some(user) = current_user(web, request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let scope = web.scope(request);
+    let org = web.workspace(request);
     let store = web.auth.store();
     let orgs: Vec<serde_json::Value> = store
         .orgs_of(&user.id)
@@ -421,12 +410,14 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
         .into_iter()
         .map(|org| serde_json::json!({ "id": org.id, "name": org.name }))
         .collect();
-    let org = store
+    let active = store
         .active_org(&user.id)
         .ok()
         .flatten()
         .map(|org| serde_json::json!({ "id": org.id, "name": org.name }));
-    let projects: Vec<serde_json::Value> = conversations::projects(&scope.root, &scope.workspace)
+    let projects: Vec<serde_json::Value> = org
+        .projects()
+        .unwrap_or_default()
         .into_iter()
         .map(|project| {
             let conversations: Vec<serde_json::Value> = project
@@ -444,16 +435,12 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 .collect();
             serde_json::json!({
                 "name": project.name,
-                "path": project.path.display().to_string(),
-                "unversioned": unversioned(&project.path),
-                "size": match project.name == conversations::GENERAL {
-                    true => 0,
-                    false => conversations::size(&project.path),
-                },
+                "unversioned": project.unversioned,
+                "size": project.size,
                 "last": project
                     .conversations
                     .iter()
-                    .find_map(|conversation| conversations::last_message(&conversation.dir)),
+                    .find_map(|conversation| conversation.last.clone()),
                 "conversations": conversations,
             })
         })
@@ -476,9 +463,9 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
         200,
         &serde_json::json!({
             "user": user_name(user.email),
-            "org": org,
+            "org": active,
             "orgs": orgs,
-            "workspace": scope.workspace.display().to_string(),
+            "workspace": org.workspace().display().to_string(),
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
@@ -524,12 +511,12 @@ fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let scope = web.scope(request);
+    let org = web.workspace(request);
     let project = request.field("project").unwrap_or_default();
     let title = request
         .field("title")
         .unwrap_or_else(|| conversations::NEW_TITLE.to_string());
-    match conversations::create(&scope.root, &scope.workspace, &project, &title) {
+    match conversations::create(org.root(), org.workspace(), &project, &title) {
         Ok(key) => http::send_json(stream, 200, &serde_json::json!({ "key": key })),
         Err(error) => http::send_error(stream, 400, &error),
     }
@@ -552,8 +539,8 @@ fn create_project(
     {
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
-    let scope = web.scope(request);
-    let dir = scope.workspace.join("projects").join(name);
+    let org = web.workspace(request);
+    let dir = org.workspace().join("projects").join(name);
     if dir.exists() {
         return http::send_error(stream, 400, "ese proyecto ya existe");
     }
@@ -569,11 +556,11 @@ fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     }
     let key = request.field("conversation").unwrap_or_default();
     let title = request.field("title").unwrap_or_default();
-    let scope = web.scope(request);
-    if writable(&scope, &key).is_err() {
+    let org = web.workspace(request);
+    if writable(&org, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
-    match conversations::rename(&scope.root, &key, &title) {
+    match conversations::rename(org.root(), &key, &title) {
         Ok(()) => http::send_json(
             stream,
             200,
@@ -592,8 +579,8 @@ fn delete_conversation(
         return http::send_error(stream, 401, "no estás adentro");
     }
     let key = request.field("conversation").unwrap_or_default();
-    let scope = web.scope(request);
-    if writable(&scope, &key).is_err() {
+    let org = web.workspace(request);
+    if writable(&org, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     match web.agent.delete(&key) {
@@ -616,8 +603,8 @@ fn rename_project(
     if to.is_empty() || to.contains('/') || to.starts_with('.') {
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
-    let scope = web.scope(request);
-    match conversations::rename_project(&scope.root, &scope.workspace, from.trim(), to) {
+    let org = web.workspace(request);
+    match conversations::rename_project(org.root(), org.workspace(), from.trim(), to) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
         Err(error) => http::send_error(stream, 400, &error),
     }
@@ -637,8 +624,8 @@ fn duplicate_project(
     if to.is_empty() || to.contains('/') || to.starts_with('.') {
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
-    let scope = web.scope(request);
-    match conversations::duplicate(&scope.workspace, from.trim(), to) {
+    let org = web.workspace(request);
+    match conversations::duplicate(org.workspace(), from.trim(), to) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
         Err(error) => http::send_error(stream, 400, &error),
     }
@@ -661,15 +648,15 @@ fn delete_project(
     {
         return http::send_error(stream, 400, "ese nombre no es un proyecto");
     }
-    let scope = web.scope(request);
-    let dir = scope.workspace.join("projects").join(name);
+    let org = web.workspace(request);
+    let dir = org.workspace().join("projects").join(name);
     if !dir.is_dir() {
         return http::send_error(stream, 400, "ese proyecto no existe");
     }
     if let Err(why) = disposable(&dir, request.flag("force")) {
         return http::send_error(stream, 400, &format!("no lo borro: {why}"));
     }
-    let conversations = conversations::projects(&scope.root, &scope.workspace)
+    let conversations = conversations::projects(org.root(), org.workspace())
         .into_iter()
         .find(|project| project.name == name)
         .map(|project| project.conversations)
@@ -687,10 +674,10 @@ fn delete_project(
 /// pusheado. Lo que no está en git se borra solo si el pedido se hace cargo
 /// (`force`): puede tener trabajo adentro que no existe en ningún otro lado.
 fn disposable(dir: &Path, force: bool) -> Result<(), String> {
-    if empty(dir) {
+    if workspace::empty(dir) {
         return Ok(());
     }
-    if unversioned(dir) {
+    if workspace::unversioned(dir) {
         return match force {
             true => Ok(()),
             false => Err("tiene archivos que no están en git".into()),
@@ -709,18 +696,6 @@ fn disposable(dir: &Path, force: bool) -> Result<(), String> {
         return Err("tiene commits sin pushear".into());
     }
     Ok(())
-}
-
-/// Un proyecto sin git y con algo adentro: no hay copia en ningún otro lado,
-/// así que borrarlo es una decisión del que lo pide.
-fn unversioned(dir: &Path) -> bool {
-    !empty(dir) && !dir.join(".git").exists()
-}
-
-fn empty(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|entries| entries.count() == 0)
-        .unwrap_or(true)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -763,8 +738,8 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let key = request.field("conversation").unwrap_or_default();
-    let scope = web.scope(request);
-    if writable(&scope, &key).is_err() {
+    let org = web.workspace(request);
+    if writable(&org, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     let Some(session) = crate::session_from_key(&key) else {
@@ -783,8 +758,8 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     };
     let key = request.field("conversation").unwrap_or_default();
     let text = request.field("text").unwrap_or_default();
-    let scope = web.scope(request);
-    let Ok(conversation) = writable(&scope, &key) else {
+    let org = web.workspace(request);
+    let Ok(conversation) = writable(&org, &key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     };
     let images = match read_attachments(&conversation, &request.list("images")) {
@@ -802,7 +777,7 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         } else {
             title_from(&text)
         };
-        let _ = conversations::rename(&scope.root, &key, &title);
+        let _ = conversations::rename(org.root(), &key, &title);
     }
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
@@ -840,8 +815,8 @@ fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     }
     let key = request.param("conversation").unwrap_or_default();
-    let scope = web.scope(request);
-    let Ok(conversation) = writable(&scope, key) else {
+    let org = web.workspace(request);
+    let Ok(conversation) = writable(&org, key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     };
     if request.body.is_empty() {
@@ -867,13 +842,12 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
+    let org = web.workspace(request);
     let key = request.param("conversation").unwrap_or_default();
-    let scope = web.scope(request);
-    let conversation = conversations::get(&scope.root, &scope.workspace, key);
     let Some(name) = request.param("name").and_then(media::safe_name) else {
         return http::send_error(stream, 400, "ese nombre no sirve");
     };
-    let Ok(data) = std::fs::read(media::dir(&conversation).join(name)) else {
+    let Ok(data) = org.read_attachment(key, name) else {
         return http::send_error(stream, 404, "no está");
     };
     http::respond(stream, 200, media::content_type(name), &[], &data)
@@ -881,27 +855,16 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
 /// El directorio de un proyecto, o nada si ese nombre no puede ser uno. El
 /// proyecto `general` es el workspace entero: ahí se ve todo lo que hay.
-fn project_dir(scope: &Scope, name: &str) -> Option<PathBuf> {
-    if name.is_empty() || name.contains('/') || name.starts_with('.') {
-        return None;
-    }
-    let dir = conversations::project_dir(&scope.workspace, name);
-    dir.is_dir().then_some(dir)
-}
-
 /// Una carpeta del proyecto, un nivel. Cada carpeta la pide el que mira cuando
 /// la abre.
 fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let scope = web.scope(request);
+    let org = web.workspace(request);
     let project = request.param("project").unwrap_or_default();
-    let Some(root) = project_dir(&scope, project) else {
-        return http::send_error(stream, 400, "ese proyecto no existe");
-    };
     let path = request.param("path").unwrap_or_default();
-    let Some(entries) = files::list(&root, path) else {
+    let Ok(entries) = org.tree(project, path) else {
         return http::send_error(stream, 404, "esa carpeta no está");
     };
     let entries: Vec<serde_json::Value> = entries
@@ -929,35 +892,23 @@ fn raw(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Re
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let scope = web.scope(request);
-    let Some(root) = project_dir(&scope, request.param("project").unwrap_or_default()) else {
-        return http::send_error(stream, 400, "ese proyecto no existe");
-    };
-    let Some(path) = files::resolve(&root, request.param("path").unwrap_or_default()) else {
+    let org = web.workspace(request);
+    let project = request.param("project").unwrap_or_default();
+    let path = request.param("path").unwrap_or_default();
+    let name = path.rsplit('/').next().unwrap_or_default().to_string();
+    let image = media::is_image(&name);
+    let Ok((bytes, size)) = org.read_file(project, path, (!image).then_some(files::MAX_READ))
+    else {
         return http::send_error(stream, 404, "ese archivo no está");
-    };
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return http::send_error(stream, 404, "ese archivo no está");
-    };
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return http::send_error(stream, 404, "ese archivo no está");
-    };
-    if !meta.is_file() {
-        return http::send_error(stream, 404, "eso no es un archivo");
-    }
-    let image = media::is_image(name);
-    let bytes = match files::read(&path, (!image).then_some(files::MAX_READ)) {
-        Ok(bytes) => bytes,
-        Err(error) => return http::send_error(stream, 500, &error),
     };
     let content_type = if image {
-        media::content_type(name)
+        media::content_type(&name)
     } else if files::is_text(&bytes) {
         "text/plain; charset=utf-8"
     } else {
         "application/octet-stream"
     };
-    let cut: &[(&str, &str)] = if meta.len() > bytes.len() as u64 {
+    let cut: &[(&str, &str)] = if size > bytes.len() as u64 {
         &[("X-Truncated", "1")]
     } else {
         &[]
@@ -970,8 +921,8 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let key = request.field("conversation").unwrap_or_default();
-    let scope = web.scope(request);
-    if writable(&scope, &key).is_err() {
+    let org = web.workspace(request);
+    if writable(&org, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     web.bus.show(&key, &Event::Typing { user });
@@ -1066,8 +1017,8 @@ fn title_from(text: &str) -> String {
     title
 }
 
-fn writable(scope: &Scope, key: &str) -> Result<conversations::Conversation, ()> {
-    let conversation = conversations::get(&scope.root, &scope.workspace, key);
+fn writable(org: &Local, key: &str) -> Result<conversations::Conversation, ()> {
+    let conversation = conversations::get(org.root(), org.workspace(), key);
     if conversation.read_only || !conversation.dir.is_dir() {
         return Err(());
     }
@@ -1081,16 +1032,14 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let Some(key) = request.param("conversation") else {
         return http::send_error(stream, 400, "falta conversation");
     };
-    let scope = web.scope(request);
-    let conversation = conversations::get(&scope.root, &scope.workspace, key);
-    if !conversation.dir.is_dir() {
+    let org = web.workspace(request);
+    let Ok(window) = org.window(key, usize::MAX) else {
         return http::send_error(stream, 404, "esa conversación no existe");
-    }
+    };
     let since = request
         .param("since")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let window = Log::in_dir(&conversation.dir).window(usize::MAX);
     let (id, live) = web.bus.attach(key, &user);
     let result = follow(stream, &window, since, &live);
     web.bus.detach(key, id);
@@ -1106,16 +1055,14 @@ fn history(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io
     let Some(key) = request.param("conversation") else {
         return http::send_error(stream, 400, "falta conversation");
     };
-    let scope = web.scope(request);
-    let conversation = conversations::get(&scope.root, &scope.workspace, key);
-    if !conversation.dir.is_dir() {
-        return http::send_error(stream, 404, "esa conversación no existe");
-    }
+    let org = web.workspace(request);
     let before = request
         .param("before")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let window = Log::in_dir(&conversation.dir).window(before);
+    let Ok(window) = org.window(key, before) else {
+        return http::send_error(stream, 404, "esa conversación no existe");
+    };
     http::send_json(
         stream,
         200,
@@ -1166,6 +1113,7 @@ fn follow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log::Log;
     use crate::protocol::Event;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;

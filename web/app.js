@@ -584,7 +584,6 @@ function renderSidebar() {
     const size = project.size ? projectSize(project.size) : "";
     setText(group.size, size);
     group.size.hidden = !size;
-    group.name.title = project.path;
     const collapsed = !opened.has(project.name);
     group.el.classList.toggle("collapsed", collapsed);
     group.el.classList.toggle(

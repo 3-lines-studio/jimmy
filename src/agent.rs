@@ -154,6 +154,15 @@ impl Agent {
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
+    /// La máquina donde trabaja el turno: el sandbox de la org si lo tiene, y
+    /// si no este contenedor. El `cwd` es de esa máquina, no de este proceso.
+    fn machine(&self) -> Arc<dyn axe::machine::Machine> {
+        match crate::remote::de_la_org(&self.cwd) {
+            Some(machine) => machine,
+            None => Arc::new(axe::machine::Local::new(&self.cwd)),
+        }
+    }
+
     /// Tell the parent what the turn is doing, event by event. Only the worker
     /// sets this: it is the one with a pipe at the other end of the process.
     pub(crate) fn set_pipe(&mut self, pipe: Arc<Pipe>) {
@@ -435,7 +444,7 @@ impl Agent {
         dir: Option<PathBuf>,
         silent: bool,
     ) -> Result<String, String> {
-        let mut tools = axe::tui::build_tools(&self.cwd);
+        let mut tools = axe::tui::build_tools_on(self.machine());
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
@@ -891,6 +900,10 @@ fn worker_env(
         ),
         ("JIMMY_ROOT".into(), root.display().to_string()),
         ("JIMMY_WORKSPACE".into(), workspace.to_string()),
+        (
+            "JIMMY_SANDBOX".into(),
+            crate::env("JIMMY_SANDBOX").unwrap_or_default(),
+        ),
     ]
 }
 

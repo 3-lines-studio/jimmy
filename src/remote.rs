@@ -25,6 +25,14 @@ impl Remote {
     }
 }
 
+/// La máquina de una org cuando el turno corre contra su sandbox. Sin
+/// `JIMMY_SANDBOX` no hay máquina remota y el turno trabaja acá, como siempre.
+pub fn de_la_org(dir: &str) -> Option<Arc<dyn Machine>> {
+    let sandbox = crate::env("JIMMY_SANDBOX")?;
+    let cliente = Tensorlake::from_env()?;
+    Some(Arc::new(Remote::new(Arc::new(cliente), &sandbox, dir)))
+}
+
 impl Machine for Remote {
     fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         self.cliente.read_file(&self.sandbox, path)

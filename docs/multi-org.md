@@ -47,7 +47,7 @@ id sea de tipo texto y no un entero.
 | Tabla | Lo propio |
 | --- | --- |
 | `users` | `email`, `name` |
-| `orgs` | `name`, `dir` (su directorio, con sus conversaciones y su workspace adentro), `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
+| `orgs` | `name`, `dir` (su directorio, con sus conversaciones y su workspace adentro), `plan` (`free` o `paid`: el sandbox llega con el pago), `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
 | `memberships` | `org_id`, `user_id`, `role`, únicos por par |
 | `sessions` | `token`, `user_id`, `expires_at` |
 
@@ -355,8 +355,12 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    volumen, donde lo ve el agente, y lo que manda el asistente espera en la cola
    del chat —que vive adentro, porque la escribe el CLI— y el control plane la
    lee de ahí y la vacía. Probado de punta a punta con un archivo de verdad.
-9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
-   CLI— y su fila en `machines`.
+9. **Hecho** — El alta de una org: con el plan en `paid` se crea su filesystem
+   —lo hace el SDK de Tensorlake, por `uv run --with tensorlake python
+   deploy/filesystems.py crear`, que es el único que sabe hablar con ese
+   servicio— y queda su fila en `machines`. El filesystem lleva el nombre de la
+   fila: es el volumen que el sandbox monta y nada más. Idempotente. Falta la
+   pasarela: hoy el plan se marca a mano (`jimmy orgs plan <mail> paid`).
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`
     con las toolchains, Chromium con su venv y `ffmpeg`, en una imagen que se
     registra aparte del código. El agente sigue llegando publicado.

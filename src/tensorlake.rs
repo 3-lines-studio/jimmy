@@ -258,19 +258,28 @@ impl Tensorlake {
     /// El sandbox de una org, despierto: si no está se crea, y si estaba
     /// dormido se despierta.
     pub fn ensure(&self, name: &str, image: &str, fs: &str) -> Result<SandboxInfo, String> {
-        let Some(actual) = self.find(name)? else {
-            return self.create(name, image, MOUNT, fs);
+        let listo = match self.find(name)? {
+            Some(actual) => actual,
+            None => self.create(name, image, MOUNT, fs)?,
         };
-        let mut estado = self.state(&actual.id)?;
-        for _ in 0..20 {
+        self.esperar(&listo.id)
+    }
+
+    /// Que diga `running`, y que lo diga él: la respuesta del `create` dice
+    /// `running` apenas se pide, pero hasta que el sandbox no terminó de
+    /// materializarse contesta `pending` y rechaza los procesos. Lo mismo con
+    /// el `resume`, que pasa por `suspending`.
+    fn esperar(&self, id: &str) -> Result<SandboxInfo, String> {
+        let mut estado = self.state(id)?;
+        for _ in 0..120 {
             if estado.status == "running" {
                 break;
             }
             if estado.status == "suspended" {
-                self.resume(&actual.id)?;
+                self.resume(id)?;
             }
             std::thread::sleep(Duration::from_millis(250));
-            estado = self.state(&actual.id)?;
+            estado = self.state(id)?;
         }
         Ok(estado)
     }

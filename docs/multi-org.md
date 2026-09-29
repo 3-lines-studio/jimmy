@@ -27,11 +27,13 @@ dos (ver heimdall, más abajo).
 
 ## Tablas
 
-Toda tabla arranca igual, sin excepciones: el `ulid` como clave primaria --es el
-único identificador, no hay un id entero al lado--, `created_at`, `updated_at` y
-`deleted_at`. La baja es lógica: una fila que se fue queda con `deleted_at` y
-las consultas filtran. Una tabla nueva que no cumpla esto rompe el test que lo
-exige en `src/store.rs`.
+Toda tabla arranca igual, sin excepciones: el `id` --un ulid, opaco y ordenable
+por cuándo se creó--, `created_at`, `updated_at` y `deleted_at`. La columna del
+identificador se llama `id` en todas: el valor es un ulid, el rol es el de
+siempre. La baja es lógica: una fila que se fue queda con `deleted_at` y las
+consultas filtran. Una tabla nueva que no cumpla esto rompe el test que lo exige
+en `src/store.rs`, que además comprueba que el id sea de tipo texto y no un
+entero.
 
 | Tabla | Lo propio |
 | --- | --- |

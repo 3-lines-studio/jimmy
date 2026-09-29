@@ -109,7 +109,7 @@ impl Auth {
         let (user, _) = self.store.register(email).ok()?;
         let token = random::hex(32);
         let expires = (now() + SESSION_TTL) as i64;
-        self.store.open_session(&token, &user.ulid, expires).ok()?;
+        self.store.open_session(&token, &user.id, expires).ok()?;
         Some(token)
     }
 
@@ -134,7 +134,7 @@ fn una_sesion_vencida_no_deja_entrar_a_nadie() {
     let auth = Auth::new(&root, "bob@ejemplo.com", None, false).unwrap();
     let (user, _) = auth.store.register("bob@ejemplo.com").unwrap();
     auth.store
-        .open_session("vieja", &user.ulid, (now() - 1) as i64)
+        .open_session("vieja", &user.id, (now() - 1) as i64)
         .unwrap();
     assert!(auth.user("vieja").is_none(), "la vieja ya venció");
 

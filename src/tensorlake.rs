@@ -111,7 +111,7 @@ struct FileEntry {
     #[serde(default)]
     is_dir: bool,
     #[serde(default)]
-    size: u64,
+    size: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -362,7 +362,7 @@ impl Tensorlake {
             .map(|entry| axe::machine::Entry {
                 name: entry.name,
                 is_dir: entry.is_dir,
-                size: entry.size,
+                size: entry.size.unwrap_or(0),
             })
             .collect())
     }

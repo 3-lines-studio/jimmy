@@ -6,7 +6,7 @@
 //! mismo que ve un comando.
 
 use crate::tensorlake::Tensorlake;
-use axe::machine::{Entry, Machine};
+use axe::machine::{resolve, Entry, Machine};
 use std::sync::Arc;
 
 pub struct Remote {
@@ -35,19 +35,23 @@ pub fn de_la_org(dir: &str) -> Option<Arc<dyn Machine>> {
 
 impl Machine for Remote {
     fn read(&self, path: &str) -> Result<Vec<u8>, String> {
-        self.cliente.read_file(&self.sandbox, path)
+        self.cliente
+            .read_file(&self.sandbox, &resolve(&self.dir, path))
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
-        self.cliente.write_file(&self.sandbox, path, bytes)
+        self.cliente
+            .write_file(&self.sandbox, &resolve(&self.dir, path), bytes)
     }
 
     fn list(&self, path: &str) -> Result<Vec<Entry>, String> {
-        self.cliente.list_files(&self.sandbox, path)
+        self.cliente
+            .list_files(&self.sandbox, &resolve(&self.dir, path))
     }
 
     fn remove(&self, path: &str) -> Result<(), String> {
-        self.cliente.remove_file(&self.sandbox, path)
+        self.cliente
+            .remove_file(&self.sandbox, &resolve(&self.dir, path))
     }
 
     fn run(&self, command: &str, timeout: u64, progress: &mut dyn FnMut(&str)) -> String {
@@ -103,6 +107,17 @@ mod tests {
 
         let local = Local::new(&dir.display().to_string());
         let remoto = Remote::new(cliente.clone(), &name, "/work");
+
+        remoto.write("relativo.txt", b"hola\n").unwrap();
+        assert_eq!(remoto.read("relativo.txt").unwrap(), b"hola\n");
+        let en_la_raiz = remoto.list("/").unwrap();
+        assert!(
+            !en_la_raiz.iter().any(|entry| entry.name == "relativo.txt"),
+            "un path relativo cayó en la raíz: {en_la_raiz:?}"
+        );
+        assert_eq!(remoto.read("/work/relativo.txt").unwrap(), b"hola\n");
+        remoto.remove("relativo.txt").unwrap();
+        assert!(remoto.read("relativo.txt").is_err());
 
         for (comando, timeout) in [
             ("echo hola", 30),

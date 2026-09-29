@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "fceb7f57b1a51610108ffe2df8e7c7a43d88f6c1" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "7edbd80d4287f411640757a4d82b1c44eb57bc30" }
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

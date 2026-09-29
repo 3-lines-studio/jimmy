@@ -1348,6 +1348,31 @@ mod tests {
         path
     }
 
+    /// Apuntar el agente a otra org cambia dónde trabaja y nada más: el pool,
+    /// el bus y los candados son los del agente de siempre.
+    #[test]
+    fn el_agente_apuntado_a_otra_org_cambia_de_lugar_y_comparte_lo_demas() {
+        let root = resume_dir("at");
+        let agent = agent_in(&root);
+        let org = root.join("orgs/01ABC");
+        let otro = Place {
+            root: org.clone(),
+            workspace: org.join("workspace"),
+        };
+
+        let clon = agent.at(&otro);
+        let workspace = otro.workspace.display().to_string();
+        assert_eq!(clon.root, org);
+        assert_eq!(clon.workspace, workspace);
+        assert_eq!(clon.cwd, workspace);
+        assert!(clon.context.contains(&workspace), "{}", clon.context);
+        assert_eq!(agent.root, root, "el de siempre no se movió");
+        assert!(Arc::ptr_eq(&agent.pool, &clon.pool));
+        assert!(Arc::ptr_eq(&agent.turns, &clon.turns));
+        assert!(Arc::ptr_eq(&agent.bus, &clon.bus));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn respond_relays_the_workers_answer() {
         let root = resume_dir("relay");

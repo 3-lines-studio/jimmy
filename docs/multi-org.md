@@ -135,6 +135,12 @@ junto con la conversación y el comando. Es lo que el worker necesita para
 reconstruirse del otro lado, y en un proveedor de verdad son los secretos con
 los que se levanta el sandbox.
 
+La agenda es de cada org por el mismo motivo: el reloj es uno, pero cada
+vuelta recorre las orgs y corre las tareas de cada una donde vive su
+`state/schedule`, con el historial al lado. La web muestra y maneja la agenda
+de la org activa. Hoy las tareas están en el filesystem de la org; el paso 3
+las muda a la DB, que es lo que permite listarlas sin despertar el sandbox.
+
 ## La imagen y el binario
 
 La imagen del sandbox queda congelada y sin jimmy adentro:

@@ -194,7 +194,20 @@ fn main() {
     };
     let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
-    let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    let store = match store::Store::open(&config.root.join("jimmy.db")) {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
+            std::process::exit(1);
+        }
+    };
+    let agenda = schedule::spawn(
+        transport.clone(),
+        agent.clone(),
+        store,
+        config.root.clone(),
+        workspace.clone(),
+    );
     serve_web(
         &config,
         agent.bus(),
@@ -370,7 +383,7 @@ fn serve_web(
     config: &Config,
     bus: Arc<bus::Bus>,
     agent: Agent,
-    agenda: Sender<String>,
+    agenda: Sender<schedule::Asked>,
     previews: Arc<preview::Previews>,
 ) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {

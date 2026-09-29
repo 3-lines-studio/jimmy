@@ -95,6 +95,22 @@ pub struct Place {
     pub workspace: PathBuf,
 }
 
+/// El lugar de una org: la que se quedó la raíz trabaja donde siempre, y las
+/// demás tienen su propio directorio adentro, con su workspace.
+pub fn place(root: &Path, workspace: &Path, dir: &str) -> Place {
+    if dir == "." {
+        return Place {
+            root: root.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+        };
+    }
+    let root = root.join(dir);
+    Place {
+        workspace: root.join("workspace"),
+        root,
+    }
+}
+
 /// El workspace del disco de siempre: la raíz del control plane y el workspace
 /// de la org que se está mirando.
 pub struct Local {
@@ -133,6 +149,12 @@ impl Local {
 
     fn conversation_of(&self, key: &str) -> conversations::Conversation {
         conversations::get(&self.root, &self.workspace, key)
+    }
+}
+
+impl From<Place> for Local {
+    fn from(place: Place) -> Local {
+        Local::new(place.root, place.workspace)
     }
 }
 

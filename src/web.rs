@@ -17,7 +17,7 @@ use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::schedule;
 use crate::transport::Null;
-use crate::workspace::{Local, Workspace};
+use crate::workspace::{place, Local, Workspace};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,7 +57,7 @@ pub struct Web {
     agent: Agent,
     auth: Auth,
     previews: Arc<Previews>,
-    agenda: Sender<String>,
+    agenda: Sender<schedule::Asked>,
 }
 
 impl Web {
@@ -68,7 +68,7 @@ impl Web {
         agent: Agent,
         auth: Auth,
         previews: Arc<Previews>,
-        agenda: Sender<String>,
+        agenda: Sender<schedule::Asked>,
     ) -> Arc<Web> {
         Arc::new(Web {
             root,
@@ -383,17 +383,18 @@ fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 /// El workspace de la org activa: lo que la web necesita de las cosas de una
 /// org sale de acá, y no de un camino que la web arme por su cuenta.
 impl Web {
+    /// La org en la que está parado quien pide.
+    fn org(&self, request: &Request) -> Option<crate::store::Org> {
+        let user = current_user(self, request)?;
+        self.auth.store().active_org(&user.id).ok().flatten()
+    }
+
     fn workspace(&self, request: &Request) -> Local {
         // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
         // propio directorio, con sus conversaciones y su workspace adentro.
-        match current_user(self, request)
-            .and_then(|user| self.auth.store().active_org(&user.id).ok().flatten())
-        {
-            Some(org) if org.dir != "." => {
-                let root = self.root.join(&org.dir);
-                Local::new(root.clone(), root.join("workspace"))
-            }
-            _ => Local::new(self.root.clone(), self.workspace.clone()),
+        match self.org(request) {
+            Some(org) => place(&self.root, &self.workspace, &org.dir).into(),
+            None => Local::new(self.root.clone(), self.workspace.clone()),
         }
     }
 }
@@ -837,15 +838,19 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 /// muchas más, la vista muestra las últimas.
 const SHOWN: usize = 5;
 
-fn agenda_dir(web: &Web) -> PathBuf {
-    web.workspace.join("state").join("schedule")
+fn agenda_dir(web: &Web, request: &Request) -> PathBuf {
+    web.workspace(request)
+        .place()
+        .workspace
+        .join("state")
+        .join("schedule")
 }
 
 fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web))
+    let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web, request))
         .into_iter()
         .map(|entry| {
             let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
@@ -870,13 +875,17 @@ fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std:
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name").unwrap_or_default();
-    if !schedule::list(&agenda_dir(web))
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    if !schedule::list(&agenda_dir(web, request))
         .iter()
         .any(|task| task.name == name)
     {
         return http::send_error(stream, 404, "esa tarea no existe");
     }
-    if web.agenda.send(name).is_err() {
+    let asked = schedule::Asked { org: org.id, name };
+    if web.agenda.send(asked).is_err() {
         return http::send_error(stream, 500, "el scheduler no está corriendo");
     }
     http::send_json(stream, 200, &serde_json::json!({ "queued": true }))
@@ -888,7 +897,7 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     }
     let name = request.field("name").unwrap_or_default();
     let paused = request.flag("paused");
-    match schedule::set_paused(&agenda_dir(web), &name, paused) {
+    match schedule::set_paused(&agenda_dir(web, request), &name, paused) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "paused": paused })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -900,7 +909,7 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name");
-    match schedule::mark_read(&agenda_dir(web), name.as_deref()) {
+    match schedule::mark_read(&agenda_dir(web, request), name.as_deref()) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "read": true })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -1021,7 +1030,7 @@ mod tests {
         port: u16,
         bus: Arc<Bus>,
         previews: Arc<crate::preview::Previews>,
-        agenda: std::sync::mpsc::Receiver<String>,
+        agenda: std::sync::mpsc::Receiver<schedule::Asked>,
     }
 
     fn start(tag: &str) -> Server {
@@ -2797,8 +2806,68 @@ done
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
+    /// Cada org tiene su agenda: la pestaña de una no muestra las tareas de la
+    /// otra, aunque se llamen distinto y vivan en el mismo control plane.
     #[test]
-    fn running_a_task_hands_its_name_to_the_scheduler() {
+    fn la_agenda_de_una_org_no_ve_las_tareas_de_la_otra() {
+        let server = start("agenda-orgs");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let state = json_in(&get(server.port, "/api/state", Some(&cookie)));
+        let personal = state["org"]["id"].as_str().unwrap().to_string();
+        agenda_file(&server, "de-bob", "at = \"05:00\"\nprompt = \"p\"\n");
+
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["name"], "de-bob");
+
+        post_with(
+            server.port,
+            "/api/orgs",
+            r#"{"name":"La Empresa"}"#,
+            Some(&cookie),
+        );
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert!(
+            body["tasks"].as_array().unwrap().is_empty(),
+            "la org nueva arranca sin tareas: {body}"
+        );
+        let made = post_with(
+            server.port,
+            "/api/projects",
+            r#"{"name":"empresa-uno"}"#,
+            Some(&cookie),
+        );
+        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
+
+        let org = std::fs::read_dir(server.root.join("orgs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let dir = org.join("workspace/state/schedule");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("de-la-empresa.toml"),
+            "at = \"06:00\"\nprompt = \"p\"\n",
+        )
+        .unwrap();
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["name"], "de-la-empresa");
+
+        post_with(
+            server.port,
+            "/api/org",
+            &format!(r#"{{"id":"{personal}"}}"#),
+            Some(&cookie),
+        );
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["name"], "de-bob");
+        assert_eq!(body["tasks"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn running_a_task_hands_its_org_and_name_to_the_scheduler() {
         let server = start("agenda-run");
         let cookie = login(server.port, "bob@ejemplo.com");
         agenda_file(&server, "memoria", "at = \"05:00\"\nprompt = \"p\"\n");
@@ -2810,9 +2879,14 @@ done
             Some(&cookie),
         );
         assert!(queued.starts_with("HTTP/1.1 200"), "{queued}");
+        let state = json_in(&get(server.port, "/api/state", Some(&cookie)));
+        let org = state["org"]["id"].as_str().unwrap().to_string();
         assert_eq!(
             server.agenda.recv_timeout(Duration::from_secs(1)).unwrap(),
-            "memoria"
+            schedule::Asked {
+                org,
+                name: "memoria".into()
+            }
         );
 
         let missing = post_with(

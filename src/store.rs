@@ -222,6 +222,20 @@ impl Store {
         orgs_of(&db, user)
     }
 
+    /// Todas las orgs, en el orden en que se crearon: las recorre el control
+    /// plane cuando el trabajo no es de nadie en particular.
+    pub fn orgs(&self) -> Result<Vec<Org>, String> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db
+            .prepare("SELECT id, name, dir FROM orgs WHERE deleted_at IS NULL ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], read_org)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<Org>>>()
+            .map_err(|e| e.to_string())
+    }
+
     /// Una org nueva, con el que la crea como dueño.
     pub fn create_org(&self, user: &str, name: &str) -> Result<Org, String> {
         let name = name.trim();

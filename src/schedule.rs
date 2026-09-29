@@ -1,5 +1,7 @@
 use crate::agent::Agent;
+use crate::store::Store;
 use crate::transport::{Null, Session, Transport};
+use crate::workspace::place;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -118,24 +120,55 @@ pub fn set_paused(dir: &Path, name: &str, paused: bool) -> Result<(), String> {
     axe::atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
-pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) -> Sender<String> {
+/// Una tarea que la web pide correr ahora: de qué org es y cómo se llama. El
+/// nombre solo no alcanza, porque dos orgs pueden llamarla igual.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Asked {
+    pub org: String,
+    pub name: String,
+}
+
+/// La agenda es de cada org: el reloj es uno, pero cada vuelta recorre las
+/// orgs y corre las tareas de cada una en su propio workspace.
+pub fn spawn(
+    transport: Arc<dyn Transport>,
+    agent: Agent,
+    store: Arc<Store>,
+    root: PathBuf,
+    workspace: PathBuf,
+) -> Sender<Asked> {
     let (sender, runner) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let dir = workspace.join("state").join(DIR);
-        migrate(&dir);
         let offset = std::env::var("JIMMY_TZ_OFFSET")
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0);
-        let mut pending: Option<String> = None;
+        let mut pending: Option<Asked> = None;
         loop {
-            let mut asked: Vec<String> = pending.take().into_iter().collect();
+            let mut asked: Vec<Asked> = pending.take().into_iter().collect();
             while let Ok(name) = runner.try_recv() {
                 asked.push(name);
             }
             asked.sort();
             asked.dedup();
-            tick(transport.as_ref(), &agent, &dir, offset, &asked);
+            let orgs = match store.orgs() {
+                Ok(orgs) => orgs,
+                Err(error) => {
+                    eprintln!("jimmy: agenda: no pude leer las orgs: {error}");
+                    Vec::new()
+                }
+            };
+            for org in &orgs {
+                let home = place(&root, &workspace, &org.dir);
+                let dir = home.workspace.join("state").join(DIR);
+                migrate(&dir);
+                let names: Vec<String> = asked
+                    .iter()
+                    .filter(|asked| asked.org == org.id)
+                    .map(|asked| asked.name.clone())
+                    .collect();
+                tick(transport.as_ref(), &agent.at(&home), &dir, offset, &names);
+            }
             pending = runner.recv_timeout(TICK).ok();
         }
     });
@@ -663,5 +696,81 @@ mod tests {
         migrate(&dir);
         assert_eq!(list(&dir).len(), 2);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// El historial lo escribe el hilo de la corrida, así que hay que esperarlo.
+    fn wait_file(path: &Path, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if text.contains(needle) || Instant::now() > deadline {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Cada org tiene su agenda, y sus tareas corren ahí: la de una no se ve
+    /// desde la otra ni deja su historial adentro del workspace ajeno.
+    #[test]
+    fn la_agenda_de_cada_org_es_la_suya() {
+        let base = scratch("orgs");
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, bob) = store.register("bob@ejemplo.com").unwrap();
+        let (_, ana) = store.register("ana@ejemplo.com").unwrap();
+
+        let bob_home = place(&root, &workspace, &bob.dir);
+        let ana_home = place(&root, &workspace, &ana.dir);
+        assert_ne!(bob_home.workspace, ana_home.workspace);
+
+        let tarea = "when = \"2020-01-01T00:00\"\nprompt = \"p\"\n";
+        for (home, nombre) in [(&bob_home, "resumen"), (&ana_home, "resumen")] {
+            let dir = home.workspace.join("state/schedule");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{nombre}.toml")), tarea).unwrap();
+        }
+        std::fs::write(
+            bob_home.workspace.join("state/schedule/solo-de-bob.toml"),
+            tarea,
+        )
+        .unwrap();
+
+        let agent = Agent::new(
+            "http://127.0.0.1:1".into(),
+            "model".into(),
+            "key".into(),
+            None,
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        let _agenda = spawn(
+            Arc::new(Null),
+            agent,
+            store,
+            root.clone(),
+            workspace.clone(),
+        );
+
+        for home in [&bob_home, &ana_home] {
+            let historial = home.workspace.join("state/schedule/resumen.jsonl");
+            let text = wait_file(&historial, "\"ok\"");
+            assert!(
+                text.contains("\"ok\":false"),
+                "la tarea de {} no corrió en su agenda: {text}",
+                home.root.display()
+            );
+        }
+        assert!(
+            !ana_home
+                .workspace
+                .join("state/schedule/solo-de-bob.jsonl")
+                .exists(),
+            "la agenda de ana corrió una tarea que no es suya"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -40,7 +40,7 @@ id sea de tipo texto y no un entero.
 | Tabla | Lo propio |
 | --- | --- |
 | `users` | `email`, `name` |
-| `orgs` | `name`, `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
+| `orgs` | `name`, `dir` (su directorio, con sus conversaciones y su workspace adentro), `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
 | `memberships` | `org_id`, `user_id`, `role`, únicos por par |
 | `sessions` | `token`, `user_id`, `expires_at` |
 
@@ -48,8 +48,12 @@ Las que faltan —`projects`, `conversations`, `schedules`, `sandboxes` y
 `turns`— entran con los pasos 3 y 6, con el mismo encabezado.
 
 El transcript y el log de cada conversación no van acá: van al FS de la org,
-que es donde se producen y donde sobreviven a la suspensión del sandbox.
-La DB guarda el índice y la metadata.
+que es donde se producen y donde sobreviven a la suspensión del sandbox. Y
+tampoco van a la DB los proyectos ni el índice de conversaciones: cada org tiene
+**su directorio** (`orgs.dir`), y adentro está todo lo suyo —sus `chats/`, su
+`workspace/`, sus `files/`—, así el aislamiento sale del sistema de archivos y no
+de un `WHERE org_id = ?` que se puede olvidar. La org que se quedó la raíz (la
+primera) usa el workspace de siempre; las demás arrancan con el suyo, vacío.
 
 La base es SQLite en el volumen (`jimmy.db`), con el esquema armado al abrir y
 sin migraciones, igual que heimdall: un proceso escribe, la concurrencia es
@@ -214,7 +218,8 @@ Está anotado: se resuelve a futuro y no condiciona el diseño.
    cambio de comportamiento.
 2. `orgs`, `users`, `memberships` y `sessions` en la base, con el auth
    apuntando ahí.
-3. Agenda y metadata a la DB; transcripts y workspace al FS.
+3. La agenda y los medidores a la DB; cada org con su directorio para las
+   conversaciones y el workspace.
 4. La implementación `Tensorlake`, la imagen mínima y el binario en el FS.
 5. heimdall por org y su UI.
 6. Cuotas, medidores y los dos planes.

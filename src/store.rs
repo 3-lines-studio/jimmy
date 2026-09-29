@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    dir TEXT NOT NULL UNIQUE,
     personal_of_id TEXT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -68,6 +69,10 @@ pub struct User {
 pub struct Org {
     pub id: String,
     pub name: String,
+    /// Dónde vive todo lo de esta org, relativo a la raíz del control plane.
+    /// Adentro están sus conversaciones y su workspace. La primera org se queda
+    /// la raíz, que es donde ya estaba todo.
+    pub dir: String,
 }
 
 pub struct Store {
@@ -131,14 +136,23 @@ impl Store {
         let org = match personal_org(&tx, &user.id)? {
             Some(org) => org,
             None => {
+                let id = ulid::new();
+                let primera: i64 = tx
+                    .query_row("SELECT count(*) FROM orgs", [], |row| row.get(0))
+                    .map_err(|e| e.to_string())?;
                 let org = Org {
-                    id: ulid::new(),
+                    dir: if primera == 0 {
+                        ".".to_string()
+                    } else {
+                        format!("orgs/{id}")
+                    },
+                    id,
                     name: personal_name(&email),
                 };
                 tx.execute(
-                    "INSERT INTO orgs (id, name, personal_of_id, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?4)",
-                    params![org.id, org.name, user.id, now()],
+                    "INSERT INTO orgs (id, name, dir, personal_of_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    params![org.id, org.name, org.dir, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.execute(
@@ -216,13 +230,15 @@ impl Store {
         }
         let db = self.db.lock().unwrap();
         let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let id = ulid::new();
         let org = Org {
-            id: ulid::new(),
+            dir: format!("orgs/{id}"),
+            id,
             name: name.to_string(),
         };
         tx.execute(
-            "INSERT INTO orgs (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-            params![org.id, org.name, now()],
+            "INSERT INTO orgs (id, name, dir, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![org.id, org.name, org.dir, now()],
         )
         .map_err(|e| e.to_string())?;
         tx.execute(
@@ -255,7 +271,7 @@ impl Store {
         let db = self.db.lock().unwrap();
         let elegida = db
             .query_row(
-                "SELECT orgs.id, orgs.name FROM orgs
+                "SELECT orgs.id, orgs.name, orgs.dir FROM orgs
                  JOIN users ON users.active_org_id = orgs.id
                  JOIN memberships ON memberships.org_id = orgs.id
                      AND memberships.user_id = users.id
@@ -286,6 +302,7 @@ fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
     Ok(Org {
         id: row.get(0)?,
         name: row.get(1)?,
+        dir: row.get(2)?,
     })
 }
 
@@ -316,7 +333,7 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
 
 fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
     db.query_row(
-        "SELECT id, name FROM orgs WHERE personal_of_id = ?1",
+        "SELECT id, name, dir FROM orgs WHERE personal_of_id = ?1",
         params![user],
         read_org,
     )
@@ -327,7 +344,7 @@ fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
 fn orgs_of(db: &Connection, user: &str) -> Result<Vec<Org>, String> {
     let mut statement = db
         .prepare(
-            "SELECT orgs.id, orgs.name FROM orgs
+            "SELECT orgs.id, orgs.name, orgs.dir FROM orgs
              JOIN memberships ON memberships.org_id = orgs.id
              WHERE memberships.user_id = ?1
                AND memberships.deleted_at IS NULL
@@ -584,6 +601,18 @@ mod tests {
         let (user, _) = store.register("don@berti.sh").unwrap();
         assert!(store.create_org(&user.id, "   ").is_err());
         assert_eq!(store.orgs_of(&user.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn la_primera_org_se_queda_la_raiz_y_las_demas_tienen_la_suya() {
+        let store = store("dirs");
+        let (user, personal) = store.register("don@berti.sh").unwrap();
+        assert_eq!(personal.dir, ".", "la primera se queda lo que ya había");
+        let empresa = store.create_org(&user.id, "La Empresa").unwrap();
+        assert_eq!(empresa.dir, format!("orgs/{}", empresa.id));
+        let (_, otra) = store.register("ana@ejemplo.com").unwrap();
+        assert_eq!(otra.dir, format!("orgs/{}", otra.id));
+        assert_ne!(otra.id, personal.id);
     }
 
     #[test]

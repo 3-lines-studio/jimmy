@@ -348,7 +348,9 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
             b"",
         );
     };
-    let session = web.auth.open_session(&email);
+    let Some(session) = web.auth.open_session(&email) else {
+        return http::send_error(stream, 500, "no pude abrir la sesión");
+    };
     let cookie = format!(
         "{}={session}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age={}",
         auth::COOKIE,
@@ -1129,7 +1131,7 @@ done
         agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, dev);
+        let auth = Auth::new(&root, "bob@ejemplo.com, ana@ejemplo.com", None, dev).unwrap();
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(

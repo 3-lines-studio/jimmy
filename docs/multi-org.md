@@ -12,9 +12,10 @@ código nuevo vive en este repo, en la rama de trabajo.
 
 Dos estados, dos dueños:
 
-- **Control plane** — servicio persistente en Railway con Postgres. Guarda lo
-  que hay que consultar entre orgs y usuarios: orgs, usuarios, membresías,
-  metadata de conversaciones y proyectos, agenda, cuotas y medidores.
+- **Control plane** — servicio persistente en Railway con su base en el volumen.
+  Guarda lo que hay que consultar entre orgs y usuarios: orgs, usuarios,
+  membresías, metadata de conversaciones y proyectos, agenda, cuotas y
+  medidores.
 - **Sandbox** — el filesystem de la org, montado por el sandbox. Guarda lo que
   solo le importa al turno que está corriendo: el workspace (repos,
   `node_modules`, `target/`), los transcripts, los archivos subidos y el
@@ -40,6 +41,13 @@ dos (ver heimdall, más abajo).
 El transcript y el log de cada conversación no van acá: van al FS de la org,
 que es donde se producen y donde sobreviven a la suspensión del sandbox.
 La DB guarda el índice y la metadata.
+
+La base es SQLite en el volumen (`jimmy.db`), con el esquema armado al abrir y
+sin migraciones, igual que heimdall: un proceso escribe, la concurrencia es
+baja y no hay servicio nuevo que provisionar ni TLS que resolver. Es la misma
+decisión que ya tomó heimdall (rusqlite bundled). Sale a Postgres el día que
+haga falta más de un escritor —varias réplicas del control plane—, y para eso
+la capa de datos tiene que estar sola en un módulo, que es como está.
 
 ## El adapter
 
@@ -195,7 +203,8 @@ Está anotado: se resuelve a futuro y no condiciona el diseño.
 
 1. El trait `Sandbox` con la implementación `Local` y el pool detrás. Cero
    cambio de comportamiento.
-2. `orgs`, `users` y `memberships` en Postgres, con el auth apuntando ahí.
+2. `orgs`, `users`, `memberships` y `sessions` en la base, con el auth
+   apuntando ahí.
 3. Agenda y metadata a la DB; transcripts y workspace al FS.
 4. La implementación `Tensorlake`, la imagen mínima y el binario en el FS.
 5. heimdall por org y su UI.

@@ -21,6 +21,7 @@ mod reap;
 mod sandbox;
 mod schedule;
 mod skill;
+mod store;
 mod tools;
 mod transport;
 mod watch;
@@ -373,12 +374,18 @@ fn serve_web(
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
-    let auth = auth::Auth::new(
-        &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
+    let auth = match auth::Auth::new(
         &config.root,
+        &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
         mail::Mail::from_env(),
         env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
-    );
+    ) {
+        Ok(auth) => auth,
+        Err(error) => {
+            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
+            return;
+        }
+    };
     if auth.allowed().is_empty() {
         eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");
     } else if auth.mail.is_none() && !auth.dev {

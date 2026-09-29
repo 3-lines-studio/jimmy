@@ -7,6 +7,7 @@ license = "MIT"
 [dependencies]
 axe = { git = "https://github.com/3-lines-studio/axe", rev = "0c4f739935e83d381313bf23f18100dc162d0a4b" }
 libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"

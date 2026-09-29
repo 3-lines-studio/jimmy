@@ -109,11 +109,12 @@ fn workspace_from_env() -> PathBuf {
 }
 
 /// Los nombres que jimmy atiende como orden y no como arranque del bot.
-const SUBCOMMANDS: [&str; 7] = [
+const SUBCOMMANDS: [&str; 8] = [
     "memo",
     "send",
     "conversations",
     "projects",
+    "orgs",
     "skill",
     "preview",
     "worker",
@@ -141,6 +142,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("projects") {
         std::process::exit(projects_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("orgs") {
+        std::process::exit(orgs_command(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
@@ -371,6 +375,60 @@ fn index_json(root: &Path, workspace: &Path) -> Result<String, String> {
         })
         .collect();
     serde_json::to_string(&serde_json::json!({ "projects": proyectos })).map_err(|e| e.to_string())
+}
+
+/// El plan de una org y su alta: el sandbox llega con el pago, y marcar el plan
+/// es lo que lo dispara. Para probarlo alcanza con este comando.
+fn orgs_command(args: &[String]) -> i32 {
+    let store = match store::Store::open(&root_from_env().join("jimmy.db")) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("jimmy orgs: no pude abrir la base: {error}");
+            return 1;
+        }
+    };
+    let (email, plan) = match (args.first(), args.get(1), args.get(2)) {
+        (Some(accion), Some(email), plan) if accion == "plan" => {
+            (email.clone(), plan.cloned().unwrap_or_default())
+        }
+        (Some(accion), Some(email), _) if accion == "alta" => (email.clone(), "paid".to_string()),
+        _ => return orgs_usage(),
+    };
+    let org = match store.org_of_email(&email) {
+        Ok(Some(org)) => org,
+        Ok(None) => {
+            eprintln!("jimmy orgs: no conozco a {email}");
+            return 2;
+        }
+        Err(error) => {
+            eprintln!("jimmy orgs: {error}");
+            return 1;
+        }
+    };
+    let result = match args.first().map(String::as_str) {
+        Some("alta") => crate::remote::alta(&org.id, &store),
+        _ => store
+            .set_plan(&org.id, &plan)
+            .and_then(|_| match plan.as_str() {
+                "paid" => crate::remote::alta(&org.id, &store),
+                _ => Ok(()),
+            }),
+    };
+    match result {
+        Ok(()) => {
+            println!("{} · plan {plan}", org.name);
+            0
+        }
+        Err(error) => {
+            eprintln!("jimmy orgs: {error}");
+            1
+        }
+    }
+}
+
+fn orgs_usage() -> i32 {
+    eprintln!("uso: jimmy orgs [plan <mail> <free|paid> | alta <mail>]");
+    2
 }
 
 /// Los proyectos, para el que está adentro del sandbox: el control plane manda

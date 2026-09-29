@@ -437,6 +437,50 @@ pub fn exe() -> Result<PathBuf, String> {
     }
 }
 
+/// El alta de una org: su filesystem y su fila. El filesystem lo crea el SDK de
+/// Tensorlake —el único que sabe hablar con ese servicio— y la fila queda con el
+/// mismo nombre, que es el que el sandbox monta. Idempotente: si el filesystem
+/// ya está, no se toca.
+pub fn alta(org: &str, store: &Store) -> Result<(), String> {
+    let nombre = format!("jimmy-{org}");
+    filesystems("crear", &nombre)?;
+    store.set_machine(org, "tensorlake", &nombre, &nombre)
+}
+
+/// Lo que sabe hacer el SDK: crear, listar y borrar el volumen de una org.
+fn filesystems(accion: &str, nombre: &str) -> Result<String, String> {
+    let script = scripts()
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or("no encuentro deploy/filesystems.py")?;
+    let salida = std::process::Command::new("uv")
+        .args([
+            "run",
+            "--with",
+            "tensorlake",
+            "python",
+            &script.display().to_string(),
+            accion,
+            nombre,
+        ])
+        .output()
+        .map_err(|e| format!("no pude correr uv: {e}"))?;
+    match salida.status.success() {
+        true => Ok(String::from_utf8_lossy(&salida.stdout).trim().to_string()),
+        false => Err(format!(
+            "{accion} {nombre}: {}",
+            String::from_utf8_lossy(&salida.stderr).trim()
+        )),
+    }
+}
+
+fn scripts() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/usr/local/share/jimmy/deploy/filesystems.py"),
+        PathBuf::from("deploy/filesystems.py"),
+    ]
+}
+
 /// El camino de una entrada del volumen, armado sin tocar el disco de acá: el
 /// archivo puede no existir de este lado, que es justamente el punto. Cada parte
 /// tiene que ser un nombre que se vería en el árbol, así un `..` no sale de la
@@ -660,6 +704,87 @@ mod tests {
 
     /// Una org sin fila en `machines` trabaja acá: no hay nada que despertar ni
     /// a quién pedirle el filesystem.
+    /// La lista de una org con sandbox sale de su índice —sin despertar a
+    /// nadie— y lo que no está en el índice no se escribe desde acá.
+    #[test]
+    fn la_lista_de_una_org_con_sandbox_sale_del_indice() {
+        let store = Arc::new(store("remoto"));
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store.sync_index(&org.id, &[]).unwrap();
+        let base = std::env::temp_dir().join(format!("jimmy-remoto-{}", std::process::id()));
+        let lugar = Place {
+            root: base.clone(),
+            workspace: base.join("workspace"),
+            org: Some(org.id.clone()),
+        };
+        let espacio = Remoto::new(org.id.clone(), store.clone(), lugar);
+        assert!(espacio.projects().unwrap().is_empty());
+        assert!(espacio.writable("web-1").is_err(), "no está en el índice");
+
+        store
+            .sync_index(
+                &org.id,
+                &[crate::store::IndexProject {
+                    name: "general".into(),
+                    size: 0,
+                    unversioned: false,
+                    conversations: vec![crate::store::IndexConversation {
+                        key: "web-1".into(),
+                        project: "general".into(),
+                        title: Some("charla".into()),
+                        read_only: false,
+                        last: Some("hola".into()),
+                        touched_at: 10,
+                    }],
+                }],
+            )
+            .unwrap();
+
+        let proyectos = espacio.projects().unwrap();
+        assert_eq!(proyectos.len(), 1);
+        assert_eq!(proyectos[0].name, "general");
+        assert_eq!(proyectos[0].conversations[0].last.as_deref(), Some("hola"));
+        assert_eq!(espacio.conversations("general").unwrap().len(), 1);
+        assert!(espacio.conversations("ken").unwrap().is_empty());
+        assert_eq!(
+            espacio.writable("web-1").unwrap().title.as_deref(),
+            Some("charla")
+        );
+        assert_eq!(espacio.label(), MOUNT);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// El alta de verdad: crea el filesystem de la org y le deja su fila.
+    /// Ignorada porque habla con el servicio, tarda, y deja y borra un
+    /// filesystem de verdad.
+    ///
+    ///     heimdall run -p jimmy -c dev -- cargo test --bin jimmy -- --ignored el_alta_de_una_org
+    #[test]
+    #[ignore]
+    fn el_alta_de_una_org_le_da_su_volumen() {
+        let store = store("alta");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        assert!(store.machine(&org.id).unwrap().is_none(), "sin sandbox");
+
+        alta(&org.id, &store).unwrap();
+        let maquina = store
+            .machine(&org.id)
+            .unwrap()
+            .expect("la org tiene máquina");
+        assert_eq!(maquina.provider, "tensorlake");
+        let nombre = format!("jimmy-{}", org.id);
+        assert_eq!(maquina.file_system, nombre);
+        assert_eq!(maquina.sandbox, nombre);
+        let listado = filesystems("listar", &nombre).unwrap();
+        assert!(
+            listado.contains(&nombre),
+            "el filesystem no está: {listado}"
+        );
+
+        alta(&org.id, &store).unwrap();
+        filesystems("borrar", &nombre).unwrap();
+    }
+
     #[test]
     fn una_org_sin_maquina_no_tiene_sandbox() {
         let store = store("sin-maquina");

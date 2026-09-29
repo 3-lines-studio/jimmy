@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     dir TEXT NOT NULL UNIQUE,
+    plan TEXT NOT NULL DEFAULT 'free',
     personal_of_id TEXT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -138,6 +139,9 @@ pub struct User {
 pub struct Org {
     pub id: String,
     pub name: String,
+    /// `free` o `paid`: lo que decide si la org tiene sandbox. El sandbox llega
+    /// con el pago, y para probarlo alcanza con marcar el plan.
+    pub plan: String,
     /// Dónde vive todo lo de esta org, relativo a la raíz del control plane.
     /// Adentro están sus conversaciones y su workspace. La primera org se queda
     /// la raíz, que es donde ya estaba todo.
@@ -271,6 +275,7 @@ impl Store {
                     },
                     id,
                     name: personal_name(&email),
+                    plan: "free".to_string(),
                 };
                 tx.execute(
                     "INSERT INTO orgs (id, name, dir, personal_of_id, created_at, updated_at)
@@ -358,6 +363,7 @@ impl Store {
             dir: format!("orgs/{id}"),
             id,
             name: name.to_string(),
+            plan: "free".to_string(),
         };
         tx.execute(
             "INSERT INTO orgs (id, name, dir, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
@@ -394,7 +400,7 @@ impl Store {
         let db = self.db.lock().unwrap();
         let elegida = db
             .query_row(
-                "SELECT orgs.id, orgs.name, orgs.dir FROM orgs
+                "SELECT orgs.id, orgs.name, orgs.dir, orgs.plan FROM orgs
                  JOIN users ON users.active_org_id = orgs.id
                  JOIN memberships ON memberships.org_id = orgs.id
                      AND memberships.user_id = users.id
@@ -416,8 +422,37 @@ impl Store {
     pub fn org(&self, id: &str) -> Result<Option<Org>, String> {
         let db = self.db.lock().unwrap();
         db.query_row(
-            "SELECT id, name, dir FROM orgs WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT id, name, dir, plan FROM orgs WHERE id = ?1 AND deleted_at IS NULL",
             params![id],
+            read_org,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// El plan de una org: `free` o `paid`. Es lo que decide si tiene sandbox:
+    /// el sandbox llega con el pago, y para probarlo alcanza con marcarlo.
+    pub fn set_plan(&self, org: &str, plan: &str) -> Result<(), String> {
+        if !matches!(plan, "free" | "paid") {
+            return Err(format!("ese plan no existe: {plan}"));
+        }
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE orgs SET plan = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+            params![plan, now(), org],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// La org personal de alguien, por su mail.
+    pub fn org_of_email(&self, email: &str) -> Result<Option<Org>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT orgs.id, orgs.name, orgs.dir, orgs.plan FROM orgs
+             JOIN users ON users.id = orgs.personal_of_id
+             WHERE users.email = ?1 AND orgs.deleted_at IS NULL AND users.deleted_at IS NULL",
+            params![email.trim().to_lowercase()],
             read_org,
         )
         .optional()
@@ -683,6 +718,7 @@ fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
         id: row.get(0)?,
         name: row.get(1)?,
         dir: row.get(2)?,
+        plan: row.get(3)?,
     })
 }
 
@@ -740,7 +776,7 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
 
 fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
     db.query_row(
-        "SELECT id, name, dir FROM orgs WHERE personal_of_id = ?1",
+        "SELECT id, name, dir, plan FROM orgs WHERE personal_of_id = ?1",
         params![user],
         read_org,
     )
@@ -751,7 +787,7 @@ fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
 fn orgs_of(db: &Connection, user: &str) -> Result<Vec<Org>, String> {
     let mut statement = db
         .prepare(
-            "SELECT orgs.id, orgs.name, orgs.dir FROM orgs
+            "SELECT orgs.id, orgs.name, orgs.dir, orgs.plan FROM orgs
              JOIN memberships ON memberships.org_id = orgs.id
              WHERE memberships.user_id = ?1
                AND memberships.deleted_at IS NULL
@@ -810,7 +846,6 @@ impl Store {
 
     /// La escribe el alta de una org, que todavía no existe: hoy sólo la
     /// llaman las pruebas.
-    #[allow(dead_code)]
     pub fn set_machine(
         &self,
         org: &str,
@@ -1411,6 +1446,28 @@ mod tests {
             "las nuevas quedan"
         );
     }
+    #[test]
+    fn el_plan_de_una_org_decide_si_tiene_sandbox() {
+        let store = store("plan");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        assert_eq!(org.plan, "free");
+        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, "free");
+        assert!(
+            store.set_plan(&org.id, "caro").is_err(),
+            "ese plan no existe"
+        );
+
+        store.set_plan(&org.id, "paid").unwrap();
+        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, "paid");
+        let por_mail = store.org_of_email("DON@ejemplo.com").unwrap().unwrap();
+        assert_eq!(por_mail.id, org.id);
+        assert_eq!(por_mail.plan, "paid");
+        assert!(
+            store.org_of_email("otro@ejemplo.com").unwrap().is_none(),
+            "el que no está, no está"
+        );
+    }
+
     fn proyecto(
         name: &str,
         size: u64,

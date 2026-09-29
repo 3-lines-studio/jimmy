@@ -194,6 +194,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/conversations") => create(web, &request, stream),
         ("POST", "/api/projects") => create_project(web, &request, stream),
         ("POST", "/api/rename") => rename(web, &request, stream),
+        ("POST", "/modelo/chat/completions") => modelo_web(web, &request, stream),
         ("POST", "/api/send") => send(web, &request, stream),
         ("POST", "/api/upload") => upload(web, &request, stream),
         ("GET", "/api/file") => file(web, &request, stream),
@@ -738,6 +739,23 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
 }
 
+/// El modelo, para quien corre adentro de un sandbox: acá no hay sesión ni
+/// cookie, hay un pase que sólo sirve para esto. La clave del proveedor se pone
+/// de este lado y no viaja.
+fn modelo_web(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(modelo) = web.agent.modelo() else {
+        return http::send_error(stream, 503, "no hay modelo del otro lado");
+    };
+    let pase = request
+        .header("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    let Some(_org) = modelo.org(pase) else {
+        return http::send_error(stream, 401, "ese pase no sirve");
+    };
+    modelo.responder(&request.body, stream)
+}
+
 fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1117,6 +1135,14 @@ mod tests {
     }
 
     fn start_with(tag: &str, dev: bool) -> Server {
+        arrancar(tag, dev, None)
+    }
+
+    fn start_con_modelo(tag: &str, modelo: Arc<crate::modelo::Modelo>) -> Server {
+        arrancar(tag, true, Some(modelo))
+    }
+
+    fn arrancar(tag: &str, dev: bool, modelo: Option<Arc<crate::modelo::Modelo>>) -> Server {
         use std::os::unix::fs::PermissionsExt;
 
         let base = std::env::temp_dir().join(format!("jimmy-web-{}-{tag}", std::process::id()));
@@ -1159,6 +1185,9 @@ done
             String::new(),
         );
         agent.use_worker_exe(script);
+        if let Some(modelo) = modelo {
+            agent.set_modelo(modelo);
+        }
 
         let bus = Bus::new();
         let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
@@ -1187,6 +1216,81 @@ done
             previews,
             agenda: runner,
         }
+    }
+
+    /// Un proveedor de mentira: contesta un pedazo de SSE y guarda lo que le
+    /// pidieron, que es donde se ve qué clave viajó.
+    fn proveedor_de_mentira() -> (u16, Arc<std::sync::Mutex<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let visto = Arc::new(std::sync::Mutex::new(String::new()));
+        let guardado = visto.clone();
+        std::thread::spawn(move || {
+            for entrada in listener.incoming() {
+                let Ok(mut stream) = entrada else { break };
+                let mut buffer = [0u8; 8192];
+                let leidos = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                *guardado.lock().unwrap() = String::from_utf8_lossy(&buffer[..leidos]).into_owned();
+                let cuerpo = "data: {\"hola\":1}\n\n";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{cuerpo}\r\n0\r\n\r\n",
+                    cuerpo.len()
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (port, visto)
+    }
+
+    /// El modelo pasa por el control plane: el sandbox lleva un pase y no la
+    /// clave, y lo que contesta el proveedor vuelve como vino.
+    #[test]
+    fn el_modelo_pasa_por_el_control_plane() {
+        let (proveedor, visto) = proveedor_de_mentira();
+        let modelo = Arc::new(crate::modelo::Modelo::new(
+            format!("http://127.0.0.1:{proveedor}"),
+            "la-clave-de-verdad".into(),
+            "http://127.0.0.1".into(),
+        ));
+        let server = start_con_modelo("modelo", modelo.clone());
+
+        let sin_pase = post_with(server.port, "/modelo/chat/completions", "{}", None);
+        assert!(sin_pase.starts_with("HTTP/1.1 401"), "{sin_pase}");
+
+        let pase = modelo.pase("org-1");
+        let mut stream = connect(server.port);
+        write!(
+            stream,
+            "POST /modelo/chat/completions HTTP/1.1\r\nHost: jimmy\r\n\
+             Authorization: Bearer {pase}\r\nContent-Type: application/json\r\n\
+             Content-Length: 15\r\n\r\n{{\"stream\":true}}"
+        )
+        .unwrap();
+        let respuesta = whole(stream);
+        assert!(
+            respuesta.contains("data: "),
+            "no volvió el cuerpo: {respuesta}"
+        );
+        assert!(
+            respuesta
+                .to_lowercase()
+                .contains("transfer-encoding: chunked"),
+            "no vino en pedazos: {respuesta}"
+        );
+
+        let pedido = visto.lock().unwrap().clone();
+        assert!(
+            pedido.contains("Bearer la-clave-de-verdad"),
+            "el proveedor no vio su clave: {pedido}"
+        );
+        assert!(
+            !pedido.contains(&pase),
+            "el pase del sandbox llegó al proveedor: {pedido}"
+        );
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     fn connect(port: u16) -> TcpStream {

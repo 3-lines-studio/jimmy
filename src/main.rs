@@ -12,6 +12,7 @@ mod markdown;
 mod media;
 mod memlog;
 mod memo;
+mod modelo;
 mod pool;
 mod preview;
 mod prompt;
@@ -190,7 +191,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let agent = match build_agent(&config, Some(store.clone())) {
+    // El modelo del otro lado, para los que corren adentro de un sandbox.
+    let modelo = modelo_from_env();
+    let agent = match build_agent(&config, Some(store.clone()), modelo.clone()) {
         Ok(agent) => agent,
         Err(e) => {
             eprintln!("jimmy: {e}");
@@ -526,6 +529,16 @@ fn usage() -> i32 {
     2
 }
 
+/// El modelo del otro lado: el control plane les pone la clave a los sandboxes,
+/// así no viaja hasta allá. Sin URL pública —el sandbox tiene que poder llegar—
+/// o sin clave no hay proxy, y el que corre adentro usa la clave como antes.
+fn modelo_from_env() -> Option<Arc<modelo::Modelo>> {
+    let base = env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into());
+    let key = env("OPENAI_API_KEY")?;
+    let publico = env("JIMMY_WEB_URL")?;
+    Some(Arc::new(modelo::Modelo::new(base, key, publico)))
+}
+
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
 /// always was.
 fn serve_web(
@@ -583,7 +596,11 @@ fn serve_web(
     std::thread::spawn(move || preview::listen(previews));
 }
 
-fn build_agent(config: &Config, store: Option<Arc<store::Store>>) -> Result<Agent, String> {
+fn build_agent(
+    config: &Config,
+    store: Option<Arc<store::Store>>,
+    modelo: Option<Arc<modelo::Modelo>>,
+) -> Result<Agent, String> {
     let mut vars = prompt::parse_vars(&config.vars);
     vars.push(("skills".into(), skill::index(&skills_dirs())));
     let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
@@ -598,6 +615,9 @@ fn build_agent(config: &Config, store: Option<Arc<store::Store>>) -> Result<Agen
     );
     if let Some(store) = store {
         agent.set_store(store);
+    }
+    if let Some(modelo) = modelo {
+        agent.set_modelo(modelo);
     }
     Ok(agent)
 }

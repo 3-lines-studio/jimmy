@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
     let config = Config::from_env()?;
-    let mut agent = crate::build_agent(&config, None)?;
+    let mut agent = crate::build_agent(&config, None, None)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
     if let Some(cwd) = crate::flag(&args, "--cwd") {
         agent.set_cwd(&cwd);

@@ -42,6 +42,9 @@ pub struct Agent {
     org: Option<String>,
     /// La base del control plane, para lo que el turno necesita saber de la org.
     store: Option<Arc<Store>>,
+    /// El modelo del otro lado: lo que corre adentro del sandbox le pide el
+    /// modelo a este control plane, así la clave del proveedor no viaja.
+    modelo: Option<Arc<crate::modelo::Modelo>>,
     fragments: String,
     context: String,
     pool: Arc<dyn Sandbox>,
@@ -75,6 +78,7 @@ impl Agent {
             workspace,
             org: None,
             store: None,
+            modelo: None,
             fragments,
             context,
             pool,
@@ -169,6 +173,18 @@ impl Agent {
         self.store = Some(store);
     }
 
+    /// El modelo del otro lado: lo que corre adentro del sandbox le pide el
+    /// modelo al control plane, así la clave del proveedor no viaja.
+    pub(crate) fn set_modelo(&mut self, modelo: Arc<crate::modelo::Modelo>) {
+        self.modelo = Some(modelo);
+    }
+
+    /// El modelo del otro lado, si hay: lo que la web necesita para atender a
+    /// los que corren adentro de un sandbox.
+    pub(crate) fn modelo(&self) -> Option<Arc<crate::modelo::Modelo>> {
+        self.modelo.clone()
+    }
+
     /// Despertar la máquina de la org antes del turno. Sin org o sin fila en
     /// `machines` el trabajo corre acá y no hay nada que despertar.
     fn wake(&self) -> Result<Option<SandboxInfo>, String> {
@@ -249,7 +265,7 @@ impl Agent {
     /// donde le toca correr. Si el turno va a un sandbox, ese lugar es su
     /// volumen, y los paths son los de adentro.
     fn worker_env(&self, en_sandbox: bool) -> Vec<(String, String)> {
-        match en_sandbox {
+        let mut env = match en_sandbox {
             true => worker_env(
                 &self.base,
                 &self.model,
@@ -266,7 +282,22 @@ impl Agent {
                 &self.root,
                 &self.workspace,
             ),
+        };
+        let (true, Some(modelo), Some(org)) = (en_sandbox, &self.modelo, &self.org) else {
+            return env;
+        };
+        // Adentro del sandbox el modelo es el control plane: la clave del
+        // proveedor no viaja, y el pase sólo sirve para pedirle turnos a la org.
+        for (nombre, valor) in [
+            ("AXE_BASE", modelo.url()),
+            ("OPENAI_API_KEY", modelo.pase(org)),
+        ] {
+            match env.iter_mut().find(|(otro, _)| *otro == nombre) {
+                Some(par) => par.1 = valor,
+                None => env.push((nombre.to_string(), valor)),
+            }
         }
+        env
     }
 
     /// Hand the turn to this conversation's worker and relay what it answers.
@@ -1250,6 +1281,52 @@ mod tests {
     use crate::transport::Msg;
     use axe::ToolCall;
     use std::sync::Mutex;
+
+    fn agente(org: Option<&str>) -> Agent {
+        let base = std::env::temp_dir().join(format!("jimmy-agente-{}", std::process::id()));
+        let lugar = Place {
+            root: base.clone(),
+            workspace: base.join("workspace"),
+            org: org.map(str::to_string),
+        };
+        Agent::new(
+            "https://api.deepseek.com".into(),
+            "deepseek-flash".into(),
+            "la-clave".into(),
+            None,
+            base,
+            "un-workspace".into(),
+            String::new(),
+        )
+        .at(&lugar)
+    }
+
+    /// Adentro del sandbox el modelo es el control plane: la clave del proveedor
+    /// no viaja, va un pase de la org. De este lado no cambia nada.
+    #[test]
+    fn adentro_del_sandbox_el_modelo_es_el_control_plane() {
+        let modelo = Arc::new(crate::modelo::Modelo::new(
+            "https://api.deepseek.com".into(),
+            "la-clave".into(),
+            "https://jimmy.ejemplo".into(),
+        ));
+        let mut agent = agente(Some("org-1"));
+        agent.set_modelo(modelo.clone());
+
+        let adentro: std::collections::HashMap<String, String> =
+            agent.worker_env(true).into_iter().collect();
+        assert_eq!(adentro["AXE_BASE"], "https://jimmy.ejemplo/modelo");
+        assert_eq!(adentro["OPENAI_API_KEY"], modelo.pase("org-1"));
+        assert!(
+            !adentro["OPENAI_API_KEY"].contains("la-clave"),
+            "la clave del proveedor se fue al sandbox"
+        );
+
+        let aca: std::collections::HashMap<String, String> =
+            agent.worker_env(false).into_iter().collect();
+        assert_eq!(aca["AXE_BASE"], "https://api.deepseek.com");
+        assert_eq!(aca["OPENAI_API_KEY"], "la-clave");
+    }
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {
         Message {

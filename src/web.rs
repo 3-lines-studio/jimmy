@@ -15,7 +15,6 @@ use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
-use crate::schedule;
 use crate::transport::Null;
 use crate::workspace::{place, Local, Workspace};
 use std::net::{TcpListener, TcpStream};
@@ -57,7 +56,7 @@ pub struct Web {
     agent: Agent,
     auth: Auth,
     previews: Arc<Previews>,
-    agenda: Sender<schedule::Asked>,
+    agenda: Sender<()>,
 }
 
 impl Web {
@@ -68,7 +67,7 @@ impl Web {
         agent: Agent,
         auth: Auth,
         previews: Arc<Previews>,
-        agenda: Sender<schedule::Asked>,
+        agenda: Sender<()>,
     ) -> Arc<Web> {
         Arc::new(Web {
             root,
@@ -834,40 +833,53 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
-/// Cuántas corridas de cada tarea se le muestran a la web: el archivo guarda
+/// Cuántas corridas de cada tarea se le muestran a la web: la base guarda
 /// muchas más, la vista muestra las últimas.
 const SHOWN: usize = 5;
 
-fn agenda_dir(web: &Web, request: &Request) -> PathBuf {
-    web.workspace(request)
-        .place()
-        .workspace
-        .join("state")
-        .join("schedule")
+/// La agenda sale de la base y no del workspace: se mira sin despertar a nadie.
+fn agenda_tasks(web: &Web, org: &str) -> Result<Vec<serde_json::Value>, String> {
+    let store = web.auth.store();
+    let mut tasks = Vec::new();
+    for task in store.tasks_of(org)? {
+        let runs: Vec<serde_json::Value> = store
+            .runs_of(&task.id, SHOWN)?
+            .into_iter()
+            .map(|run| {
+                serde_json::json!({
+                    "ts": run.started_at,
+                    "ms": run.ms,
+                    "ok": run.ok,
+                    "text": run.text,
+                })
+            })
+            .collect();
+        tasks.push(serde_json::json!({
+            "name": task.name,
+            "when": task.when_at,
+            "at": task.at,
+            "every": task.every,
+            "target": task.target,
+            "silent": task.silent,
+            "paused": task.paused,
+            "unread": store.unread_runs(&task.id, task.last_read_at)?,
+            "runs": runs,
+        }));
+    }
+    Ok(tasks)
 }
 
 fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web, request))
-        .into_iter()
-        .map(|entry| {
-            let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
-            serde_json::json!({
-                "name": entry.name,
-                "when": entry.task.when,
-                "at": entry.task.at,
-                "every": entry.task.every,
-                "target": entry.task.target,
-                "silent": entry.task.silent,
-                "paused": entry.task.paused,
-                "unread": entry.unread,
-                "runs": shown,
-            })
-        })
-        .collect();
-    http::send_json(stream, 200, &serde_json::json!({ "tasks": tasks }))
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    match agenda_tasks(web, &org.id) {
+        Ok(tasks) => http::send_json(stream, 200, &serde_json::json!({ "tasks": tasks })),
+        Err(error) => http::send_error(stream, 500, &error),
+    }
 }
 
 fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -878,14 +890,10 @@ fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std:
     let Some(org) = web.org(request) else {
         return http::send_error(stream, 400, "no hay ninguna org activa");
     };
-    if !schedule::list(&agenda_dir(web, request))
-        .iter()
-        .any(|task| task.name == name)
-    {
-        return http::send_error(stream, 404, "esa tarea no existe");
+    if let Err(error) = web.auth.store().run_now(&org.id, &name) {
+        return http::send_error(stream, 400, &error);
     }
-    let asked = schedule::Asked { org: org.id, name };
-    if web.agenda.send(asked).is_err() {
+    if web.agenda.send(()).is_err() {
         return http::send_error(stream, 500, "el scheduler no está corriendo");
     }
     http::send_json(stream, 200, &serde_json::json!({ "queued": true }))
@@ -897,7 +905,10 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     }
     let name = request.field("name").unwrap_or_default();
     let paused = request.flag("paused");
-    match schedule::set_paused(&agenda_dir(web, request), &name, paused) {
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    match web.auth.store().set_paused(&org.id, &name, paused) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "paused": paused })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -909,7 +920,10 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name");
-    match schedule::mark_read(&agenda_dir(web, request), name.as_deref()) {
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    match web.auth.store().mark_read(&org.id, name.as_deref()) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "read": true })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -1029,8 +1043,9 @@ mod tests {
         workspace: PathBuf,
         port: u16,
         bus: Arc<Bus>,
+        store: Arc<crate::store::Store>,
         previews: Arc<crate::preview::Previews>,
-        agenda: std::sync::mpsc::Receiver<schedule::Asked>,
+        agenda: std::sync::mpsc::Receiver<()>,
     }
 
     fn start(tag: &str) -> Server {
@@ -1083,7 +1098,7 @@ done
 
         let bus = Bus::new();
         let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
-        let auth = Auth::new(store, "bob@ejemplo.com, ana@ejemplo.com", None, dev);
+        let auth = Auth::new(store.clone(), "bob@ejemplo.com, ana@ejemplo.com", None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
@@ -1103,6 +1118,7 @@ done
             workspace,
             port,
             bus,
+            store,
             previews,
             agenda: runner,
         }
@@ -2738,35 +2754,64 @@ done
         }
     }
 
-    fn agenda_file(server: &Server, name: &str, body: &str) {
-        let dir = server.workspace.join("state/schedule");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{name}.toml")), body).unwrap();
+    fn agenda_task(server: &Server, org: &str, name: &str, at: Option<&str>) -> crate::store::Task {
+        agenda_task_at(server, org, name, at, 1)
+    }
+
+    fn agenda_task_at(
+        server: &Server,
+        org: &str,
+        name: &str,
+        at: Option<&str>,
+        next_run_at: i64,
+    ) -> crate::store::Task {
+        server
+            .store
+            .create_task(
+                org,
+                crate::store::NewTask {
+                    name: name.into(),
+                    prompt: "p".into(),
+                    when_at: None,
+                    at: at.map(String::from),
+                    every: None,
+                    target: None,
+                    silent: false,
+                    next_run_at: Some(next_run_at),
+                },
+            )
+            .unwrap()
+    }
+
+    /// La org en la que está parado quien pide.
+    fn personal_org(server: &Server, cookie: &str) -> String {
+        json_in(&get(server.port, "/api/state", Some(cookie)))["org"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[test]
     fn the_agenda_lists_tasks_with_their_last_runs() {
         let server = start("agenda");
         let cookie = login(server.port, "bob@ejemplo.com");
-        agenda_file(
-            &server,
-            "memoria",
-            "at = \"05:00\"\ntarget = \"123456789\"\nprompt = \"reportá\"\n",
-        );
-        agenda_file(
-            &server,
-            "perezosa",
-            "every = \"6h\"\nprompt = \"p\"\npaused = true\n",
-        );
-        let runs: String = (1..8)
-            .map(|i| {
-                format!(
-                    "{{\"ts\":{i},\"date\":\"2026-09-14\",\"ms\":{},\"ok\":true,\"text\":\"corrida {i}\"}}\n",
-                    i * 10
+        let org = personal_org(&server, &cookie);
+        let memoria = agenda_task(&server, &org, "memoria", Some("05:00"));
+        agenda_task(&server, &org, "perezosa", None);
+        server.store.set_paused(&org, "perezosa", true).unwrap();
+        for corrida in 1..8 {
+            server
+                .store
+                .record_run(
+                    &memoria,
+                    corrida,
+                    Some(9_999),
+                    corrida * 10,
+                    true,
+                    &format!("corrida {corrida}"),
                 )
-            })
-            .collect();
-        std::fs::write(server.workspace.join("state/schedule/memoria.jsonl"), runs).unwrap();
+                .unwrap();
+        }
 
         let response = get(server.port, "/api/agenda", Some(&cookie));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -2775,10 +2820,10 @@ done
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0]["name"], "memoria");
         assert_eq!(tasks[0]["at"], "05:00");
-        assert_eq!(tasks[0]["target"], "123456789");
         let runs = tasks[0]["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 5, "sólo se muestran las últimas cinco");
         assert_eq!(runs[0]["text"], "corrida 7");
+        assert_eq!(runs[1]["text"], "corrida 6");
         assert_eq!(runs[4]["text"], "corrida 3");
         assert_eq!(tasks[1]["name"], "perezosa");
         assert_eq!(tasks[1]["paused"], true);
@@ -2795,12 +2840,10 @@ done
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["unread"], 0);
 
-        let path = server.workspace.join("state/schedule/memoria.jsonl");
-        let mut lines = std::fs::read_to_string(&path).unwrap();
-        lines.push_str(
-            "{\"ts\":99,\"date\":\"2026-09-15\",\"ms\":5,\"ok\":true,\"text\":\"otra\"}\n",
-        );
-        std::fs::write(&path, lines).unwrap();
+        server
+            .store
+            .record_run(&memoria, 9_999_999_999, Some(9_999), 5, true, "otra")
+            .unwrap();
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["unread"], 1, "la que llegó después cuenta");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
@@ -2812,9 +2855,8 @@ done
     fn la_agenda_de_una_org_no_ve_las_tareas_de_la_otra() {
         let server = start("agenda-orgs");
         let cookie = login(server.port, "bob@ejemplo.com");
-        let state = json_in(&get(server.port, "/api/state", Some(&cookie)));
-        let personal = state["org"]["id"].as_str().unwrap().to_string();
-        agenda_file(&server, "de-bob", "at = \"05:00\"\nprompt = \"p\"\n");
+        let personal = personal_org(&server, &cookie);
+        agenda_task(&server, &personal, "de-bob", Some("05:00"));
 
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["name"], "de-bob");
@@ -2830,27 +2872,15 @@ done
             body["tasks"].as_array().unwrap().is_empty(),
             "la org nueva arranca sin tareas: {body}"
         );
-        let made = post_with(
-            server.port,
-            "/api/projects",
-            r#"{"name":"empresa-uno"}"#,
-            Some(&cookie),
-        );
-        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
 
-        let org = std::fs::read_dir(server.root.join("orgs"))
+        let empresa = server
+            .store
+            .orgs()
             .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let dir = org.join("workspace/state/schedule");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("de-la-empresa.toml"),
-            "at = \"06:00\"\nprompt = \"p\"\n",
-        )
-        .unwrap();
+            .into_iter()
+            .find(|org| org.id != personal)
+            .unwrap();
+        agenda_task(&server, &empresa.id, "de-la-empresa", Some("06:00"));
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["name"], "de-la-empresa");
 
@@ -2866,11 +2896,16 @@ done
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
+    /// Correr una tarea a mano es adelantarle el reloj: el mismo camino que el
+    /// horario, y el aviso al scheduler para no esperar al próximo minuto.
     #[test]
-    fn running_a_task_hands_its_org_and_name_to_the_scheduler() {
+    fn running_a_task_from_the_web_advances_its_clock() {
         let server = start("agenda-run");
         let cookie = login(server.port, "bob@ejemplo.com");
-        agenda_file(&server, "memoria", "at = \"05:00\"\nprompt = \"p\"\n");
+        let org = personal_org(&server, &cookie);
+        let lejos = agenda_task_at(&server, &org, "memoria", Some("05:00"), 9_999_999_999)
+            .next_run_at
+            .unwrap();
 
         let queued = post_with(
             server.port,
@@ -2879,15 +2914,18 @@ done
             Some(&cookie),
         );
         assert!(queued.starts_with("HTTP/1.1 200"), "{queued}");
-        let state = json_in(&get(server.port, "/api/state", Some(&cookie)));
-        let org = state["org"]["id"].as_str().unwrap().to_string();
-        assert_eq!(
-            server.agenda.recv_timeout(Duration::from_secs(1)).unwrap(),
-            schedule::Asked {
-                org,
-                name: "memoria".into()
-            }
+        assert!(
+            server.agenda.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "el reloj se despierta"
         );
+        let ahora = server
+            .store
+            .task_named(&org, "memoria")
+            .unwrap()
+            .unwrap()
+            .next_run_at
+            .unwrap();
+        assert!(ahora < lejos, "la adelantó: {ahora} < {lejos}");
 
         let missing = post_with(
             server.port,
@@ -2895,19 +2933,43 @@ done
             r#"{"name":"nada"}"#,
             Some(&cookie),
         );
-        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+
+        server.store.set_paused(&org, "memoria", true).unwrap();
+        let pausada = post_with(
+            server.port,
+            "/api/agenda/run",
+            r#"{"name":"memoria"}"#,
+            Some(&cookie),
+        );
+        assert!(
+            pausada.starts_with("HTTP/1.1 400"),
+            "una pausada no corre ni a mano: {pausada}"
+        );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
-    fn pausing_a_task_from_the_web_keeps_the_rest_of_the_file() {
+    fn pausing_a_task_from_the_web_keeps_the_rest() {
         let server = start("agenda-pause");
         let cookie = login(server.port, "bob@ejemplo.com");
-        agenda_file(
-            &server,
-            "memoria",
-            "at = \"05:00\"\ntarget = \"123\"\nprompt = \"reportá\"\nsilent = true\n",
-        );
+        let org = personal_org(&server, &cookie);
+        server
+            .store
+            .create_task(
+                &org,
+                crate::store::NewTask {
+                    name: "memoria".into(),
+                    prompt: "reportá".into(),
+                    when_at: None,
+                    at: Some("05:00".into()),
+                    every: None,
+                    target: Some("123".into()),
+                    silent: true,
+                    next_run_at: Some(1),
+                },
+            )
+            .unwrap();
 
         let paused = post_with(
             server.port,

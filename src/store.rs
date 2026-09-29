@@ -391,6 +391,18 @@ impl Store {
         }
     }
 
+    /// Una org por su id.
+    pub fn org(&self, id: &str) -> Result<Option<Org>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT id, name, dir FROM orgs WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+            read_org,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
     /// Las tareas de una org, por nombre.
     pub fn tasks_of(&self, org: &str) -> Result<Vec<Task>, String> {
         let db = self.db.lock().unwrap();
@@ -474,23 +486,6 @@ impl Store {
         Ok(())
     }
 
-    /// La baja es lógica, como todo lo demás: la fila queda con su hora y sus
-    /// corridas por si hay que mirarlas.
-    pub fn delete_task(&self, org: &str, name: &str) -> Result<(), String> {
-        let db = self.db.lock().unwrap();
-        let changed = db
-            .execute(
-                "UPDATE tasks SET deleted_at = ?1, updated_at = ?1
-                 WHERE org_id = ?2 AND name = ?3 AND deleted_at IS NULL",
-                params![now(), org, name],
-            )
-            .map_err(|e| e.to_string())?;
-        if changed == 0 {
-            return Err(format!("no existe la tarea {name}"));
-        }
-        Ok(())
-    }
-
     /// Marca leída la última corrida de una tarea, o la de todas: lo leído se
     /// guarda como el momento, y todo lo que llegó después es nuevo.
     pub fn mark_read(&self, org: &str, name: Option<&str>) -> Result<(), String> {
@@ -509,6 +504,38 @@ impl Store {
             ),
         }
         .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Cuántas corridas llegaron desde la última mirada.
+    pub fn unread_runs(&self, task: &str, since: i64) -> Result<usize, String> {
+        let db = self.db.lock().unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM task_runs
+                 WHERE task_id = ?1 AND started_at > ?2 AND deleted_at IS NULL",
+                params![task, since],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count as usize)
+    }
+
+    /// Le adelanta el reloj para que la tome en la próxima vuelta. Una tarea
+    /// pausada no corre ni a mano.
+    pub fn run_now(&self, org: &str, name: &str) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let stamp = now();
+        let changed = db
+            .execute(
+                "UPDATE tasks SET next_run_at = ?1, claimed_at = NULL, updated_at = ?1
+                 WHERE org_id = ?2 AND name = ?3 AND deleted_at IS NULL AND paused = 0",
+                params![stamp, org, name],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("la tarea {name} no existe o está pausada"));
+        }
         Ok(())
     }
 
@@ -567,6 +594,7 @@ impl Store {
     pub fn record_run(
         &self,
         task: &Task,
+        started_at: i64,
         next_run_at: Option<i64>,
         ms: i64,
         ok: bool,
@@ -574,7 +602,7 @@ impl Store {
     ) -> Result<Run, String> {
         let run = Run {
             id: ulid::new(),
-            started_at: now(),
+            started_at,
             ms,
             ok,
             text: text.to_string(),
@@ -1001,8 +1029,6 @@ mod tests {
         assert!(store.set_paused(&personal.id, "nada", true).is_err());
         assert_eq!(de_bob.id, mia.id);
 
-        store.delete_task(&empresa.id, "memoria").unwrap();
-        assert!(store.tasks_of(&empresa.id).unwrap().is_empty());
         assert_eq!(store.tasks_of(&personal.id).unwrap().len(), 1);
     }
 
@@ -1032,7 +1058,7 @@ mod tests {
         );
 
         store
-            .record_run(&due[0], Some(5_000), 5, true, "listo")
+            .record_run(&due[0], 1_000, Some(5_000), 5, true, "listo")
             .unwrap();
         assert!(
             store.claim_due(1_000).unwrap().is_empty(),
@@ -1073,6 +1099,7 @@ mod tests {
             store
                 .record_run(
                     &task,
+                    vuelta,
                     Some(200 + vuelta),
                     vuelta,
                     true,

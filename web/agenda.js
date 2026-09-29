@@ -44,10 +44,11 @@ function agendaDate(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function agendaDay(day, now) {
+function agendaDay(ts, now) {
+  const day = agendaDate(new Date(ts * 1000));
   if (day === agendaDate(now)) return "hoy";
   if (day === agendaDate(new Date(now.getTime() - 86_400_000))) return "ayer";
-  const [, month, date] = String(day).split("-");
+  const [, month, date] = day.split("-");
   return `${date}/${month}`;
 }
 
@@ -58,7 +59,7 @@ function agendaClock(ts) {
 }
 
 function agendaMoment(run, now) {
-  return `${agendaDay(run.date, now)} ${agendaClock(run.ts)}`;
+  return `${agendaDay(run.ts, now)} ${agendaClock(run.ts)}`;
 }
 
 function agendaAgo(ts, now) {

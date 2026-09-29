@@ -135,11 +135,12 @@ junto con la conversación y el comando. Es lo que el worker necesita para
 reconstruirse del otro lado, y en un proveedor de verdad son los secretos con
 los que se levanta el sandbox.
 
-La agenda es de cada org por el mismo motivo: el reloj es uno, pero cada
-vuelta recorre las orgs y corre las tareas de cada una donde vive su
-`state/schedule`, con el historial al lado. La web muestra y maneja la agenda
-de la org activa. Hoy las tareas están en el filesystem de la org; el paso 3
-las muda a la DB, que es lo que permite listarlas sin despertar el sandbox.
+La agenda es de cada org y vive en la base, no en el workspace: el control
+plane la lee y la escribe sin despertar a nadie. El reloj es uno y cada vuelta
+reclama lo vencido —lo reclama uno solo, y ese es el que lo corre— con el
+agente apuntado a la org que la pidió. Cada tarea lleva su `next_run_at`, que
+se recalcula al correr, en lugar de deducir si le toca mirando el historial; y
+si el proceso se muere a mitad de un turno, el reclamo viejo se suelta solo.
 
 ## La imagen y el binario
 
@@ -269,9 +270,8 @@ Está anotado: se resuelve a futuro y no condiciona el diseño.
    cambio de comportamiento.
 2. `orgs`, `users`, `memberships` y `sessions` en la base, con el auth
    apuntando ahí.
-3. La agenda y los medidores a la DB; cada org con su directorio para las
-   conversaciones y el workspace, y cada turno corriendo en el workspace de su
-   org.
+3. La agenda a la DB, con cada turno corriendo en el workspace de su org.
+   Los medidores, pendientes.
 4. La implementación `Tensorlake`, la imagen mínima y el binario en el FS.
 5. heimdall por org y su UI.
 6. Cuotas, medidores y los dos planes.

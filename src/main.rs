@@ -383,7 +383,7 @@ fn serve_web(
     config: &Config,
     bus: Arc<bus::Bus>,
     agent: Agent,
-    agenda: Sender<schedule::Asked>,
+    agenda: Sender<()>,
     previews: Arc<preview::Previews>,
 ) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {

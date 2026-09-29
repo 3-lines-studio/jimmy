@@ -12,26 +12,25 @@ código nuevo vive en este repo, en la rama de trabajo.
 
 Dos estados, dos dueños:
 
-- **Control plane** — servicio persistente en Railway con su base en el volumen.
-  Guarda lo que hay que consultar entre orgs y usuarios: orgs, usuarios,
-  membresías, metadata de conversaciones y proyectos, agenda, cuotas y
-  medidores.
-- **Sandbox** — el filesystem de la org, montado por el sandbox. Guarda lo que
-  solo le importa al turno que está corriendo: el workspace (repos,
-  `node_modules`, `target/`), los transcripts, los archivos subidos y el
-  binario de jimmy.
+- **Control plane** — servicio persistente en Railway con su base. Guarda lo
+  que hay que consultar entre orgs y usuarios, y lo que hay que poder mostrar
+  sin despertar a nadie: orgs, usuarios, membresías, sesiones, el índice de
+  proyectos y conversaciones, la agenda, los medidores y el estado de cada
+  sandbox.
+- **Sandbox** — el filesystem de la org, montado en su sandbox, y **el
+  workspace es de ahí**: los repos, `node_modules`, `target/`, los adjuntos,
+  los transcripts, el perfil de Chromium y todo lo que deja el agente al correr,
+  más el binario de jimmy. El control plane no es dueño de nada de eso.
 
-La regla: la DB guarda lo que se lee desde afuera del sandbox; el FS guarda lo
-que solo toca el sandbox que trabaja. Los secretos no viven en ninguno de los
-dos (ver heimdall, más abajo).
+La regla: la DB guarda lo que hay que consultar entre orgs; el sandbox guarda
+todo lo que produce y consume el trabajo. **El control plane no abre un archivo
+del workspace**: se lo pide al adapter, que hoy es local (el disco del control
+plane, el layout de siempre bajo `orgs/<id>`) y mañana es el sandbox de la org.
+Los secretos no viven en ninguno de los dos (ver heimdall, más abajo).
 
-Hoy, sin sandboxes, ese filesystem es el del propio control plane: cada org
-cuelga de `orgs/<id>` en el volumen. Cuando entre el adapter, ese mismo `dir` es
-lo que se monta en el sandbox de la org, y la web deja de leer archivos con
-`std::fs`. Ahí hay que elegir entre pedirle el listado al sandbox (que despierta
-la org en cada refresco) o volver a guardar en la DB un índice mínimo —nombre,
-dueño, último turno— y pedir los archivos sólo cuando alguien abre algo. Eso es
-lo que decide si `projects` y `conversations` vuelven a la base.
+Que el control plane no toque el filesystem es lo que hace que las dos
+implementaciones sean intercambiables; que hoy la local sea el disco de siempre
+es lo que permite llegar ahí sin mudar nada de lo que ya existe.
 
 ## Tablas
 
@@ -80,6 +79,18 @@ trait Sandbox {
     fn turn(&self, h: &Handle, req: Turn) -> Stream<Event>;
     fn suspend(&self, h: &Handle);
     fn destroy(&self, h: &Handle);
+    fn files(&self, h: &Handle) -> &dyn Workspace;      // lo que vive adentro
+}
+
+/// El workspace de una org, sin decir dónde está: listar proyectos, leer y
+/// escribir archivos, mover y borrar. La web no abre caminos, pide nombres.
+trait Workspace {
+    fn projects(&self) -> Vec<Project>;
+    fn conversations(&self, project: &str) -> Vec<Conversation>;
+    fn read(&self, path: &str) -> Result<Vec<u8>, String>;
+    fn write(&self, path: &str, data: &[u8]) -> Result<(), String>;
+    fn create_project(&self, name: &str) -> Result<(), String>;
+    fn remove(&self, path: &str) -> Result<(), String>;
 }
 ```
 

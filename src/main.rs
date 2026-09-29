@@ -24,6 +24,7 @@ mod skill;
 mod store;
 mod tools;
 mod transport;
+mod ulid;
 mod watch;
 mod web;
 mod worker;

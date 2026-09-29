@@ -3,7 +3,12 @@
 //!
 //! Es SQLite en el volumen, con el esquema armado al abrir y sin migraciones,
 //! igual que heimdall. Un solo proceso escribe, así que un mutex alcanza.
+//!
+//! Cada usuario y cada org se identifican con un ulid, que no se deriva de
+//! nada: el mail de una persona no tiene por qué estar en el identificador de
+//! su org.
 
+use crate::ulid;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,14 +18,16 @@ const SCHEMA: &str = "
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
+    ulid TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS orgs (
     id INTEGER PRIMARY KEY,
-    slug TEXT NOT NULL UNIQUE,
+    ulid TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
+    personal_of INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS memberships (
@@ -42,6 +49,7 @@ CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions (user_id);
 #[derive(Debug, Clone, PartialEq)]
 pub struct User {
     pub id: i64,
+    pub ulid: String,
     pub email: String,
     pub name: String,
 }
@@ -49,7 +57,7 @@ pub struct User {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Org {
     pub id: i64,
-    pub slug: String,
+    pub ulid: String,
     pub name: String,
 }
 
@@ -64,21 +72,15 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// El slug de la org personal sale del mail entero, sin lo que no sea letra o
-/// número. Es único porque el mail lo es, así que no hay que contar colisiones.
-pub fn slug_from_email(email: &str) -> String {
-    let mut slug = String::new();
-    for c in email.chars() {
-        if c.is_ascii_alphanumeric() {
-            slug.push(c.to_ascii_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
+/// Cómo se llama la org personal de alguien: la parte de su mail antes del
+/// arroba. Es sólo el nombre, que se puede cambiar; el identificador es el ulid.
+fn personal_name(email: &str) -> String {
+    let part = email.split('@').next().unwrap_or(email).trim();
+    if part.is_empty() {
+        email.to_string()
+    } else {
+        part.to_string()
     }
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    slug
 }
 
 impl Store {
@@ -96,31 +98,42 @@ impl Store {
     }
 
     /// El usuario de ese mail, con su org personal, que se crea la primera vez
-    /// que entra. Volver a entrar no duplica nada.
+    /// que entra. Volver a entrar no duplica ni cambia nada.
     pub fn register(&self, email: &str) -> Result<(User, Org), String> {
         let email = email.trim().to_lowercase();
         let db = self.db.lock().unwrap();
         let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "INSERT OR IGNORE INTO users (email, created_at) VALUES (?1, ?2)",
-            params![email, now()],
+            "INSERT OR IGNORE INTO users (ulid, email, created_at) VALUES (?1, ?2, ?3)",
+            params![ulid::new(), email, now()],
         )
         .map_err(|e| e.to_string())?;
         let user = user_by_email(&tx, &email)?
             .ok_or_else(|| format!("no pude crear el usuario {email}"))?;
-        let slug = slug_from_email(&email);
-        tx.execute(
-            "INSERT OR IGNORE INTO orgs (slug, name, created_at) VALUES (?1, ?2, ?3)",
-            params![slug, slug, now()],
-        )
-        .map_err(|e| e.to_string())?;
-        let org = org_by_slug(&tx, &slug)?.ok_or_else(|| format!("no pude crear la org {slug}"))?;
-        tx.execute(
-            "INSERT OR IGNORE INTO memberships (org_id, user_id, role, created_at)
-             VALUES (?1, ?2, 'owner', ?3)",
-            params![org.id, user.id, now()],
-        )
-        .map_err(|e| e.to_string())?;
+        let org = match personal_org(&tx, user.id)? {
+            Some(org) => org,
+            None => {
+                let org = Org {
+                    id: 0,
+                    ulid: ulid::new(),
+                    name: personal_name(&email),
+                };
+                tx.execute(
+                    "INSERT INTO orgs (ulid, name, personal_of, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![org.ulid, org.name, user.id, now()],
+                )
+                .map_err(|e| e.to_string())?;
+                let id = tx.last_insert_rowid();
+                tx.execute(
+                    "INSERT INTO memberships (org_id, user_id, role, created_at)
+                     VALUES (?1, ?2, 'owner', ?3)",
+                    params![id, user.id, now()],
+                )
+                .map_err(|e| e.to_string())?;
+                Org { id, ..org }
+            }
+        };
         tx.commit().map_err(|e| e.to_string())?;
         Ok((user, org))
     }
@@ -164,22 +177,23 @@ impl Store {
 fn read_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
     Ok(User {
         id: row.get(0)?,
-        email: row.get(1)?,
-        name: row.get(2)?,
+        ulid: row.get(1)?,
+        email: row.get(2)?,
+        name: row.get(3)?,
     })
 }
 
 fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
     Ok(Org {
         id: row.get(0)?,
-        slug: row.get(1)?,
+        ulid: row.get(1)?,
         name: row.get(2)?,
     })
 }
 
 fn user_by_email(db: &Connection, email: &str) -> Result<Option<User>, String> {
     db.query_row(
-        "SELECT id, email, name FROM users WHERE email = ?1",
+        "SELECT id, ulid, email, name FROM users WHERE email = ?1",
         params![email],
         read_user,
     )
@@ -189,7 +203,7 @@ fn user_by_email(db: &Connection, email: &str) -> Result<Option<User>, String> {
 
 fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String> {
     db.query_row(
-        "SELECT users.id, users.email, users.name FROM users
+        "SELECT users.id, users.ulid, users.email, users.name FROM users
          JOIN sessions ON sessions.user_id = users.id
          WHERE sessions.token = ?1 AND sessions.expires_at > ?2",
         params![token, now()],
@@ -199,10 +213,10 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
     .map_err(|e| e.to_string())
 }
 
-fn org_by_slug(db: &Connection, slug: &str) -> Result<Option<Org>, String> {
+fn personal_org(db: &Connection, user_id: i64) -> Result<Option<Org>, String> {
     db.query_row(
-        "SELECT id, slug, name FROM orgs WHERE slug = ?1",
-        params![slug],
+        "SELECT id, ulid, name FROM orgs WHERE personal_of = ?1",
+        params![user_id],
         read_org,
     )
     .optional()
@@ -230,6 +244,15 @@ mod tests {
         rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
     }
 
+    fn orgs(store: &Store) -> Vec<String> {
+        let db = store.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT ulid FROM orgs ORDER BY id").unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    }
+
     #[test]
     fn entrar_dos_veces_no_duplica_ni_al_usuario_ni_a_su_org() {
         let store = store("register");
@@ -238,11 +261,25 @@ mod tests {
         assert_eq!(first, again);
         assert_eq!(org, same_org);
         assert_eq!(first.email, "don@berti.sh");
-        assert_eq!(org.slug, "don-berti-sh");
+        assert_eq!(org.name, "don");
+        assert_eq!(first.ulid.len(), 26);
+        assert_eq!(org.ulid.len(), 26);
         assert_eq!(
             memberships(&store),
             vec![(org.id, first.id, "owner".into())]
         );
+    }
+
+    #[test]
+    fn cada_uno_tiene_su_ulid_y_no_sale_de_nadie() {
+        let store = store("ulids");
+        let (ana, org_ana) = store.register("ana@ejemplo.com").unwrap();
+        let (beto, org_beto) = store.register("beto@ejemplo.com").unwrap();
+        assert_ne!(ana.ulid, beto.ulid);
+        assert_ne!(org_ana.ulid, org_beto.ulid);
+        assert!(!org_ana.ulid.contains("ana"), "{}", org_ana.ulid);
+        assert!(!ana.ulid.contains("ejemplo"), "{}", ana.ulid);
+        assert_eq!(orgs(&store).len(), 2);
     }
 
     #[test]
@@ -285,10 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn el_slug_sale_del_mail_entero() {
-        assert_eq!(slug_from_email("don@berti.sh"), "don-berti-sh");
-        assert_eq!(slug_from_email("a.b+c@x.com"), "a-b-c-x-com");
-        assert_eq!(slug_from_email("don"), "don");
-        assert_eq!(slug_from_email("@"), "");
+    fn el_nombre_de_la_org_personal_sale_del_mail() {
+        assert_eq!(personal_name("don@berti.sh"), "don");
+        assert_eq!(personal_name("a.b+c@x.com"), "a.b+c");
+        assert_eq!(personal_name("don"), "don");
     }
 }

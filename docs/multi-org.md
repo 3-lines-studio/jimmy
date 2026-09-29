@@ -25,6 +25,14 @@ La regla: la DB guarda lo que se lee desde afuera del sandbox; el FS guarda lo
 que solo toca el sandbox que trabaja. Los secretos no viven en ninguno de los
 dos (ver heimdall, más abajo).
 
+Hoy, sin sandboxes, ese filesystem es el del propio control plane: cada org
+cuelga de `orgs/<id>` en el volumen. Cuando entre el adapter, ese mismo `dir` es
+lo que se monta en el sandbox de la org, y la web deja de leer archivos con
+`std::fs`. Ahí hay que elegir entre pedirle el listado al sandbox (que despierta
+la org en cada refresco) o volver a guardar en la DB un índice mínimo —nombre,
+dueño, último turno— y pedir los archivos sólo cuando alguien abre algo. Eso es
+lo que decide si `projects` y `conversations` vuelven a la base.
+
 ## Tablas
 
 Toda tabla arranca igual, sin excepciones: el `id` --un ulid, opaco y ordenable

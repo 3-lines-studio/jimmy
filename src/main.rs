@@ -454,7 +454,6 @@ fn build_agent(config: &Config, store: Option<Arc<store::Store>>) -> Result<Agen
     if let Some(store) = store {
         agent.set_store(store);
     }
-    agent.set_sandbox(env("JIMMY_SANDBOX"));
     Ok(agent)
 }
 

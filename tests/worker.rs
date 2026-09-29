@@ -18,10 +18,6 @@ struct Worker {
 
 impl Worker {
     fn start(root: &Path, base: &str, cwd: &Path) -> Worker {
-        Worker::start_with_env(root, base, cwd, &[])
-    }
-
-    fn start_with_env(root: &Path, base: &str, cwd: &Path, extra: &[(&str, &str)]) -> Worker {
         let mut child = Command::new(env!("CARGO_BIN_EXE_jimmy"));
         child
             .args(["worker", "--chat", "test"])
@@ -32,9 +28,6 @@ impl Worker {
             .env("JIMMY_PROMPT", "jimmy")
             .env("AXE_BASE", base)
             .env("AXE_MODEL", "fake");
-        for (name, value) in extra {
-            child.env(name, value);
-        }
         let mut child = child
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -377,51 +370,6 @@ fn the_tools_run_in_the_project_the_conversation_belongs_to() {
     assert!(
         result.contains(project.to_str().unwrap()),
         "esperaba el directorio del proyecto en {result}"
-    );
-    std::fs::remove_dir_all(&root).unwrap();
-}
-
-/// Un turno que vive en el sandbox de su org no escribe acá: la máquina es la
-/// del sandbox, aunque la API no conteste. Sin esto, un sandbox roto escribiría
-/// en el disco del control plane sin que nadie se entere.
-#[test]
-fn a_turn_that_lives_in_a_sandbox_does_not_write_here() {
-    let root = scratch("sandbox");
-    let (base, served) = model_server(vec![
-        tool_chunk("echo hola > escrito.txt"),
-        answer_chunk("listo"),
-    ]);
-
-    let mut worker = Worker::start_with_env(
-        &root,
-        &base,
-        &root.join("workspace"),
-        &[
-            ("JIMMY_SANDBOX", "no existe"),
-            ("TENSORLAKE_API_KEY", "test"),
-        ],
-    );
-    worker.send("{\"cmd\":\"prompt\",\"text\":\"escribí\"}");
-    let events = worker.until_done();
-    drop(worker);
-
-    assert!(
-        events.last().unwrap().contains("listo"),
-        "el turno no siguió después del error de la máquina: {events:?}"
-    );
-    let result = events.iter().find(|e| e.contains("tool_result")).unwrap();
-    assert!(
-        result.contains(r#""failed":true"#),
-        "la herramienta no falló del lado del sandbox: {result}"
-    );
-    assert_eq!(
-        served.load(Ordering::SeqCst),
-        2,
-        "el turno no llegó al modelo"
-    );
-    assert!(
-        !root.join("workspace/escrito.txt").exists(),
-        "el turno escribió en este disco"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }

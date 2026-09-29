@@ -323,7 +323,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::transport::Msg;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn scratch(tag: &str) -> PathBuf {
         let dir =
@@ -531,7 +531,8 @@ mod tests {
             .create_task(&ana.id, tarea("resumen", Some(1_000)))
             .unwrap();
 
-        let agent = Agent::new(
+        let script = script(&base);
+        let mut agent = Agent::new(
             "http://127.0.0.1:1".into(),
             "model".into(),
             "key".into(),
@@ -540,6 +541,7 @@ mod tests {
             workspace.display().to_string(),
             String::new(),
         );
+        agent.use_worker_exe(script);
         let _agenda = spawn(
             Arc::new(Null),
             agent,
@@ -550,11 +552,24 @@ mod tests {
 
         let runs = wait_runs(&store, &de_bob.id);
         assert_eq!(runs.len(), 1, "la de bob corrió");
-        assert!(!runs[0].ok, "sin modelo, y queda dicho");
+        assert!(runs[0].ok, "corrió: {}", runs[0].text);
+        assert!(
+            runs[0].text.contains(&workspace.display().to_string()),
+            "el turno de bob no corrió en su workspace: {}",
+            runs[0].text
+        );
+        let de_ana_org = wait_runs(&store, &de_ana.id);
         assert_eq!(
-            wait_runs(&store, &de_ana.id).len(),
+            de_ana_org.len(),
             1,
             "y la de ana también, con el mismo nombre"
+        );
+        assert!(
+            de_ana_org[0]
+                .text
+                .contains(&root.join(format!("orgs/{}", ana.id)).display().to_string()),
+            "el turno de ana no corrió en su org: {}",
+            de_ana_org[0].text
         );
         let despues = store.task_named(&bob.id, "resumen").unwrap().unwrap();
         assert!(
@@ -562,5 +577,24 @@ mod tests {
             "y la tarea se reprograma"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Un worker de mentira que cuenta dónde le tocó correr.
+    fn script(base: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = base.join("worker.sh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh
+echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo \"{\\\"event\\\":\\\"done\\\",\\\"text\\\":\\\"$JIMMY_ROOT|$JIMMY_WORKSPACE|$*\\\"}\"
+done
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 }

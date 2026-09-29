@@ -6,9 +6,11 @@
 //! mismo que ve un comando.
 
 use crate::store::Store;
-use crate::tensorlake::{SandboxInfo, Tensorlake};
+use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use axe::machine::{resolve, Entry, Machine};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 pub struct Remote {
     cliente: Arc<Tensorlake>,
@@ -32,6 +34,113 @@ fn image() -> String {
     crate::env("TENSORLAKE_IMAGE").unwrap_or_else(|| "jimmy-min".into())
 }
 
+/// La huella del binario: es la versión del agente que corre adentro del
+/// sandbox. Cambia si y sólo si cambia el binario, así que no hay forma de que
+/// un turno corra con el de antes.
+fn huella(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// El path de este lado, del otro: la raíz de la org es donde el sandbox monta
+/// su volumen, así que adentro todo cuelga de la misma forma. El path que una
+/// herramienta escribe y el que ve un comando siguen siendo el mismo.
+pub fn al_sandbox(root: &Path, path: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(resto) if resto.as_os_str().is_empty() => MOUNT.to_string(),
+        Ok(resto) => format!("{MOUNT}/{}", resto.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// Las versiones que ya están en el volumen de ese sandbox, para no preguntar
+/// por la API en cada turno. La subida es idempotente, así que una instancia
+/// que no se acuerde no rompe nada: sube de nuevo.
+static SUBIDO: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn ya_esta(sandbox: &str, huella: &str) -> bool {
+    let mut subido = SUBIDO.lock().unwrap();
+    subido
+        .get_or_insert_with(HashSet::new)
+        .contains(&format!("{sandbox}/{huella}"))
+}
+
+fn recordar(sandbox: &str, huella: &str) {
+    let mut subido = SUBIDO.lock().unwrap();
+    subido
+        .get_or_insert_with(HashSet::new)
+        .insert(format!("{sandbox}/{huella}"));
+}
+
+/// El agente adentro del sandbox: el binario y lo que lee del disco —los
+/// prompts y las skills—, en el volumen de la org. Se sube una vez por versión
+/// y el turno corre de ahí, así que el sandbox es el mismo agente y no una
+/// parte: los archivos que toca son los del volumen y no hay viajes por HTTP.
+pub fn publicar(cliente: &Tensorlake, sandbox: &str, exe: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(exe).map_err(|e| format!("no pude leer {exe:?}: {e}"))?;
+    let huella = huella(&bytes);
+    let dir = format!("{MOUNT}/.jimmy/{huella}");
+    let path = format!("{dir}/jimmy");
+    if ya_esta(sandbox, &huella) {
+        return Ok(path);
+    }
+    if cliente.list_files(sandbox, &dir).is_err() {
+        cliente.write_file(sandbox, &path, &bytes)?;
+        cliente.run(
+            sandbox,
+            MOUNT,
+            &format!("chmod 0755 {path}"),
+            60,
+            &mut |_| {},
+        )?;
+        for (local, destino) in contenido()? {
+            let archivo = std::fs::read(&local).map_err(|e| format!("{local:?}: {e}"))?;
+            cliente.write_file(sandbox, &format!("{MOUNT}/{destino}"), &archivo)?;
+        }
+    }
+    recordar(sandbox, &huella);
+    Ok(path)
+}
+
+/// Los archivos que el agente lee del disco y no están adentro del binario: los
+/// prompts y las skills, que de este lado viven en la imagen y del otro tienen
+/// que estar en el volumen.
+fn contenido() -> Result<Vec<(std::path::PathBuf, String)>, String> {
+    let mut archivos = Vec::new();
+    for (dir, nombre) in [
+        (crate::prompt::BUILTIN, "prompts"),
+        (crate::skill::BUILTIN, "skills"),
+    ] {
+        let raiz = Path::new(dir);
+        if !raiz.is_dir() {
+            continue;
+        }
+        juntar(raiz, &mut |relativo| {
+            archivos.push((raiz.join(&relativo), format!("{nombre}/{relativo}")));
+        })?;
+    }
+    Ok(archivos)
+}
+
+fn juntar(dir: &Path, con: &mut dyn FnMut(String)) -> Result<(), String> {
+    let entradas = std::fs::read_dir(dir).map_err(|e| format!("{dir:?}: {e}"))?;
+    for entrada in entradas {
+        let entrada = entrada.map_err(|e| e.to_string())?;
+        let nombre = entrada.file_name().to_string_lossy().to_string();
+        let path = entrada.path();
+        if path.is_dir() {
+            juntar(&path, &mut |relativo| con(format!("{nombre}/{relativo}")))?;
+        } else {
+            con(nombre);
+        }
+    }
+    Ok(())
+}
+
 /// La máquina de una org lista para el turno: sin fila en `machines` el trabajo
 /// corre acá y no hay nada que despertar; con fila, el sandbox se crea si no
 /// está y se despierta si está dormido.
@@ -52,6 +161,9 @@ pub fn ensure(org: &str, store: &Store) -> Result<Option<SandboxInfo>, String> {
 
 /// La máquina de una org, que ya está despierta: sus archivos y sus comandos
 /// van por el mismo cliente, así que las herramientas no saben que está lejos.
+/// Hoy el turno no la usa —el worker corre adentro del sandbox, con su volumen
+/// montado—: es lo que la web necesita para leer y escribir lo de una org sin
+/// despertarla.
 pub fn de_la_org(sandbox: &str, dir: &str) -> Result<Arc<dyn Machine>, String> {
     let cliente = Tensorlake::from_env().ok_or("falta TENSORLAKE_API_KEY")?;
     Ok(Arc::new(Remote::new(Arc::new(cliente), sandbox, dir)))
@@ -109,6 +221,35 @@ mod tests {
         let store = store("sin-maquina");
         let (_, org) = store.register("don@ejemplo.com").unwrap();
         assert_eq!(ensure(&org.id, &store).unwrap(), None);
+    }
+
+    /// El path de una herramienta del otro lado: la raíz de la org es donde el
+    /// sandbox monta su volumen.
+    #[test]
+    fn los_paths_de_la_org_se_traducen_al_volumen() {
+        let raiz = Path::new("/data/orgs/01ABC");
+        assert_eq!(al_sandbox(raiz, raiz), "/work");
+        assert_eq!(
+            al_sandbox(raiz, Path::new("/data/orgs/01ABC/workspace")),
+            "/work/workspace"
+        );
+        assert_eq!(
+            al_sandbox(
+                raiz,
+                Path::new("/data/orgs/01ABC/chats/uno/transcript.jsonl")
+            ),
+            "/work/chats/uno/transcript.jsonl"
+        );
+        assert_eq!(
+            al_sandbox(Path::new("/data"), Path::new("/data/workspace")),
+            "/work/workspace"
+        );
+    }
+
+    #[test]
+    fn la_huella_cambia_con_un_byte() {
+        assert_eq!(huella(b"uno"), huella(b"uno"));
+        assert_ne!(huella(b"uno"), huella(b"dos"));
     }
 
     /// El proveedor que no conozco se avisa antes de tocar la red: preferimos

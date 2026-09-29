@@ -76,6 +76,13 @@ El control plane no sabe de Tensorlake: le pide la máquina de una org a
 sandbox y el filesystem que monta— y lo crea si no está o lo despierta si está
 dormido. Sin fila, el trabajo corre acá y no hay nada que despertar.
 
+Esa fila elige dónde corre el turno, no dónde corren las herramientas:
+con sandbox, el worker va adentro y sus herramientas son las de allá. El
+trait `Machine` de axe queda para lo que el control plane tenga que leer o
+escribir del volumen de una org sin despertarla —la web—, con dos
+implementaciones: `Local` (este contenedor) y `Tensorlake` (su volumen por
+HTTP).
+
 El trabajo adentro de esa org lo hace una **máquina**: el volumen y el shell
 juntos, que es el trait `Machine` de axe (`read`, `write`, `list`, `remove`,
 `run`). El path que una herramienta lee es el mismo que ve un comando, así que
@@ -158,15 +165,20 @@ donde corresponde y no en la raíz del control plane.
 
 El entorno del worker es del turno, no del pool: viaja en `Sandbox::turn`
 junto con la conversación y el comando. Es lo que el worker necesita para
-reconstruirse del otro lado, y en un proveedor de verdad son los secretos con
-los que se levanta el sandbox.
+construirse del otro lado: su raíz, su workspace, el modelo y lo que el
+prompt necesita para armarse.
 
-La máquina de una org la resuelve el control plane, que es el que tiene la
-base: `Place` lleva el id de la org, `remote::ensure` la despierta antes de que
-el turno toque nada y el worker lo recibe en su entorno (`JIMMY_SANDBOX`). El
-worker no abre la base. Si el sandbox no contesta, el turno se frena y lo dice:
-nunca se cae al disco local por las dudas, que sería escribir lo de una org en
-el lugar de otra.
+El turno de una org **corre adentro de su sandbox**: el control plane le pide
+a `remote::ensure` que lo despierte, publica el agente en su volumen —el
+binario, los prompts y las skills, con la huella del binario como versión— y
+lanza el worker ahí por la API de procesos. Los archivos que el agente lee y
+escribe son los de su volumen, sin viajes por HTTP, y los eventos vuelven por
+el mismo protocolo de siempre: el control plane sigue escribiendo el log que
+mira la web. El worker no abre la base, y no hay dos lugares: su raíz adentro
+del sandbox es donde el volumen se monta (`/work`), así que `remote::al_sandbox`
+traduce el path que la org tiene acá por el de adentro. Si el sandbox no
+contesta, el turno se frena y lo dice: nunca se cae al disco local por las
+dudas, que sería escribir lo de una org en el lugar de otra.
 
 La agenda es de cada org y vive en la base, no en el workspace: el control
 plane la lee y la escribe sin despertar a nadie. El reloj es uno y cada vuelta
@@ -177,16 +189,25 @@ si el proceso se muere a mitad de un turno, el reclamo viejo se suelta solo.
 
 ## La imagen y el binario
 
-La imagen del sandbox queda congelada y sin jimmy adentro:
+El agente corre adentro del sandbox, así que **el binario tiene que estar ahí**.
+Hoy se publica en el volumen de la org: `<raíz>/.jimmy/<huella>/jimmy`, con los
+prompts y las skills al lado, una vez por versión —el nombre lleva la huella del
+binario, así que un cambio de código no puede quedar enmascarado por el viejo—.
+Cuesta unos segundos la primera vez de cada versión y nada después; el POC midió
+la subida de 11,9 MB en 1,07-8,34 s.
 
-`debian:bookworm-slim` + `git`, `curl`, `ca-certificates`, `python3`,
-`build-essential`.
+La otra forma es la imagen: `jimmy-min` ya se construye con el binario y los
+prompts adentro (`img-jimmy/Dockerfile`), y entonces publicar una versión es
+reconstruir la imagen y volver a crear los sandboxes (1,1 s, con el volumen
+intacto). Queda elegir; por ahora el volumen porque no hay builds en el medio.
 
-Así no hay que reconstruirla por un cambio de código, y sigue arrancando en
-los ~2 s medidos. El binario de jimmy **no** va al sandbox: el turno lo corre el
-control plane y sus herramientas le piden los archivos y los comandos a la
-máquina de la org. Sin binario adentro no hay versiones que publicar, ni
-symlink, ni A/B: actualizar el agente es desplegar el control plane.
+La imagen actual tiene lo mínimo — `debian:bookworm-slim` con `git`, `curl`,
+`ca-certificates`, `python3`, `jq` y `ripgrep` — y le falta lo que el agente usa
+todos los días: `node`, `bun`, `fd`, un compilador (Rust, Go, `build-essential`)
+y Chromium para el `browse`. Medido el 29-09 sobre `jimmy-min`: están `jq`,
+`rg`, `python3`, `git`, `curl` y el `jimmy` del POC (viejo); no están `fd`,
+`node`, `bun`, `gcc`, `make` ni `chromium`. Con el agente adentro, esa imagen es
+su entorno: lo que no esté ahí, el modelo no lo tiene.
 
 ## heimdall
 
@@ -238,7 +259,9 @@ sandbox, y el sandbox nunca ve las credenciales del control plane.
   sesiones. No salen de ahí.
 - **Del sandbox**: las del turno (`AXE_BASE`, `AXE_MODEL`, las `AXE_*`), su
   `JIMMY_ROOT` apuntando al FS de la org, su `HOME` y los secretos del
-  proyecto. Nada más.
+  proyecto. Nada más. Hoy la clave del modelo viaja con ellas, porque el worker
+  adentro llama al modelo directo: el proxy del control plane es el paso que lo
+  saca de ahí y el lugar donde caen los medidores.
 - **De heimdall al sandbox**: sólo `HEIMDALL_URL` y un token efímero de su org.
   El token de administración no entra.
 
@@ -302,14 +325,25 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    shell, y el `impl Machine` que los junta.
 5. **Hecho** — La compuerta: `el_bash_remoto_se_comporta_igual` corre el mismo
    comando por las dos vías y compara los textos.
-6. **Hecho** — El turno contra la máquina de la org: la fila de `machines` dice
-   dónde vive el trabajo, `remote::ensure` la despierta antes del turno y el
-   worker la recibe en su entorno. Sin fila, el trabajo corre acá.
-7. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
+6. **Hecho** — El turno adentro del sandbox: la fila de `machines` elige dónde
+   corre, `remote::ensure` lo despierta antes del turno, el agente se publica en
+   el volumen y el worker arranca ahí por la API de procesos. Los archivos que
+   toca son los suyos y la agenda corre igual que la web. Sin fila, el trabajo
+   corre acá.
+7. **La web leyendo el volumen**: el log lo sigue escribiendo el control plane,
+   pero los proyectos, los archivos y los adjuntos son del volumen. Necesita el
+   `Machine` de axe y, para el sidebar, el índice en la base.
+8. **Los adjuntos de los dos lados**: lo que el usuario sube tiene que llegar al
+   volumen, y lo que manda el asistente (`jimmy send`) tiene que poder la web
+   mostrarlo.
+9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
    CLI— y su fila en `machines`.
-8. El índice de proyectos y conversaciones en la base: listar por HTTP son
-   viajes de ~183 ms, así que el sidebar no se puede armar a fuerza de listados.
-9. heimdall por org y su UI.
-10. Cuotas, medidores y los dos planes.
-11. Los transports por org (Slack y Telegram con sus credenciales), los previews
+10. **La imagen del sandbox**: la del POC no tiene lo que el agente necesita
+    (node, bun, gcc, chromium) y sí tiene un jimmy viejo adentro. Y queda
+    decidir si el agente se publica por imagen o por volumen.
+11. **El proxy del modelo** en el control plane: la clave deja de viajar al
+    sandbox y ahí caen los medidores.
+12. heimdall por org y su UI.
+13. Cuotas, medidores y los dos planes.
+14. Los transports por org (Slack y Telegram con sus credenciales), los previews
     y los backups.

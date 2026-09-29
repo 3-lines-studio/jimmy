@@ -13,7 +13,9 @@ use std::time::Duration;
 
 const API: &str = "https://api.tensorlake.ai";
 const PROXY: &str = ".sandbox.tensorlake.ai";
-const MOUNT: &str = "/work";
+/// Dónde el sandbox monta el filesystem de la org: adentro, la raíz de la org
+/// es este punto.
+pub const MOUNT: &str = "/work";
 const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

@@ -37,6 +37,10 @@ pub trait Sandbox: Send + Sync {
     /// reconstruir el mismo agente del otro lado. En local son las variables
     /// con las que se lanza; en un proveedor de verdad, los secretos con los
     /// que se levanta el sandbox.
+    ///
+    /// El sandbox de la org, si el turno no corre en este proceso: el worker
+    /// arranca adentro, con su volumen montado, y los archivos que toca son los
+    /// suyos. En local es `None`.
     fn turn(
         &self,
         session: &Session,
@@ -44,6 +48,7 @@ pub trait Sandbox: Send + Sync {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
+        sandbox: Option<&str>,
     ) -> Result<Turn, String>;
 
     /// Interrumpe el turno de esa conversación, si hay uno corriendo.

@@ -5,27 +5,47 @@
 //! events out until one of them is terminal. Nothing survives a turn, so the
 //! pool is a record of what is running right now and never a pile of idle
 //! processes.
+//!
+//! Cuando la org tiene sandbox, el worker no es un proceso de acá: es uno
+//! adentro del sandbox, con su volumen montado, y el mismo protocolo viaja por
+//! la API de procesos. El turno cuenta igual —el comando entra y los eventos
+//! salen—, solo que del otro lado los archivos son los suyos.
 
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
 use crate::sandbox::{OnEvent, Sandbox, Turn};
+use crate::tensorlake::{Tensorlake, MOUNT};
 use crate::transport::Session;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command as Process, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const WORKER_SLOTS: usize = 64;
 static WORKER_PIDS: [AtomicI32; WORKER_SLOTS] = [const { AtomicI32::new(0) }; WORKER_SLOTS];
 
+/// El otro lado del pipe: un proceso de acá o uno del sandbox de la org.
+enum Destino {
+    Local {
+        stdin: Mutex<ChildStdin>,
+        child: Mutex<Child>,
+    },
+    Remoto {
+        cliente: Arc<Tensorlake>,
+        sandbox: String,
+        pid: i64,
+    },
+}
+
 struct Worker {
     key: String,
+    /// El pid de acá, que es el que vigila el reaper. Del otro lado es 0.
     pid: i32,
-    stdin: Mutex<ChildStdin>,
-    child: Mutex<Child>,
+    destino: Destino,
     events: Mutex<Receiver<Event>>,
 }
 
@@ -49,8 +69,9 @@ impl Pool {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
+        sandbox: Option<&str>,
     ) -> Result<Turn, String> {
-        let worker = self.spawn(session, conversation, env)?;
+        let worker = self.spawn(session, conversation, env, sandbox)?;
         let result = worker
             .send(&command)
             .and_then(|_| self.pump(&worker, on_event));
@@ -92,7 +113,18 @@ impl Pool {
         if !self.forget(&worker) {
             return;
         }
-        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+        match &worker.destino {
+            Destino::Local { .. } => {
+                unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+            }
+            Destino::Remoto {
+                cliente,
+                sandbox,
+                pid,
+            } => {
+                let _ = cliente.kill(sandbox, *pid);
+            }
+        }
         wait(&worker);
     }
 
@@ -107,13 +139,22 @@ impl Pool {
         session: &Session,
         conversation: &Conversation,
         env: &[(String, String)],
+        sandbox: Option<&str>,
+    ) -> Result<Arc<Worker>, String> {
+        match sandbox {
+            Some(sandbox) => self.spawn_remoto(session, conversation, env, sandbox),
+            None => self.spawn_local(session, conversation, env),
+        }
+    }
+
+    fn spawn_local(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
     ) -> Result<Arc<Worker>, String> {
         let key = session.key();
-        let exe = match &self.exe {
-            Some(exe) => exe.clone(),
-            None => std::env::current_exe().map_err(|e| e.to_string())?,
-        };
-        let mut process = Process::new(exe);
+        let mut process = Process::new(self.exe()?);
         process
             .arg("worker")
             .arg("--chat")
@@ -138,14 +179,72 @@ impl Pool {
         let worker = Arc::new(Worker {
             key: key.clone(),
             pid,
-            stdin: Mutex::new(stdin),
-            child: Mutex::new(child),
+            destino: Destino::Local {
+                stdin: Mutex::new(stdin),
+                child: Mutex::new(child),
+            },
             events: Mutex::new(receiver),
         });
         self.workers.lock().unwrap().insert(key, worker.clone());
 
         spawn_reader(stdout, sender);
         Ok(worker)
+    }
+
+    /// El worker de una org, adentro de su sandbox: el binario sale de su
+    /// volumen —publicado una vez por versión— y el proceso arranca con el
+    /// volumen montado, así que los archivos que toca son los suyos.
+    fn spawn_remoto(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+        sandbox: &str,
+    ) -> Result<Arc<Worker>, String> {
+        let key = session.key();
+        let cliente =
+            Arc::new(Tensorlake::from_env().ok_or("esta org necesita TENSORLAKE_API_KEY")?);
+        let binario = crate::remote::publicar(&cliente, sandbox, &self.exe()?)?;
+        let mut entorno: BTreeMap<String, String> = env.iter().cloned().collect();
+        entorno
+            .entry("PATH".into())
+            .or_insert("/usr/local/bin:/usr/bin:/bin".into());
+        entorno.entry("HOME".into()).or_insert("/root".into());
+        let pid = cliente.start(
+            sandbox,
+            &binario,
+            &[
+                "worker".to_string(),
+                "--chat".to_string(),
+                key.clone(),
+                "--cwd".to_string(),
+                conversation.cwd.display().to_string(),
+            ],
+            &entorno,
+            MOUNT,
+        )?;
+        let (sender, receiver) = mpsc::channel();
+        let worker = Arc::new(Worker {
+            key: key.clone(),
+            pid: 0,
+            destino: Destino::Remoto {
+                cliente: cliente.clone(),
+                sandbox: sandbox.to_string(),
+                pid,
+            },
+            events: Mutex::new(receiver),
+        });
+        self.workers.lock().unwrap().insert(key, worker.clone());
+
+        spawn_follower(cliente, sandbox.to_string(), pid, sender);
+        Ok(worker)
+    }
+
+    fn exe(&self) -> Result<PathBuf, String> {
+        match &self.exe {
+            Some(exe) => Ok(exe.clone()),
+            None => std::env::current_exe().map_err(|e| e.to_string()),
+        }
     }
 
     /// Lo que terminó su turno se saca del registro y se le pide que se vaya:
@@ -186,8 +285,9 @@ impl Sandbox for Pool {
         env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
+        sandbox: Option<&str>,
     ) -> Result<Turn, String> {
-        Pool::turn(self, session, conversation, env, command, on_event)
+        Pool::turn(self, session, conversation, env, command, on_event, sandbox)
     }
 
     fn cancel(&self, key: &str) {
@@ -217,13 +317,22 @@ impl Worker {
     fn send(&self, command: &Command) -> Result<(), String> {
         let mut line = serde_json::to_string(command).map_err(|e| e.to_string())?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().unwrap();
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("el worker terminó sin responder: {e}"))?;
-        stdin
-            .flush()
-            .map_err(|e| format!("el worker terminó sin responder: {e}"))
+        match &self.destino {
+            Destino::Local { stdin, .. } => {
+                let mut stdin = stdin.lock().unwrap();
+                stdin
+                    .write_all(line.as_bytes())
+                    .map_err(|e| format!("el worker terminó sin responder: {e}"))?;
+                stdin
+                    .flush()
+                    .map_err(|e| format!("el worker terminó sin responder: {e}"))
+            }
+            Destino::Remoto {
+                cliente,
+                sandbox,
+                pid,
+            } => cliente.write_stdin(sandbox, *pid, line.as_bytes()),
+        }
     }
 
     fn receive(&self) -> Result<Event, String> {
@@ -236,8 +345,21 @@ impl Worker {
 }
 
 fn wait(worker: &Worker) {
-    if let Ok(mut child) = worker.child.lock() {
-        let _ = child.wait();
+    match &worker.destino {
+        Destino::Local { child, .. } => {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.wait();
+            }
+        }
+        // Del otro lado el proceso se va con el shutdown; si se quedó colgado
+        // no se espera para siempre.
+        Destino::Remoto { .. } => {
+            let _ = worker
+                .events
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
     }
 }
 
@@ -247,14 +369,28 @@ fn spawn_reader(stdout: ChildStdout, sender: Sender<Event>) {
             let Ok(line) = line else {
                 break;
             };
-            let Ok(event) = serde_json::from_str::<Event>(&line) else {
-                continue;
-            };
-            if sender.send(event).is_err() {
+            if !send_line(&line, &sender) {
                 break;
             }
         }
     });
+}
+
+/// Del otro lado la salida llega por SSE, línea por línea, hasta que el proceso
+/// termina.
+fn spawn_follower(cliente: Arc<Tensorlake>, sandbox: String, pid: i64, sender: Sender<Event>) {
+    std::thread::spawn(move || {
+        let _ = cliente.follow(&sandbox, pid, &mut |line| {
+            send_line(line, &sender);
+        });
+    });
+}
+
+fn send_line(line: &str, sender: &Sender<Event>) -> bool {
+    let Ok(event) = serde_json::from_str::<Event>(line) else {
+        return true;
+    };
+    sender.send(event).is_ok()
 }
 
 fn register(pid: i32) {
@@ -366,7 +502,14 @@ done
         let conversation = conversation("../workspace");
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
+                .turn(
+                    &session,
+                    &conversation,
+                    &[],
+                    Command::Resume,
+                    &mut |_| {},
+                    None,
+                )
                 .unwrap()
             {
                 Turn::Answer(text) => {
@@ -399,7 +542,14 @@ done
         let mut pids = Vec::new();
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
+                .turn(
+                    &session,
+                    &conversation,
+                    &[],
+                    Command::Resume,
+                    &mut |_| {},
+                    None,
+                )
                 .unwrap()
             {
                 Turn::Answer(text) => pids.push(text),
@@ -433,8 +583,15 @@ done
         let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
-        pool.turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
-            .unwrap();
+        pool.turn(
+            &session,
+            &conversation,
+            &[],
+            Command::Resume,
+            &mut |_| {},
+            None,
+        )
+        .unwrap();
         assert!(left.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -457,9 +614,16 @@ done
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         let mut seen = false;
-        pool.turn(&session, &conversation, &[], Command::Resume, &mut |_| {
-            seen = pool.running("test");
-        })
+        pool.turn(
+            &session,
+            &conversation,
+            &[],
+            Command::Resume,
+            &mut |_| {
+                seen = pool.running("test");
+            },
+            None,
+        )
         .unwrap();
         assert!(seen);
         assert!(!pool.running("test"));
@@ -474,12 +638,161 @@ done
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         assert!(pool
-            .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
+            .turn(
+                &session,
+                &conversation,
+                &[],
+                Command::Resume,
+                &mut |_| {},
+                None
+            )
             .is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
         assert!(pool
-            .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
+            .turn(
+                &session,
+                &conversation,
+                &[],
+                Command::Resume,
+                &mut |_| {},
+                None
+            )
             .is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod remoto {
+    use super::*;
+    use crate::store::Store;
+    use crate::workspace::place;
+    use crate::Agent;
+
+    /// Baja el sandbox aunque la prueba falle a mitad: el plan de prueba deja
+    /// uno solo por vez.
+    struct Guardado(Arc<Tensorlake>, String);
+
+    impl Drop for Guardado {
+        fn drop(&mut self) {
+            let _ = self.0.terminate(&self.1);
+        }
+    }
+
+    /// El binario que va al sandbox: el release es el que se publica en serio,
+    /// así que la prueba lo prefiere si se lo señalan.
+    fn exe() -> PathBuf {
+        match crate::env("JIMMY_TEST_EXE") {
+            Some(path) => PathBuf::from(path),
+            None => std::env::current_exe().unwrap(),
+        }
+    }
+
+    /// La compuerta del turno adentro: el worker arranca en el sandbox de una
+    /// org, escribe su transcript y sus archivos en el volumen, y los eventos
+    /// vuelven. Habla con el modelo de verdad y crea recursos, así que corre a
+    /// mano:
+    ///
+    ///     cargo build --release
+    ///     heimdall run -p jimmy -c dev -- env JIMMY_TEST_EXE=/tmp/cargo-target/release/jimmy \
+    ///       cargo test --bin jimmy -- --ignored el_turno_corre_adentro --nocapture
+    #[test]
+    #[ignore]
+    fn el_turno_corre_adentro_del_sandbox() {
+        let base = std::env::temp_dir().join(format!("jimmy-adentro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
+
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store
+            .set_machine(&org.id, "tensorlake", "turno-adentro", "jimmy-org")
+            .unwrap();
+
+        let mut agent = Agent::new(
+            crate::env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
+            crate::env("AXE_MODEL").unwrap_or_else(|| "deepseek-flash".into()),
+            crate::env("OPENAI_API_KEY").expect("esta prueba habla con el modelo"),
+            crate::env("AXE_CONTEXT_WINDOW").and_then(|w| w.parse().ok()),
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.set_store(store.clone());
+        agent.use_worker_exe(exe());
+        let agent = agent.at(&place(&root, &workspace, &org));
+
+        let session = Session::channel("adentro-del-sandbox");
+        let chat = root.join("chats/adentro-del-sandbox");
+        let primero = std::time::Instant::now();
+        let respuesta = agent
+            .run_task(
+                &crate::transport::Null,
+                &session,
+                "Escribí el archivo hola.txt con la palabra hola en el directorio actual \
+                 (con una ruta relativa) y contestá listo.",
+                true,
+            )
+            .expect("el turno adentro del sandbox");
+        let frio = primero.elapsed();
+        assert!(
+            !respuesta.trim().is_empty(),
+            "no hubo respuesta: {respuesta:?}"
+        );
+
+        // El segundo turno aprovecha el sandbox despierto y el binario ya
+        // publicado: es el tiempo que importa, y de paso comprueba que el
+        // transcript del volumen es el que el worker lee para seguir.
+        let segundo = std::time::Instant::now();
+        let otra = agent
+            .run_task(
+                &crate::transport::Null,
+                &session,
+                "¿Qué archivo escribiste recién? Contestá con el nombre y nada más.",
+                true,
+            )
+            .expect("el segundo turno");
+        let caliente = segundo.elapsed();
+        eprintln!("turno frío: {frio:?} · turno caliente: {caliente:?} · dijo: {otra:?}");
+        assert!(otra.contains("hola.txt"), "no siguió el hilo: {otra:?}");
+
+        let cliente = Arc::new(Tensorlake::from_env().unwrap());
+        let sandbox = cliente
+            .find("turno-adentro")
+            .unwrap()
+            .expect("el sandbox quedó de la corrida");
+        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
+
+        let transcript = cliente
+            .read_file(
+                "turno-adentro",
+                &format!("{MOUNT}/chats/adentro-del-sandbox/transcript.jsonl"),
+            )
+            .expect("el transcript está en el volumen");
+        assert!(
+            String::from_utf8_lossy(&transcript).contains("hola.txt"),
+            "el transcript no es de este turno: {}",
+            String::from_utf8_lossy(&transcript)
+        );
+        let escrito = cliente
+            .read_file("turno-adentro", &format!("{MOUNT}/workspace/hola.txt"))
+            .expect("el archivo que escribió el modelo está en el volumen");
+        assert!(
+            String::from_utf8_lossy(&escrito).contains("hola"),
+            "{escrito:?}"
+        );
+
+        assert!(
+            !chat.join("transcript.jsonl").exists(),
+            "el transcript quedó de este lado"
+        );
+        assert!(
+            !workspace.join("hola.txt").exists(),
+            "el archivo del modelo quedó de este lado"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

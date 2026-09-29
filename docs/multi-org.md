@@ -27,9 +27,9 @@ dos (ver heimdall, más abajo).
 
 ## Tablas
 
-Toda tabla arranca igual, sin excepciones: `id` (la clave interna, que nunca
-sale del control plane), `ulid` (lo que se expone), `created_at`, `updated_at`
-y `deleted_at`. La baja es lógica: una fila que se fue queda con `deleted_at` y
+Toda tabla arranca igual, sin excepciones: el `ulid` como clave primaria --es el
+único identificador, no hay un id entero al lado--, `created_at`, `updated_at` y
+`deleted_at`. La baja es lógica: una fila que se fue queda con `deleted_at` y
 las consultas filtran. Una tabla nueva que no cumpla esto rompe el test que lo
 exige en `src/store.rs`.
 

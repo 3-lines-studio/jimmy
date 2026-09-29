@@ -4,9 +4,10 @@
 //! Es SQLite en el volumen, con el esquema armado al abrir y sin migraciones,
 //! igual que heimdall. Un solo proceso escribe, así que un mutex alcanza.
 //!
-//! Cada usuario y cada org se identifican con un ulid, que no se deriva de
-//! nada: el mail de una persona no tiene por qué estar en el identificador de
-//! su org.
+//! Toda tabla lleva el mismo encabezado: el `ulid` como clave, `created_at`,
+//! `updated_at` y `deleted_at`. La baja es lógica: la fila queda con
+//! `deleted_at` y las consultas filtran. El ulid no se deriva de nada: el mail
+//! de una persona no tiene por qué estar en el identificador de su org.
 
 use crate::ulid;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -17,8 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SCHEMA: &str = "
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    ulid TEXT NOT NULL UNIQUE,
+    ulid TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
@@ -26,19 +26,17 @@ CREATE TABLE IF NOT EXISTS users (
     deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS orgs (
-    id INTEGER PRIMARY KEY,
-    ulid TEXT NOT NULL UNIQUE,
+    ulid TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    personal_of INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    personal_of TEXT UNIQUE REFERENCES users(ulid) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS memberships (
-    id INTEGER PRIMARY KEY,
-    ulid TEXT NOT NULL UNIQUE,
-    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ulid TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(ulid) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(ulid) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -46,10 +44,9 @@ CREATE TABLE IF NOT EXISTS memberships (
     UNIQUE (org_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY,
-    ulid TEXT NOT NULL UNIQUE,
+    ulid TEXT PRIMARY KEY,
     token TEXT NOT NULL UNIQUE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(ulid) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER,
@@ -60,7 +57,6 @@ CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions (user_id);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct User {
-    pub id: i64,
     pub ulid: String,
     pub email: String,
     pub name: String,
@@ -68,7 +64,6 @@ pub struct User {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Org {
-    pub id: i64,
     pub ulid: String,
     pub name: String,
 }
@@ -127,44 +122,42 @@ impl Store {
         // mismo mail, ni una cuenta que no pueda volver.
         tx.execute(
             "UPDATE users SET deleted_at = NULL, updated_at = ?1
-             WHERE id = ?2 AND deleted_at IS NOT NULL",
-            params![now(), user.id],
+             WHERE ulid = ?2 AND deleted_at IS NOT NULL",
+            params![now(), user.ulid],
         )
         .map_err(|e| e.to_string())?;
-        let org = match personal_org(&tx, user.id)? {
+        let org = match personal_org(&tx, &user.ulid)? {
             Some(org) => org,
             None => {
                 let org = Org {
-                    id: 0,
                     ulid: ulid::new(),
                     name: personal_name(&email),
                 };
                 tx.execute(
                     "INSERT INTO orgs (ulid, name, personal_of, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?4)",
-                    params![org.ulid, org.name, user.id, now()],
+                    params![org.ulid, org.name, user.ulid, now()],
                 )
                 .map_err(|e| e.to_string())?;
-                let id = tx.last_insert_rowid();
                 tx.execute(
                     "INSERT INTO memberships (ulid, org_id, user_id, role, created_at, updated_at)
                      VALUES (?1, ?2, ?3, 'owner', ?4, ?4)",
-                    params![ulid::new(), id, user.id, now()],
+                    params![ulid::new(), org.ulid, user.ulid, now()],
                 )
                 .map_err(|e| e.to_string())?;
-                Org { id, ..org }
+                org
             }
         };
         tx.commit().map_err(|e| e.to_string())?;
         Ok((user, org))
     }
 
-    pub fn open_session(&self, token: &str, user_id: i64, expires_at: i64) -> Result<(), String> {
+    pub fn open_session(&self, token: &str, user: &str, expires_at: i64) -> Result<(), String> {
         let db = self.db.lock().unwrap();
         db.execute(
             "INSERT INTO sessions (ulid, token, user_id, created_at, updated_at, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-            params![ulid::new(), token, user_id, now(), expires_at],
+            params![ulid::new(), token, user, now(), expires_at],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -202,24 +195,22 @@ impl Store {
 
 fn read_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
     Ok(User {
-        id: row.get(0)?,
-        ulid: row.get(1)?,
-        email: row.get(2)?,
-        name: row.get(3)?,
+        ulid: row.get(0)?,
+        email: row.get(1)?,
+        name: row.get(2)?,
     })
 }
 
 fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
     Ok(Org {
-        id: row.get(0)?,
-        ulid: row.get(1)?,
-        name: row.get(2)?,
+        ulid: row.get(0)?,
+        name: row.get(1)?,
     })
 }
 
 fn user_by_email(db: &Connection, email: &str) -> Result<Option<User>, String> {
     db.query_row(
-        "SELECT id, ulid, email, name FROM users WHERE email = ?1",
+        "SELECT ulid, email, name FROM users WHERE email = ?1",
         params![email],
         read_user,
     )
@@ -230,8 +221,8 @@ fn user_by_email(db: &Connection, email: &str) -> Result<Option<User>, String> {
 /// La sesión de alguien que ya no está no sirve, aunque siga viva.
 fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String> {
     db.query_row(
-        "SELECT users.id, users.ulid, users.email, users.name FROM users
-         JOIN sessions ON sessions.user_id = users.id
+        "SELECT users.ulid, users.email, users.name FROM users
+         JOIN sessions ON sessions.user_id = users.ulid
          WHERE sessions.token = ?1 AND sessions.expires_at > ?2
            AND sessions.deleted_at IS NULL
            AND users.deleted_at IS NULL",
@@ -242,10 +233,10 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
     .map_err(|e| e.to_string())
 }
 
-fn personal_org(db: &Connection, user_id: i64) -> Result<Option<Org>, String> {
+fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
     db.query_row(
-        "SELECT id, ulid, name FROM orgs WHERE personal_of = ?1",
-        params![user_id],
+        "SELECT ulid, name FROM orgs WHERE personal_of = ?1",
+        params![user],
         read_org,
     )
     .optional()
@@ -262,7 +253,7 @@ mod tests {
         Store::open(&dir.join("jimmy.db")).unwrap()
     }
 
-    fn memberships(store: &Store) -> Vec<(i64, i64, String)> {
+    fn memberships(store: &Store) -> Vec<(String, String, String)> {
         let db = store.db.lock().unwrap();
         let mut statement = db
             .prepare("SELECT org_id, user_id, role FROM memberships ORDER BY org_id")
@@ -275,7 +266,7 @@ mod tests {
 
     fn orgs(store: &Store) -> Vec<String> {
         let db = store.db.lock().unwrap();
-        let mut statement = db.prepare("SELECT ulid FROM orgs ORDER BY id").unwrap();
+        let mut statement = db.prepare("SELECT ulid FROM orgs ORDER BY ulid").unwrap();
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
             .unwrap();
@@ -295,7 +286,7 @@ mod tests {
         assert_eq!(org.ulid.len(), 26);
         assert_eq!(
             memberships(&store),
-            vec![(org.id, first.id, "owner".into())]
+            vec![(org.ulid.clone(), first.ulid.clone(), "owner".into())]
         );
     }
 
@@ -315,15 +306,15 @@ mod tests {
     fn el_que_se_va_no_usa_su_sesion_y_vuelve_si_entra_de_nuevo() {
         let store = store("deleted");
         let (user, _) = store.register("don@berti.sh").unwrap();
-        store.open_session("viva", user.id, now() + 60).unwrap();
+        store.open_session("viva", &user.ulid, now() + 60).unwrap();
         assert!(store.session_user("viva").unwrap().is_some());
         store
             .db
             .lock()
             .unwrap()
             .execute(
-                "UPDATE users SET deleted_at = ?1 WHERE id = ?2",
-                params![now(), user.id],
+                "UPDATE users SET deleted_at = ?1 WHERE ulid = ?2",
+                params![now(), user.ulid],
             )
             .unwrap();
         assert_eq!(
@@ -344,32 +335,25 @@ mod tests {
         let store = store("stamps");
         store.register("don@berti.sh").unwrap();
         let db = store.db.lock().unwrap();
-        let (created, updated, deleted): (i64, i64, Option<i64>) = db
-            .query_row(
-                "SELECT created_at, updated_at, deleted_at FROM users",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        let (org_created, org_updated, org_deleted): (i64, i64, Option<i64>) = db
-            .query_row(
-                "SELECT created_at, updated_at, deleted_at FROM orgs",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(created, updated, "recién creado no se tocó");
-        assert_eq!(org_created, org_updated);
-        assert_eq!(deleted, None);
-        assert_eq!(org_deleted, None);
+        for table in ["users", "orgs"] {
+            let (created, updated, deleted): (i64, i64, Option<i64>) = db
+                .query_row(
+                    &format!("SELECT created_at, updated_at, deleted_at FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(created, updated, "recién creado no se tocó: {table}");
+            assert_eq!(deleted, None, "recién creado no se borró: {table}");
+        }
     }
 
     #[test]
     fn una_sesion_viva_dice_quien_es_y_una_vencida_no() {
         let store = store("sessions");
         let (user, _) = store.register("don@berti.sh").unwrap();
-        store.open_session("viva", user.id, now() + 60).unwrap();
-        store.open_session("vieja", user.id, now() - 1).unwrap();
+        store.open_session("viva", &user.ulid, now() + 60).unwrap();
+        store.open_session("vieja", &user.ulid, now() - 1).unwrap();
         assert_eq!(store.session_user("viva").unwrap(), Some(user.clone()));
         assert_eq!(store.session_user("vieja").unwrap(), None);
         assert_eq!(store.session_user("inventada").unwrap(), None);
@@ -401,12 +385,16 @@ mod tests {
                 .unwrap()
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap();
-            for column in ["id", "ulid", "created_at", "updated_at", "deleted_at"] {
+            for column in ["ulid", "created_at", "updated_at", "deleted_at"] {
                 assert!(
                     columns.contains(&column.to_string()),
                     "{table} no tiene {column}: {columns:?}"
                 );
             }
+            assert!(
+                !columns.contains(&"id".to_string()),
+                "{table} todavía tiene un id al lado del ulid: {columns:?}"
+            );
         }
     }
 
@@ -414,8 +402,8 @@ mod tests {
     fn las_sesiones_vencidas_se_limpian() {
         let store = store("expired");
         let (user, _) = store.register("don@berti.sh").unwrap();
-        store.open_session("viva", user.id, now() + 60).unwrap();
-        store.open_session("vieja", user.id, now() - 1).unwrap();
+        store.open_session("viva", &user.ulid, now() + 60).unwrap();
+        store.open_session("vieja", &user.ulid, now() - 1).unwrap();
         assert_eq!(store.forget_expired_sessions().unwrap(), 1);
         assert_eq!(store.session_user("viva").unwrap(), Some(user));
     }

@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn cerrar_la_sesion_la_borra() {
+    fn cerrar_la_sesion_la_deja_afuera() {
         let (auth, root) = auth("close", "bob@ejemplo.com");
         let session = auth.open_session("bob@ejemplo.com").unwrap();
         assert!(auth.user(&session).is_some());

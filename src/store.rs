@@ -35,17 +35,24 @@ CREATE TABLE IF NOT EXISTS orgs (
     deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS memberships (
+    id INTEGER PRIMARY KEY,
+    ulid TEXT NOT NULL UNIQUE,
     org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    PRIMARY KEY (org_id, user_id)
+    deleted_at INTEGER,
+    UNIQUE (org_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY,
+    ulid TEXT NOT NULL UNIQUE,
+    token TEXT NOT NULL UNIQUE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions (user_id);
@@ -140,9 +147,9 @@ impl Store {
                 .map_err(|e| e.to_string())?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
-                    "INSERT INTO memberships (org_id, user_id, role, created_at, updated_at)
-                     VALUES (?1, ?2, 'owner', ?3, ?3)",
-                    params![id, user.id, now()],
+                    "INSERT INTO memberships (ulid, org_id, user_id, role, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'owner', ?4, ?4)",
+                    params![ulid::new(), id, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
                 Org { id, ..org }
@@ -155,29 +162,34 @@ impl Store {
     pub fn open_session(&self, token: &str, user_id: i64, expires_at: i64) -> Result<(), String> {
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT OR REPLACE INTO sessions (token, user_id, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![token, user_id, now(), expires_at],
+            "INSERT INTO sessions (ulid, token, user_id, created_at, updated_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![ulid::new(), token, user_id, now(), expires_at],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Quién es el dueño de esa sesión, si sigue viva.
+    /// Quién es el dueño de esa sesión, si sigue viva y no la cerraron.
     pub fn session_user(&self, token: &str) -> Result<Option<User>, String> {
         let db = self.db.lock().unwrap();
         user_by_session(&db, token)
     }
 
+    /// Cerrar sesión es una baja, no un borrado: la fila queda como historial
+    /// hasta que venza, y ahí la limpia el barrido.
     pub fn close_session(&self, token: &str) -> Result<(), String> {
         let db = self.db.lock().unwrap();
-        db.execute("DELETE FROM sessions WHERE token = ?1", params![token])
-            .map_err(|e| e.to_string())?;
+        db.execute(
+            "UPDATE sessions SET deleted_at = ?1, updated_at = ?1
+             WHERE token = ?2 AND deleted_at IS NULL",
+            params![now(), token],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Las sesiones vencidas no resuelven, así que se limpian cuando se puede:
-    /// nadie las mira.
+    /// Las vencidas se borran de verdad: ya no son historial de nadie.
     pub fn forget_expired_sessions(&self) -> Result<usize, String> {
         let db = self.db.lock().unwrap();
         db.execute(
@@ -221,6 +233,7 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
         "SELECT users.id, users.ulid, users.email, users.name FROM users
          JOIN sessions ON sessions.user_id = users.id
          WHERE sessions.token = ?1 AND sessions.expires_at > ?2
+           AND sessions.deleted_at IS NULL
            AND users.deleted_at IS NULL",
         params![token, now()],
         read_user,
@@ -362,6 +375,39 @@ mod tests {
         assert_eq!(store.session_user("inventada").unwrap(), None);
         store.close_session("viva").unwrap();
         assert_eq!(store.session_user("viva").unwrap(), None);
+        let marcadas: i64 = store
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sessions WHERE token = 'viva' AND deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marcadas, 1, "cerrar la marca, no la borra");
+    }
+
+    /// La coherencia de las estructuras es una regla, no una costumbre: toda
+    /// tabla lleva las mismas marcas, y este test la sostiene.
+    #[test]
+    fn todas_las_tablas_tienen_las_mismas_marcas() {
+        let store = store("uniform");
+        let db = store.db.lock().unwrap();
+        for table in ["users", "orgs", "memberships", "sessions"] {
+            let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let columns: Vec<String> = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            for column in ["id", "ulid", "created_at", "updated_at", "deleted_at"] {
+                assert!(
+                    columns.contains(&column.to_string()),
+                    "{table} no tiene {column}: {columns:?}"
+                );
+            }
+        }
     }
 
     #[test]

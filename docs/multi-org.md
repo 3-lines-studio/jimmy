@@ -27,16 +27,21 @@ dos (ver heimdall, más abajo).
 
 ## Tablas
 
-| Tabla | Qué guarda |
+Toda tabla arranca igual, sin excepciones: `id` (la clave interna, que nunca
+sale del control plane), `ulid` (lo que se expone), `created_at`, `updated_at`
+y `deleted_at`. La baja es lógica: una fila que se fue queda con `deleted_at` y
+las consultas filtran. Una tabla nueva que no cumpla esto rompe el test que lo
+exige en `src/store.rs`.
+
+| Tabla | Lo propio |
 | --- | --- |
-| `orgs` | `id`, `slug`, `name`, `plan`, `created_at` |
-| `users` | `id`, `email`, `name` |
-| `memberships` | `(org_id, user_id, role)`: un usuario está en varias orgs |
-| `projects` | `id`, `org_id`, `name`, `created_at` |
-| `conversations` | `id`, `org_id`, `project_id`, `title`, `created_by`, `last_turn_at`, `transport` |
-| `schedules` | `id`, `org_id`, `conversation_id`, `project_id`, `when`/`at`/`every`, `prompt`, `target`, `silent`, `paused` |
-| `sandboxes` | `id`, `org_id`, `provider`, `provider_id`, `snapshot_id`, `version`, `status`, `last_seen` |
-| `turns` | el evento de uso, una fila por turno (ver Métricas) |
+| `users` | `email`, `name` |
+| `orgs` | `name`, `personal_of` (el dueño, si es la org personal de alguien) |
+| `memberships` | `org_id`, `user_id`, `role`, únicos por par |
+| `sessions` | `token`, `user_id`, `expires_at` |
+
+Las que faltan —`projects`, `conversations`, `schedules`, `sandboxes` y
+`turns`— entran con los pasos 3 y 6, con el mismo encabezado.
 
 El transcript y el log de cada conversación no van acá: van al FS de la org,
 que es donde se producen y donde sobreviven a la suspensión del sandbox.

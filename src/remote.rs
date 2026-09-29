@@ -18,16 +18,6 @@ use std::sync::{Arc, Mutex};
 const BIN: &str = "/usr/local/bin";
 const SHARE: &str = "/usr/local/share/jimmy";
 
-/// Dónde deja el sandbox lo que el control plane se baja: adentro del volumen,
-/// porque lo que sale de un proceso se corta.
-const DIR: &str = ".jimmy";
-const ARBOL: &str = "arbol.txt";
-const TOPE: usize = 20000;
-
-/// Carpetas que no se copian: el árbol de un proyecto de código no es una
-/// lista, y lo que hay adentro no se explora desde la web.
-const PODA: [&str; 5] = ["node_modules", ".git", "target", ".venv", "__pycache__"];
-
 pub struct Remote {
     cliente: Arc<Tensorlake>,
     sandbox: String,
@@ -192,32 +182,11 @@ pub fn ensure(org: &str, store: &Store) -> Result<Option<SandboxInfo>, String> {
     Ok(Some(listo))
 }
 
-/// Copia a la base lo que la web va a leer sin despertar el sandbox: el índice
-/// de proyectos y conversaciones, y el árbol de archivos. El volumen sigue
-/// mandando; esto es una copia, y cada mitad se sincroniza por su cuenta para
-/// que el fallo de una no se lleve puesta a la otra.
+/// Copia a la base el índice de lo que hay en el volumen de la org: una sola
+/// operación, porque el que sabe leer el layout es el CLI que corre adentro.
+/// El control plane no abre el volumen para esto, y si el sandbox no contesta
+/// el índice se queda como estaba.
 pub fn sincronizar(
-    cliente: &Tensorlake,
-    sandbox: &str,
-    store: &Store,
-    org: &str,
-) -> Result<(), String> {
-    let mut problemas = Vec::new();
-    if let Err(error) = sincronizar_indice(cliente, sandbox, store, org) {
-        problemas.push(format!("índice: {error}"));
-    }
-    if let Err(error) = sincronizar_arbol(cliente, sandbox, store, org) {
-        problemas.push(format!("árbol: {error}"));
-    }
-    match problemas.is_empty() {
-        true => Ok(()),
-        false => Err(problemas.join(" · ")),
-    }
-}
-
-/// El índice de la org: una sola operación, porque el que sabe leer el layout
-/// es el CLI que corre adentro.
-fn sincronizar_indice(
     cliente: &Tensorlake,
     sandbox: &str,
     store: &Store,
@@ -249,78 +218,6 @@ fn sincronizar_indice(
         })
         .collect();
     store.sync_index(org, &proyectos)
-}
-
-/// El árbol del volumen: el `find` escribe en el propio volumen y de ahí se
-/// baja entero, porque la salida de un proceso se corta a 16 KB y un proyecto
-/// con sus carpetas no entra ahí.
-fn sincronizar_arbol(
-    cliente: &Tensorlake,
-    sandbox: &str,
-    store: &Store,
-    org: &str,
-) -> Result<(), String> {
-    cliente.run(sandbox, MOUNT, &find(), 300, &mut |_| {})?;
-    let bytes = cliente.read_file(sandbox, &format!("{MOUNT}/{DIR}/{ARBOL}"))?;
-    let texto = String::from_utf8_lossy(&bytes);
-    store.sync_tree(org, &entradas(&texto))
-}
-
-fn find() -> String {
-    let poda = PODA
-        .iter()
-        .map(|nombre| format!("-name {nombre} -o "))
-        .collect::<String>();
-    format!(
-        "mkdir -p {MOUNT}/{DIR} && find {MOUNT}/workspace {MOUNT}/chats -mindepth 1 \
-         \\( {poda}-false \\) -prune -o -printf '%p\\t%y\\t%s\\t%T@\\n' | head -n {TOPE} \
-         > {MOUNT}/{DIR}/{ARBOL}"
-    )
-}
-
-/// Las entradas del árbol, en el formato de `find -printf`: camino, tipo, tamaño
-/// y mtime separados por tabs. Cada camino cae en su lugar del volumen: un
-/// proyecto, el general o los adjuntos de una conversación.
-fn entradas(texto: &str) -> Vec<crate::store::TreeEntry> {
-    let prefijo = format!("{MOUNT}/");
-    texto
-        .lines()
-        .filter_map(|linea| {
-            let mut campos = linea.split('\t');
-            let camino = campos.next()?;
-            let tipo = campos.next()?;
-            let size = campos.next()?.parse::<u64>().unwrap_or(0);
-            let modified = campos.next()?.parse::<f64>().unwrap_or(0.0) as i64;
-            let rel = camino.strip_prefix(&prefijo)?;
-            let (space, resto) = lugar(rel)?;
-            let (parent, name) = resto.rsplit_once('/').unwrap_or(("", resto.as_str()));
-            if name.is_empty() || parent.starts_with(".jimmy") {
-                return None;
-            }
-            Some(crate::store::TreeEntry {
-                space,
-                parent: parent.to_string(),
-                name: name.to_string(),
-                directory: tipo == "d",
-                size,
-                modified,
-            })
-        })
-        .collect()
-}
-
-/// De qué parte del volumen es un camino, y qué queda debajo de esa raíz.
-fn lugar(rel: &str) -> Option<(String, String)> {
-    if let Some(resto) = rel.strip_prefix("workspace/projects/") {
-        let (proyecto, resto) = resto.split_once('/')?;
-        return Some((proyecto.to_string(), resto.to_string()));
-    }
-    if let Some(resto) = rel.strip_prefix("workspace/") {
-        return Some((crate::conversations::GENERAL.to_string(), resto.to_string()));
-    }
-    let resto = rel.strip_prefix("chats/")?;
-    let (clave, resto) = resto.split_once("/uploads/")?;
-    Some((format!("chats/{clave}/uploads"), resto.to_string()))
 }
 
 fn conversacion(json: &serde_json::Value) -> crate::store::IndexConversation {
@@ -386,47 +283,6 @@ impl Machine for Remote {
 mod tests {
     use super::*;
     use axe::machine::Local;
-
-    /// Los caminos del volumen caen en su lugar: un proyecto, el general o los
-    /// adjuntos de una conversación, y lo que no es de ninguno se deja afuera.
-    #[test]
-    fn los_caminos_del_volumen_se_ordenan_en_su_lugar() {
-        let texto = concat!(
-            "/work/workspace/notas\td\t4096\t10.5\n",
-            "/work/workspace/projects/ken\td\t4096\t10.5\n",
-            "/work/workspace/projects/ken/nota.md\tf\t5\t11.25\n",
-            "/work/workspace/projects/ken/sub/x.txt\tf\t2\t12\n",
-            "/work/chats/w1/uploads/foto.png\tf\t9\t13\n",
-            "/work/otra/cosa\tf\t1\t14\n",
-        );
-        let entradas = entradas(texto);
-        assert_eq!(entradas.len(), 4, "{entradas:?}");
-        assert!(entradas.iter().any(|entrada| entrada.space == "general"
-            && entrada.name == "notas"
-            && entrada.parent.is_empty()
-            && entrada.directory));
-        assert!(entradas.iter().any(|entrada| entrada.space == "ken"
-            && entrada.name == "nota.md"
-            && !entrada.directory
-            && entrada.size == 5
-            && entrada.modified == 11));
-        assert!(entradas.iter().any(|entrada| entrada.space == "ken"
-            && entrada.name == "x.txt"
-            && entrada.parent == "sub"));
-        assert!(entradas
-            .iter()
-            .any(|entrada| entrada.space == "chats/w1/uploads" && entrada.name == "foto.png"));
-        assert!(
-            !entradas.iter().any(|entrada| entrada.name == "cosa"),
-            "lo que no es del workspace ni de los adjuntos no entra"
-        );
-        assert!(
-            entradas
-                .iter()
-                .all(|entrada| entrada.name != "ken" || entrada.space != "ken"),
-            "la raíz de un proyecto no es una entrada"
-        );
-    }
 
     fn store(nombre: &str) -> Store {
         let dir =

@@ -62,15 +62,15 @@ archivos y no de un `WHERE org_id = ?` que se puede olvidar. La org que se qued�
 la raíz (la primera) usa el workspace de siempre; las demás arrancan con el
 suyo, vacío.
 
-`projects`, `conversations` y `entries` son la excepción, y son una **copia**: el
-FS sigue mandando, pero cuando el trabajo vive en un sandbox el control plane no
-puede leer su volumen sin despertarlo, y armar el sidebar a fuerza de listados son
-viajes de ~200 ms cada uno. La copia se sincroniza entera desde adentro después de
-cada turno: el índice con `jimmy conversations --json`, que arma la lista con el
-mismo código que la usa adentro, y el árbol con un `find` que deja el listado en el
-volumen —de ahí se baja entero, porque lo que sale de un proceso se corta a 16 KB—
-y poda lo que no se explora (`node_modules`, `.git`, `target`, `.venv`,
-`__pycache__`). La web la muestra sin tocar el sandbox.
+`projects` y `conversations` son la excepción, y son una **copia**: el FS sigue
+mandando, pero cuando el trabajo vive en un sandbox el control plane no puede
+leer su volumen sin despertarlo, y armar el sidebar a fuerza de listados son
+viajes de ~200 ms cada uno. El índice se sincroniza entero desde adentro —una
+sola operación, `jimmy conversations --json`, que arma la lista con el mismo
+código que la arma adentro— y la web la muestra sin tocar el sandbox. La lista
+es lo único que se copia: los archivos no, porque son miles y cambian todo el
+tiempo. El árbol y el contenido se le piden al sandbox cuando alguien los mira,
+y si está dormido se despierta, igual que para el browser.
 
 La base es SQLite en el volumen (`jimmy.db`), con el esquema armado al abrir y
 sin migraciones, igual que heimdall: un proceso escribe, la concurrencia es
@@ -345,12 +345,11 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    el volumen y el worker arranca ahí por la API de procesos. Los archivos que
    toca son los suyos y la agenda corre igual que la web. Sin fila, el trabajo
    corre acá.
-7. **A medias** — La web leyendo el volumen: la copia ya está en la base —el
-   índice de proyectos y conversaciones, y el árbol de archivos—, sincronizada
-   desde adentro en cada turno. Falta que la web la lea (el `Workspace` remoto,
-   con el `Machine` de axe para el contenido y la escritura) y que lo que escribe
-   lo escriba en el volumen, no en el disco del control plane. El log lo sigue
-   escribiendo el control plane.
+7. **A medias** — La web leyendo el volumen: el índice de la org ya está en la
+   base, sincronizado desde adentro en cada turno. Falta que los proyectos, los
+   archivos y los adjuntos se le pidan al sandbox en vivo —el `Machine` de axe,
+   que para eso lo despierta, como con el browser— y que lo que la web escribe lo
+   escriba en el volumen. El log lo sigue escribiendo el control plane.
 8. **Los adjuntos de los dos lados**: lo que el usuario sube tiene que llegar al
    volumen, y lo que manda el asistente (`jimmy send`) tiene que poder la web
    mostrarlo.

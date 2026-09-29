@@ -855,54 +855,21 @@ mod remoto {
             "el archivo del modelo quedó de este lado"
         );
 
-        // Un proyecto adentro del volumen, para que el árbol tenga qué ordenar.
-        cliente
-            .run(
-                "turno-adentro",
-                MOUNT,
-                "mkdir -p /work/workspace/projects/ken && echo hola > /work/workspace/projects/ken/nota.md",
-                60,
-                &mut |_| {},
-            )
-            .unwrap();
-
-        // El índice y el árbol: lo que la web muestra sin abrir el volumen.
+        // El índice: lo que la web muestra sin abrir el volumen.
         let antes = std::time::Instant::now();
         crate::remote::sincronizar(&cliente, "turno-adentro", &store, &org.id).unwrap();
         eprintln!("la copia: {:?}", antes.elapsed());
         let indice = store.index(&org.id).unwrap();
-        let charla = indice
+        assert_eq!(indice.len(), 1, "sólo el proyecto general: {indice:?}");
+        assert_eq!(indice[0].name, "general");
+        let charla = indice[0]
+            .conversations
             .iter()
-            .find(|proyecto| proyecto.name == "general")
-            .and_then(|proyecto| {
-                proyecto
-                    .conversations
-                    .iter()
-                    .find(|charla| charla.key == "adentro-del-sandbox")
-            })
+            .find(|charla| charla.key == "adentro-del-sandbox")
             .expect("la conversación está en el índice");
         assert!(
             charla.last.as_deref().unwrap_or_default().contains("hola"),
             "el índice no trae el último mensaje: {charla:?}"
-        );
-        assert!(
-            indice.iter().any(|proyecto| proyecto.name == "ken"),
-            "el proyecto que hay en el volumen entra al índice: {indice:?}"
-        );
-
-        // El árbol: los archivos que el modelo escribió adentro.
-        let general = store.tree(&org.id, "general", "").unwrap();
-        assert!(
-            general.iter().any(|entrada| entrada.name == "hola.txt"
-                && !entrada.directory
-                && entrada.size > 0),
-            "el árbol no trae el archivo del modelo: {general:?}"
-        );
-        assert!(
-            general
-                .iter()
-                .any(|entrada| entrada.name == "projects" && entrada.directory),
-            "el árbol no trae el proyecto del workspace: {general:?}"
         );
 
         let _ = std::fs::remove_dir_all(&base);

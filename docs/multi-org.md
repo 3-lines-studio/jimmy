@@ -110,6 +110,50 @@ token no cubre. Entonces:
   proyecto de su org) y resuelve los secretos con `heimdall run` adentro. Los
   valores nunca pasan por la DB del control plane.
 
+### El descriptor
+
+heimdall resuelve hoy por `project/env` y sus tokens matchean exacto o `*`
+(`covers`), sin comodines parciales: un token no puede cubrir "todos los
+proyectos de una org". Para la jerarquía del producto — org, proyecto dentro de
+la org, entorno — hay que agregarle un nivel arriba:
+
+- `secrets` y `tokens` pasan de `(project, env)` a `(org, project, env)`, que es
+  también la clave primaria.
+- `covers` se chequea por nivel, así un token `org=acme, project=*, env=dev`
+  alcanza para todo lo de esa org en dev.
+- La API v1 y la UI de heimdall suman el parámetro.
+
+Es un cambio transversal sobre un store que ya es propio (SQLite, ~2k líneas) y
+conviene hacerlo temprano, con un solo proyecto cargado y la migración barata.
+Mientras no esté, el proyecto de heimdall se llama igual que la org y no se
+nota.
+
+No hace falta un nivel *usuario* aparte: la org personal de cada uno es su
+scope, y quien está en varias orgs tiene un scope por org. Así el descriptor
+canónico queda `org/project/env` para todas.
+
+## Env vars
+
+Dos mundos que no se mezclan: el control plane nunca le pasa su entorno al
+sandbox, y el sandbox nunca ve las credenciales del control plane.
+
+- **Del control plane**: la base (`DATABASE_URL`), `HEIMDALL_URL` y el token de
+  administración, la API del proveedor de sandboxes, el mail y la clave de
+  sesiones. No salen de ahí.
+- **Del sandbox**: las del turno (`AXE_BASE`, `AXE_MODEL`, las `AXE_*`), su
+  `JIMMY_ROOT` apuntando al FS de la org, su `HOME` y los secretos del
+  proyecto. Nada más.
+- **De heimdall al sandbox**: sólo `HEIMDALL_URL` y un token efímero de su org.
+  El token de administración no entra.
+
+Hoy el worker hereda el entorno del proceso padre: `worker_env` en `agent.rs`
+agrega lo del turno y deja el resto. Con multi-org eso cambia a un spawn con el
+entorno vacío y sólo lo de la lista.
+
+Regla de nombres: las variables reservadas (`PATH`, `HOME`, `JIMMY_ROOT`, las
+`AXE_*`, las `HEIMDALL_*`) no se pueden pisar desde un secreto de usuario; el
+alta las rechaza.
+
 ## Métricas
 
 Se instrumentan desde el diseño, no después. Una fila por turno:
@@ -126,6 +170,10 @@ propio consumo (que es lo que factura). El adapter es el punto donde se juntan.
 
 Con eso salen solos los dos planes: el liviano y el power user se facturan con
 la misma tabla.
+
+El cobro es lo último y va por seat: primero se mide todo, y con la tabla llena
+se decide el precio. La cuota se agrega por `(org, user)`, que es la unidad que
+se cobra.
 
 ## Transports
 

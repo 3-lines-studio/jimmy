@@ -22,6 +22,8 @@ mod sandbox;
 mod schedule;
 mod skill;
 mod store;
+#[allow(dead_code)]
+mod tensorlake;
 mod tools;
 mod transport;
 mod ulid;

@@ -114,6 +114,27 @@ Dos implementaciones:
 El agente no cambia: cambia el transporte del pipe. Eso permite arrancar con
 `Local` (comportamiento idéntico al actual) y mudar sin big bang.
 
+## Cómo se le habla a Tensorlake
+
+El control plane no usa el SDK: habla la API con HTTP. Son dos hosts y no hacen
+falta dependencias nuevas (`ureq` ya estaba en el árbol; el crate `tensorlake`
+arrastra Docker, PNG, Rayon y DES para dos endpoints).
+
+- **Ciclo de vida**, en `api.tensorlake.ai/v1/namespaces/default/sandboxes`:
+  `POST` crea el sandbox **y monta el filesystem de la org en el mismo pedido**;
+  `GET` lista, `DELETE` termina, `POST /<id>/suspend` y `/resume` lo duermen y
+  lo despiertan.
+- **El sandbox**, en `<nombre>.sandbox.tensorlake.ai/api/v1`: `POST /processes`
+  lanza el worker con la entrada por pipe y la salida guardada,
+  `POST /processes/<pid>/stdin` le manda un comando, `GET
+  /processes/<pid>/stdout/follow` devuelve los eventos por SSE y
+  `DELETE /processes/<pid>` lo baja.
+
+Medido: cada evento del stream llega con **61-70 ms** de retraso desde Railway,
+que es el mismo camino que recorre un turno local. El `follow_output` del SDK de
+Python, en cambio, entrega todo junto al final: por eso el adapter no lo usa.
+
+
 ## Un sandbox por org
 
 No por usuario: el workspace es de la org y dos personas de la misma empresa

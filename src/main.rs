@@ -18,6 +18,8 @@ mod prompt;
 mod protocol;
 mod random;
 mod reap;
+#[allow(dead_code)]
+mod remote;
 mod sandbox;
 mod schedule;
 mod skill;

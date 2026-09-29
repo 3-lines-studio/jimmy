@@ -61,15 +61,28 @@ struct Salida {
 const MAX_OUTPUT: usize = 16 * 1024;
 const POLL: Duration = Duration::from_millis(250);
 
-/// El texto que ve el modelo: la salida, cortada a lo último si es larga, con
-/// el motivo del cierre al final. Es el mismo contrato que la máquina local.
-fn cerrar(lineas: &[String], timeout: Option<u64>, exit_code: Option<i32>) -> String {
+/// El texto que ve el modelo: la salida, cortada a lo último si es larga.
+///
+/// La API devuelve la salida partida en líneas, así que el salto final se
+/// normaliza: un comando que no lo escribió igual termina en uno.
+fn texto(lineas: &[String]) -> String {
+    if lineas.is_empty() {
+        return String::new();
+    }
     let mut texto = lineas.join("\n");
+    texto.push('\n');
     if texto.len() > MAX_OUTPUT {
         let bytes = texto.as_bytes();
         texto = String::from_utf8_lossy(&bytes[bytes.len() - MAX_OUTPUT..]).into_owned();
-        texto.push_str("\n\n[Output truncated to the last 16KB.]");
+        texto.push_str("\n[Output truncated to the last 16KB.]");
     }
+    texto
+}
+
+/// El mismo texto, con el motivo del cierre al final. Es el contrato de la
+/// máquina local.
+fn cerrar(lineas: &[String], timeout: Option<u64>, exit_code: Option<i32>) -> String {
+    let mut texto = texto(lineas);
     let motivo = match (timeout, exit_code) {
         (Some(segundos), _) => Some(format!("error: command timed out after {segundos} seconds")),
         (None, Some(codigo)) if codigo != 0 => Some(format!("error: exit status {codigo}")),
@@ -367,9 +380,10 @@ impl Tensorlake {
         response.into_json().map_err(|e| e.to_string())
     }
 
-    /// Lo que un proceso lleva escrito, partido en líneas y desde el principio.
+    /// Lo que un proceso lleva escrito, partido en líneas y desde el
+    /// principio: stdout y stderr ya mezclados, como los ve la máquina local.
     fn lines(&self, sandbox: &str, pid: i64) -> Result<Vec<String>, String> {
-        let url = format!("{}/processes/{pid}/stdout", self.proxy(sandbox));
+        let url = format!("{}/processes/{pid}/output", self.proxy(sandbox));
         let response = self.finish(self.auth(ureq::get(&url)).call())?;
         let salida: Salida = response.into_json().map_err(|e| e.to_string())?;
         Ok(salida.lines)
@@ -378,23 +392,18 @@ impl Tensorlake {
     /// Corre un comando en el sandbox y devuelve lo que el modelo tiene que
     /// leer, con el mismo contrato que la máquina local: la salida, el estado
     /// de salida y el corte por timeout ya adentro del texto.
-    ///
-    /// El proceso del sandbox guarda sólo su stdout, así que el comando va
-    /// adentro de un grupo con el stderr redirigido, que es lo que la máquina
-    /// local consigue abriendo el mismo archivo para los dos.
     pub fn run(
         &self,
         sandbox: &str,
         dir: &str,
         command: &str,
         timeout: u64,
-        on_line: &mut dyn FnMut(&str),
+        progress: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
-        let script = format!("{{ {command} ; }} 2>&1");
         let pid = self.start(
             sandbox,
             "/bin/bash",
-            &["-c".into(), script],
+            &["-c".into(), command.to_string()],
             &BTreeMap::new(),
             dir,
         )?;
@@ -402,10 +411,10 @@ impl Tensorlake {
         let mut vistas = 0usize;
         loop {
             let lineas = self.lines(sandbox, pid)?;
-            for linea in &lineas[vistas.min(lineas.len())..] {
-                on_line(linea);
+            if lineas.len() > vistas {
+                vistas = lineas.len();
+                progress(&texto(&lineas));
             }
-            vistas = vistas.max(lineas.len());
             let estado = self.process(sandbox, pid)?;
             if estado.status != "running" {
                 let mut texto = cerrar(&lineas, None, estado.exit_code);
@@ -542,11 +551,11 @@ mod tests {
                 "/work",
                 "echo hola; echo al error >&2",
                 30,
-                &mut |linea| visto.push(linea.to_string()),
+                &mut |parcial| visto.push(parcial.to_string()),
             )
             .unwrap();
         assert_eq!(salida, "hola\nal error");
-        assert_eq!(visto, vec!["hola", "al error"], "el progreso llega");
+        assert_eq!(visto.last().map(String::as_str), Some("hola\nal error"));
 
         let falla = credencial
             .run(&name, "/work", "exit 7", 30, &mut |_| {})

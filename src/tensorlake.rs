@@ -42,6 +42,48 @@ struct Started {
     pid: i64,
 }
 
+/// Cómo va un proceso: si sigue vivo, cómo salió y por qué señal.
+#[derive(Deserialize)]
+struct Estado {
+    status: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    signal: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct Salida {
+    #[serde(default)]
+    lines: Vec<String>,
+}
+
+const MAX_OUTPUT: usize = 16 * 1024;
+const POLL: Duration = Duration::from_millis(250);
+
+/// El texto que ve el modelo: la salida, cortada a lo último si es larga, con
+/// el motivo del cierre al final. Es el mismo contrato que la máquina local.
+fn cerrar(lineas: &[String], timeout: Option<u64>, exit_code: Option<i32>) -> String {
+    let mut texto = lineas.join("\n");
+    if texto.len() > MAX_OUTPUT {
+        let bytes = texto.as_bytes();
+        texto = String::from_utf8_lossy(&bytes[bytes.len() - MAX_OUTPUT..]).into_owned();
+        texto.push_str("\n\n[Output truncated to the last 16KB.]");
+    }
+    let motivo = match (timeout, exit_code) {
+        (Some(segundos), _) => Some(format!("error: command timed out after {segundos} seconds")),
+        (None, Some(codigo)) if codigo != 0 => Some(format!("error: exit status {codigo}")),
+        _ => None,
+    };
+    if let Some(motivo) = motivo {
+        if !texto.is_empty() && !texto.ends_with('\n') {
+            texto.push('\n');
+        }
+        texto.push_str(&motivo);
+    }
+    texto
+}
+
 /// Un evento de la salida de un proceso del sandbox. `line` viene como el
 /// proceso la escribió, sin el `\n`.
 #[derive(Deserialize)]
@@ -317,6 +359,69 @@ impl Tensorlake {
         self.finish(self.auth(ureq::delete(&url)).call())?;
         Ok(())
     }
+
+    /// Cómo va un proceso: si sigue vivo y cómo salió.
+    fn process(&self, sandbox: &str, pid: i64) -> Result<Estado, String> {
+        let url = format!("{}/processes/{pid}", self.proxy(sandbox));
+        let response = self.finish(self.auth(ureq::get(&url)).call())?;
+        response.into_json().map_err(|e| e.to_string())
+    }
+
+    /// Lo que un proceso lleva escrito, partido en líneas y desde el principio.
+    fn lines(&self, sandbox: &str, pid: i64) -> Result<Vec<String>, String> {
+        let url = format!("{}/processes/{pid}/stdout", self.proxy(sandbox));
+        let response = self.finish(self.auth(ureq::get(&url)).call())?;
+        let salida: Salida = response.into_json().map_err(|e| e.to_string())?;
+        Ok(salida.lines)
+    }
+
+    /// Corre un comando en el sandbox y devuelve lo que el modelo tiene que
+    /// leer, con el mismo contrato que la máquina local: la salida, el estado
+    /// de salida y el corte por timeout ya adentro del texto.
+    ///
+    /// El proceso del sandbox guarda sólo su stdout, así que el comando va
+    /// adentro de un grupo con el stderr redirigido, que es lo que la máquina
+    /// local consigue abriendo el mismo archivo para los dos.
+    pub fn run(
+        &self,
+        sandbox: &str,
+        dir: &str,
+        command: &str,
+        timeout: u64,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let script = format!("{{ {command} ; }} 2>&1");
+        let pid = self.start(
+            sandbox,
+            "/bin/bash",
+            &["-c".into(), script],
+            &BTreeMap::new(),
+            dir,
+        )?;
+        let arranque = std::time::Instant::now();
+        let mut vistas = 0usize;
+        loop {
+            let lineas = self.lines(sandbox, pid)?;
+            for linea in &lineas[vistas.min(lineas.len())..] {
+                on_line(linea);
+            }
+            vistas = vistas.max(lineas.len());
+            let estado = self.process(sandbox, pid)?;
+            if estado.status != "running" {
+                let mut texto = cerrar(&lineas, None, estado.exit_code);
+                if let Some(signal) = estado.signal {
+                    texto.push_str(&format!("\nerror: signal: {signal}"));
+                }
+                return Ok(texto);
+            }
+            if arranque.elapsed() >= Duration::from_secs(timeout) {
+                let _ = self.kill(sandbox, pid);
+                let texto = cerrar(&lineas, Some(timeout), None);
+                return Ok(texto);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +513,53 @@ mod tests {
 
         credencial.remove_file(&name, path).unwrap();
         assert!(credencial.read_file(&name, path).is_err());
+
+        credencial.terminate(&creado.id).unwrap();
+    }
+
+    /// El shell de una org por la API, con el contrato de la máquina local: la
+    /// salida, el estado de salida y el corte por timeout adentro del texto.
+    /// Crea recursos, así que corre a mano con la clave puesta:
+    ///
+    ///     heimdall run -p jimmy -c dev -- cargo test --bin jimmy -- --ignored el_shell_remoto
+    #[test]
+    #[ignore]
+    fn el_shell_remoto_contesta() {
+        let Some(credencial) = Tensorlake::from_env() else {
+            panic!("falta TENSORLAKE_API_KEY");
+        };
+        let name = format!("shell-{}", crate::random::hex(4));
+        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let creado = credencial
+            .create(&name, &image, "/work", "jimmy-org")
+            .unwrap();
+        assert_eq!(creado.status, "running", "{creado:?}");
+
+        let mut visto = Vec::new();
+        let salida = credencial
+            .run(
+                &name,
+                "/work",
+                "echo hola; echo al error >&2",
+                30,
+                &mut |linea| visto.push(linea.to_string()),
+            )
+            .unwrap();
+        assert_eq!(salida, "hola\nal error");
+        assert_eq!(visto, vec!["hola", "al error"], "el progreso llega");
+
+        let falla = credencial
+            .run(&name, "/work", "exit 7", 30, &mut |_| {})
+            .unwrap();
+        assert!(falla.contains("error: exit status 7"), "{falla}");
+
+        let colgado = credencial
+            .run(&name, "/work", "sleep 30", 2, &mut |_| {})
+            .unwrap();
+        assert!(
+            colgado.contains("error: command timed out after 2 seconds"),
+            "{colgado}"
+        );
 
         credencial.terminate(&creado.id).unwrap();
     }

@@ -87,6 +87,14 @@ pub trait Workspace: Send + Sync {
     fn delete_conversation(&self, key: &str) -> Result<(), String>;
 }
 
+/// Dónde trabaja una org: la raíz del control plane que le toca y el workspace
+/// adentro. Es todo lo que hace falta para correr un turno suyo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub root: PathBuf,
+    pub workspace: PathBuf,
+}
+
 /// El workspace del disco de siempre: la raíz del control plane y el workspace
 /// de la org que se está mirando.
 pub struct Local {
@@ -97,6 +105,13 @@ pub struct Local {
 impl Local {
     pub fn new(root: PathBuf, workspace: PathBuf) -> Local {
         Local { root, workspace }
+    }
+
+    pub fn place(&self) -> Place {
+        Place {
+            root: self.root.clone(),
+            workspace: self.workspace.clone(),
+        }
     }
 
     fn chat_dir(&self, key: &str) -> PathBuf {

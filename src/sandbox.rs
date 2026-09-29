@@ -33,10 +33,15 @@ pub trait Sandbox: Send + Sync {
     #[allow(dead_code)]
     fn ensure(&self, org: &str) -> Result<(), String>;
 
+    /// El entorno del turno, no del proceso: lo que el worker necesita para
+    /// reconstruir el mismo agente del otro lado. En local son las variables
+    /// con las que se lanza; en un proveedor de verdad, los secretos con los
+    /// que se levanta el sandbox.
     fn turn(
         &self,
         session: &Session,
         conversation: &Conversation,
+        env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
     ) -> Result<Turn, String>;

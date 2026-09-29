@@ -7,6 +7,7 @@ use crate::protocol::{self, Event};
 use crate::sandbox::{Sandbox, Turn};
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
+use crate::workspace::Place;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -56,10 +57,7 @@ impl Agent {
     ) -> Self {
         let cwd = workspace.clone();
         let context = runtime_context(&model, &base, &root, &workspace, &cwd);
-        let pool: Arc<dyn Sandbox> = Pool::new(
-            worker_env(&base, &model, &api_key, context_window, &root, &workspace),
-            None,
-        );
+        let pool: Arc<dyn Sandbox> = Pool::new(None);
         Self {
             base,
             model,
@@ -165,17 +163,38 @@ impl Agent {
     /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
-        self.pool = Pool::new(
-            worker_env(
-                &self.base,
-                &self.model,
-                &self.api_key,
-                self.context_window,
-                &self.root,
-                &self.workspace,
-            ),
-            Some(exe),
+        self.pool = Pool::new(Some(exe));
+    }
+
+    /// El mismo agente apuntado a otra org: mismo modelo, mismo pool y los
+    /// mismos candados (dos turnos de la misma conversación se siguen
+    /// esperando, y de orgs distintas también), otro lugar donde trabajar.
+    pub fn at(&self, place: &Place) -> Agent {
+        let mut agent = self.clone();
+        agent.root = place.root.clone();
+        agent.workspace = place.workspace.display().to_string();
+        agent.cwd = agent.workspace.clone();
+        agent.context = runtime_context(
+            &agent.model,
+            &agent.base,
+            &agent.root,
+            &agent.workspace,
+            &agent.cwd,
         );
+        agent
+    }
+
+    /// Con qué se reconstruye el worker del otro lado: la config del agente
+    /// más el lugar donde le toca correr.
+    fn worker_env(&self) -> Vec<(String, String)> {
+        worker_env(
+            &self.base,
+            &self.model,
+            &self.api_key,
+            self.context_window,
+            &self.root,
+            &self.workspace,
+        )
     }
 
     /// Hand the turn to this conversation's worker and relay what it answers.
@@ -267,9 +286,10 @@ impl Agent {
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
+        let env = self.worker_env();
         let turn = self
             .pool
-            .turn(session, &conversation, command, &mut |event| {
+            .turn(session, &conversation, &env, command, &mut |event| {
                 live.on(event);
                 self.bus.publish(&conversation.key, &log, event)
             });

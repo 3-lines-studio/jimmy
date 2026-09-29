@@ -636,8 +636,10 @@ fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     }
     let needle = request.param("q").unwrap_or_default();
+    let org = web.workspace(request);
     let results: Vec<serde_json::Value> = web
         .agent
+        .at(&org.place())
         .search(needle, 30)
         .into_iter()
         .map(|hit| {
@@ -665,7 +667,7 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
-    web.agent.cancel(&session, &user);
+    web.agent.at(&org.place()).cancel(&session, &user);
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
@@ -703,9 +705,9 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
 
-    let web = web.clone();
+    let agent = web.agent.at(&org.place());
     std::thread::spawn(move || {
-        if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
+        if let Err(error) = agent.respond(&Null, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
     });
@@ -1548,6 +1550,74 @@ done
         assert!(dirs[0].join("workspace/projects/empresa-uno").is_dir());
         assert!(!dirs[0].join("workspace/projects/ken").exists());
         assert!(server.workspace.join("projects/ken").is_dir());
+
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    /// Un turno corre donde vive su conversación: la segunda org tiene su
+    /// propia raíz y su propio workspace, y el worker tiene que ver esos.
+    #[test]
+    fn el_turno_de_una_org_corre_en_su_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let server = start("org-turn");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let created = post_with(
+            server.port,
+            "/api/orgs",
+            r#"{"name":"La Empresa"}"#,
+            Some(&cookie),
+        );
+        assert!(created.starts_with("HTTP/1.1 200"), "{created}");
+
+        let script = server.root.parent().unwrap().join("worker.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+echo '{"event":"ready"}'
+while read -r line; do
+  case "$line" in *shutdown*) exit 0 ;; esac
+  echo "{\"event\":\"done\",\"text\":\"$JIMMY_ROOT|$JIMMY_WORKSPACE|$*\"}"
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let made = post_with(
+            server.port,
+            "/api/conversations",
+            r#"{"project":"general","title":"charla"}"#,
+            Some(&cookie),
+        );
+        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
+        let key = json_in(&made)["key"].as_str().unwrap().to_string();
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"hola"}}"#),
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
+
+        let org = std::fs::read_dir(server.root.join("orgs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let workspace = org.join("workspace");
+        let log = wait_for(&org, &key, "\"done\"");
+        assert!(
+            log.contains(&format!(
+                "{}|{}|worker --chat {} --cwd {}",
+                org.display(),
+                workspace.display(),
+                key,
+                workspace.display()
+            )),
+            "el turno no corrió en el workspace de la org: {log}"
+        );
 
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }

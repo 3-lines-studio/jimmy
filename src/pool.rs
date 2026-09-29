@@ -31,15 +31,13 @@ struct Worker {
 
 pub struct Pool {
     workers: Mutex<HashMap<String, Arc<Worker>>>,
-    env: Vec<(String, String)>,
     exe: Option<PathBuf>,
 }
 
 impl Pool {
-    pub fn new(env: Vec<(String, String)>, exe: Option<PathBuf>) -> Arc<Pool> {
+    pub fn new(exe: Option<PathBuf>) -> Arc<Pool> {
         Arc::new(Pool {
             workers: Mutex::new(HashMap::new()),
-            env,
             exe,
         })
     }
@@ -48,10 +46,11 @@ impl Pool {
         &self,
         session: &Session,
         conversation: &Conversation,
+        env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
     ) -> Result<Turn, String> {
-        let worker = self.spawn(session, conversation)?;
+        let worker = self.spawn(session, conversation, env)?;
         let result = worker
             .send(&command)
             .and_then(|_| self.pump(&worker, on_event));
@@ -103,7 +102,12 @@ impl Pool {
 
     /// Un proceso nuevo por turno: arranca en milisegundos y rearma su contexto
     /// desde el transcript, así que no hay nada que guardar entre turnos.
-    fn spawn(&self, session: &Session, conversation: &Conversation) -> Result<Arc<Worker>, String> {
+    fn spawn(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+    ) -> Result<Arc<Worker>, String> {
         let key = session.key();
         let exe = match &self.exe {
             Some(exe) => exe.clone(),
@@ -120,7 +124,7 @@ impl Pool {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        for (name, value) in &self.env {
+        for (name, value) in env {
             process.env(name, value);
         }
         let mut child = process
@@ -179,10 +183,11 @@ impl Sandbox for Pool {
         &self,
         session: &Session,
         conversation: &Conversation,
+        env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
     ) -> Result<Turn, String> {
-        Pool::turn(self, session, conversation, command, on_event)
+        Pool::turn(self, session, conversation, env, command, on_event)
     }
 
     fn cancel(&self, key: &str) {
@@ -335,7 +340,7 @@ mod tests {
 
     #[test]
     fn en_local_no_hay_nada_que_preparar_ni_dormir() {
-        let pool = Pool::new(Vec::new(), None);
+        let pool = Pool::new(None);
         for org in ["una-org", ""] {
             assert!(pool.ensure(org).is_ok(), "preparar no hace nada");
             assert!(pool.suspend(org).is_ok(), "dormir no hace nada");
@@ -356,12 +361,12 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
                 .unwrap()
             {
                 Turn::Answer(text) => {
@@ -388,13 +393,13 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         let mut pids = Vec::new();
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
                 .unwrap()
             {
                 Turn::Answer(text) => pids.push(text),
@@ -425,10 +430,10 @@ done
                 left.display()
             ),
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
-        pool.turn(&session, &conversation, Command::Resume, &mut |_| {})
+        pool.turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
             .unwrap();
         assert!(left.exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -448,11 +453,11 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         let mut seen = false;
-        pool.turn(&session, &conversation, Command::Resume, &mut |_| {
+        pool.turn(&session, &conversation, &[], Command::Resume, &mut |_| {
             seen = pool.running("test");
         })
         .unwrap();
@@ -465,15 +470,15 @@ done
     fn a_worker_that_dies_leaves_no_trace() {
         let dir = scratch("dead");
         let exe = script(&dir, "worker.sh", "exit 0\n");
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         assert!(pool
-            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
             .is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
         assert!(pool
-            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .turn(&session, &conversation, &[], Command::Resume, &mut |_| {})
             .is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }

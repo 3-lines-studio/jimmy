@@ -641,7 +641,6 @@ fn memo_command(args: &[String]) -> i32 {
     let workspace = workspace_from_env();
     let result = match args.first().map(String::as_str) {
         Some("sync") => memo::sync(&workspace),
-        Some("migrate") => memo::migrate(&workspace),
         Some("list") => Ok(memo::list(&workspace)),
         Some("render") => Ok(memo::render(
             &workspace,
@@ -662,7 +661,7 @@ fn memo_command(args: &[String]) -> i32 {
             key => memo::show(&workspace, key),
         },
         _ => Err(
-            "uso: jimmy memo <sync|migrate|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
+            "uso: jimmy memo <sync|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
                 .into(),
         ),
     };

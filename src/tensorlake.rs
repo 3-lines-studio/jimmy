@@ -8,7 +8,7 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 const API: &str = "https://api.tensorlake.ai";
@@ -47,6 +47,36 @@ struct Started {
 #[derive(Deserialize)]
 struct Output {
     line: String,
+}
+
+/// Una entrada de un directorio del filesystem de una org.
+#[derive(Deserialize)]
+struct FileEntry {
+    name: String,
+    #[serde(default)]
+    is_dir: bool,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Deserialize)]
+struct ListedFiles {
+    #[serde(default)]
+    entries: Vec<FileEntry>,
+}
+
+/// El path va en el query string, así que lo que no sea seguro se escapa.
+fn escapar(path: &str) -> String {
+    let mut out = String::new();
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 pub struct Tensorlake {
@@ -241,6 +271,52 @@ impl Tensorlake {
         self.finish(self.auth(ureq::post(&url)).send_json(body))?;
         Ok(())
     }
+
+    /// El archivo entero: la API no sabe de rangos, así que un pedazo lo pide
+    /// un comando de adentro o se corta acá.
+    pub fn read_file(&self, sandbox: &str, path: &str) -> Result<Vec<u8>, String> {
+        let url = format!("{}/files?path={}", self.proxy(sandbox), escapar(path));
+        let response = self.finish(self.auth(ureq::get(&url)).call())?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(bytes)
+    }
+
+    /// Escribe el archivo y sus directorios, si no están.
+    pub fn write_file(&self, sandbox: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        let url = format!("{}/files?path={}", self.proxy(sandbox), escapar(path));
+        let request = ureq::put(&url).set("Content-Type", "application/octet-stream");
+        self.finish(self.auth(request).send_bytes(bytes))?;
+        Ok(())
+    }
+
+    pub fn list_files(
+        &self,
+        sandbox: &str,
+        path: &str,
+    ) -> Result<Vec<axe::machine::Entry>, String> {
+        let url = format!("{}/files/list?path={}", self.proxy(sandbox), escapar(path));
+        let response = self.finish(self.auth(ureq::get(&url)).call())?;
+        let listed: ListedFiles = response.into_json().map_err(|e| e.to_string())?;
+        Ok(listed
+            .entries
+            .into_iter()
+            .map(|entry| axe::machine::Entry {
+                name: entry.name,
+                is_dir: entry.is_dir,
+                size: entry.size,
+            })
+            .collect())
+    }
+
+    pub fn remove_file(&self, sandbox: &str, path: &str) -> Result<(), String> {
+        let url = format!("{}/files?path={}", self.proxy(sandbox), escapar(path));
+        self.finish(self.auth(ureq::delete(&url)).call())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -301,5 +377,38 @@ mod tests {
         assert_eq!(visto, vec!["listo", "eco:uno", "eco:dos"], "{visto:?}");
 
         sandbox.terminate(&creado.id).unwrap();
+    }
+
+    /// Los archivos de una org por la API: escribir, leer, listar y borrar.
+    /// Crea recursos, así que corre a mano con la clave puesta:
+    ///
+    ///     heimdall run -p jimmy -c dev -- cargo test --bin jimmy -- --ignored el_filesystem_de_una_org
+    #[test]
+    #[ignore]
+    fn el_filesystem_de_una_org() {
+        let Some(credencial) = Tensorlake::from_env() else {
+            panic!("falta TENSORLAKE_API_KEY");
+        };
+        let name = format!("archivos-{}", crate::random::hex(4));
+        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let creado = credencial
+            .create(&name, &image, "/work", "jimmy-org")
+            .unwrap();
+        assert_eq!(creado.status, "running", "{creado:?}");
+
+        let path = "/work/notas/prueba.txt";
+        credencial.write_file(&name, path, b"hola\n").unwrap();
+        assert_eq!(credencial.read_file(&name, path).unwrap(), b"hola\n");
+
+        let entradas = credencial.list_files(&name, "/work/notas").unwrap();
+        assert_eq!(entradas.len(), 1, "{entradas:?}");
+        assert_eq!(entradas[0].name, "prueba.txt");
+        assert_eq!(entradas[0].size, 5);
+        assert!(!entradas[0].is_dir);
+
+        credencial.remove_file(&name, path).unwrap();
+        assert!(credencial.read_file(&name, path).is_err());
+
+        credencial.terminate(&creado.id).unwrap();
     }
 }

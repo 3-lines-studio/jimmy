@@ -867,7 +867,9 @@ mod remoto {
             .unwrap();
 
         // El índice y el árbol: lo que la web muestra sin abrir el volumen.
+        let antes = std::time::Instant::now();
         crate::remote::sincronizar(&cliente, "turno-adentro", &store, &org.id).unwrap();
+        eprintln!("la copia: {:?}", antes.elapsed());
         let indice = store.index(&org.id).unwrap();
         let charla = indice
             .iter()

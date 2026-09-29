@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "99eb97065891f277584de2597be74fdbdd2bb597" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "0c4f739935e83d381313bf23f18100dc162d0a4b" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

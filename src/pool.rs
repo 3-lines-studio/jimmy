@@ -207,9 +207,11 @@ impl Pool {
             Arc::new(Tensorlake::from_env().ok_or("esta org necesita TENSORLAKE_API_KEY")?);
         let binario = crate::remote::publicar(&cliente, listo, &self.exe()?)?;
         let mut entorno: BTreeMap<String, String> = env.iter().cloned().collect();
-        entorno
-            .entry("PATH".into())
-            .or_insert("/usr/local/bin:/usr/bin:/bin".into());
+        // El PATH de la imagen del entorno, con los shims de mise: sin esto el
+        // modelo no encuentra ni node, ni bun, ni cargo.
+        entorno.entry("PATH".into()).or_insert(
+            "/root/.local/share/mise/shims:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin".into(),
+        );
         entorno.entry("HOME".into()).or_insert("/root".into());
         let pid = cliente.start(
             sandbox,
@@ -765,6 +767,30 @@ mod remoto {
         assert!(donde.contains("/usr/local/bin/jimmy"), "{donde}");
         assert!(donde.contains("/usr/local/bin/browse"), "{donde}");
         assert!(donde.contains("browse"), "el CLI no ve las skills: {donde}");
+
+        // El entorno: lo que el agente usa para trabajar en los proyectos y lo
+        // que necesita su herramienta de navegar.
+        let entorno = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                "for c in node bun cargo go fd jq rg chromium ffmpeg python3; do \
+                   command -v $c > /dev/null || echo falta $c; done; \
+                 /opt/browse-venv/bin/python -c 'import playwright' && echo playwright ok; \
+                 browse goto https://example.com | head -3",
+                180,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(
+            !entorno.contains("falta "),
+            "el entorno no está completo: {entorno}"
+        );
+        assert!(entorno.contains("playwright ok"), "{entorno}");
+        assert!(
+            entorno.to_lowercase().contains("example"),
+            "browse no trajo la página: {entorno}"
+        );
         let instalado = cliente
             .read_file("turno-adentro", "/usr/local/bin/jimmy")
             .unwrap();

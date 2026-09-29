@@ -34,10 +34,11 @@ impl Remote {
     }
 }
 
-/// La imagen del sandbox: la del despliegue, no la de una org. Va sin jimmy
-/// adentro, así no hay que reconstruirla por un cambio de código.
-fn image() -> String {
-    crate::env("TENSORLAKE_IMAGE").unwrap_or_else(|| "jimmy-min".into())
+/// La imagen del sandbox: el entorno del agente, no una org. Va sin el agente
+/// adentro —el binario llega publicado, en la versión que corresponde— y se
+/// reconstruye sólo cuando cambia el entorno, no el código.
+pub(crate) fn image() -> String {
+    crate::env("TENSORLAKE_IMAGE").unwrap_or_else(|| "jimmy-entorno".into())
 }
 
 /// La huella del binario: es la versión del agente que corre adentro del
@@ -118,7 +119,7 @@ fn instalar(copia: &str) -> String {
          cp -a {copia}/bin/. {BIN}/; \
          cp -a {copia}/share/prompts/. {SHARE}/prompts/; \
          cp -a {copia}/share/skills/. {SHARE}/skills/; \
-         chmod 0755 {BIN}/jimmy"
+         chmod 0755 {BIN}/*"
     )
 }
 
@@ -338,7 +339,7 @@ mod tests {
         };
         let cliente = Arc::new(cliente);
         let name = format!("igual-{}", crate::random::hex(4));
-        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let image = image();
         let creado = cliente.create(&name, &image, "/work", "jimmy-org").unwrap();
         assert_eq!(creado.status, "running", "{creado:?}");
         let _guardado = Guardado(cliente.clone(), creado.id.clone());

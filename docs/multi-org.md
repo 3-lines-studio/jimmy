@@ -189,34 +189,30 @@ si el proceso se muere a mitad de un turno, el reclamo viejo se suelta solo.
 
 ## La imagen y el binario
 
-El agente corre adentro del sandbox, así que **ahí adentro tiene que estar el
-mismo agente**: el binario, los prompts, las skills y los CLIs que el modelo
-corre por bash (`browse`, `recall`, `stats`, `gen-image`), en los mismos paths
-que usa el control plane (`/usr/local/bin/jimmy`, `/usr/local/share/jimmy/...`).
-Así lo que el modelo corre por bash es el mismo agente que el que arma el turno,
-y no una copia vieja.
+Son dos cosas y cambian por motivos distintos.
 
-Hoy se publica desde el control plane: la copia queda en el volumen de la org
-(`/work/.jimmy/<huella>/`), una vez por versión —el nombre es la huella del
-binario, así que un cambio de código no puede quedar enmascarado por el viejo—,
-y cada sandbox nuevo la instala en su disco (un `cp -a`, medio segundo) al
-arrancar el primer turno. Cuesta unos segundos por org y versión: el POC midió
-la subida de 11,9 MB en 1,07-8,34 s.
+**El entorno** es la imagen del sandbox (`sandbox.dockerfile`, `make
+imagen-sandbox`): el sistema, las toolchains con las que el agente trabaja en
+los proyectos, y lo que necesitan sus herramientas —Chromium con su venv para
+`browse`, `ffmpeg`—. Es el mismo que el del control plane: `debian:bookworm-slim`
+con `git`, `curl`, `build-essential`, `chromium`, `ffmpeg`; `mise` con Rust,
+Go, Node, Bun, Python y las CLI (`jq`, `rg`, `fd`, `gh`, `golangci-lint`),
+heimdall, `bqx` y `pgx`; y `/opt/browse-venv` con playwright. Se construye con
+el SDK (una vez por cambio del entorno, ~1 GB de snapshot) y el sandbox la
+arranca en 5-13 s medidos.
 
-La otra forma es la imagen: `img-jimmy/Dockerfile` ya arma una con el binario y
-los prompts adentro, y entonces publicar una versión es reconstruirla (27 s
-medidos para la del POC) y volver a crear los sandboxes (1,1 s, con el volumen
-intacto). Queda elegir; hoy el volumen porque no hay builds en el medio y
-porque el agente entra en el sandbox sin depender de un paso de release.
+**El agente** —el binario, los prompts, las skills y los CLIs `browse`,
+`recall`, `stats` y `gen-image`— no va en la imagen: se publica desde el
+control plane y cada sandbox lo instala en su disco, en los paths de siempre
+(`/usr/local/bin/jimmy`, `/usr/local/share/jimmy/...`), la primera vez de cada
+sandbox. Así una versión nueva del código no obliga a reconstruir el entorno, y
+adentro hay un solo agente, el mismo que arma el turno.
 
-Lo que falta de cualquier manera es **el entorno**: la imagen del POC trae lo
-mínimo (`debian:bookworm-slim` con `git`, `curl`, `jq`, `ripgrep`, `python3`) y
-le falta lo que el agente usa todos los días — `node`, `bun`, `fd`, un
-compilador (Rust, Go, `build-essential`), Chromium con su venv para el `browse`,
-`ffmpeg` —. Medido el 29-09 sobre `jimmy-min`: están `jq`, `rg`, `python3`,
-`git`, `curl` y un `jimmy` viejo; no están `fd`, `node`, `bun`, `gcc`, `make`
-ni `chromium`. Con el agente adentro, esa imagen es su entorno: lo que no esté
-ahí, el modelo no lo tiene.
+La copia publicada vive en el volumen de la org (`/work/.jimmy/<huella>/`), con
+la huella del binario como nombre: no hay forma de que un turno corra con el
+binario de antes, y una instancia que no se acuerde de haber publicado lo
+vuelve a subir sin romper nada. Cuesta la primera vez —el POC midió 11,9 MB en
+1,07-8,34 s— y después cada sandbox nuevo paga sólo el `cp -a`.
 
 ## heimdall
 
@@ -347,9 +343,9 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    mostrarlo.
 9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
    CLI— y su fila en `machines`.
-10. **La imagen del sandbox**: el entorno del agente (toolchains, Chromium con
-    su venv, `ffmpeg`) y, con eso, decidir si el agente se publica por imagen o
-    se sigue instalando desde el volumen.
+10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`
+    con las toolchains, Chromium con su venv y `ffmpeg`, en una imagen que se
+    registra aparte del código. El agente sigue llegando publicado.
 11. **El proxy del modelo** en el control plane: la clave deja de viajar al
     sandbox y ahí caen los medidores.
 12. heimdall por org y su UI.

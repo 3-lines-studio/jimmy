@@ -482,7 +482,7 @@ mod tests {
         };
         let sandbox = Arc::new(sandbox);
         let name = format!("prueba-{}", crate::random::hex(4));
-        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let image = crate::remote::image();
 
         let creado = sandbox
             .create(&name, &image, "/work", "poc-workspace")
@@ -535,7 +535,7 @@ mod tests {
             panic!("falta TENSORLAKE_API_KEY");
         };
         let name = format!("archivos-{}", crate::random::hex(4));
-        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let image = crate::remote::image();
         let creado = credencial
             .create(&name, &image, "/work", "jimmy-org")
             .unwrap();
@@ -569,7 +569,7 @@ mod tests {
             panic!("falta TENSORLAKE_API_KEY");
         };
         let name = format!("shell-{}", crate::random::hex(4));
-        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let image = crate::remote::image();
         let creado = credencial
             .create(&name, &image, "/work", "jimmy-org")
             .unwrap();
@@ -614,7 +614,7 @@ mod tests {
             panic!("falta TENSORLAKE_API_KEY");
         };
         let name = format!("ensure-{}", crate::random::hex(4));
-        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+        let image = crate::remote::image();
 
         let creado = credencial.ensure(&name, &image, "jimmy-org").unwrap();
         assert_eq!(creado.status, "running", "{creado:?}");

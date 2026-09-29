@@ -30,15 +30,17 @@ dos (ver heimdall, más abajo).
 Toda tabla arranca igual, sin excepciones: el `id` --un ulid, opaco y ordenable
 por cuándo se creó--, `created_at`, `updated_at` y `deleted_at`. La columna del
 identificador se llama `id` en todas: el valor es un ulid, el rol es el de
-siempre. La baja es lógica: una fila que se fue queda con `deleted_at` y las
-consultas filtran. Una tabla nueva que no cumpla esto rompe el test que lo exige
-en `src/store.rs`, que además comprueba que el id sea de tipo texto y no un
-entero.
+siempre. Toda columna que guarda un id termina en `_id` y nombra lo que guarda
+(`org_id`, `user_id`, `personal_of_id`), así el nombre dice qué hay adentro sin
+que haya que ir a mirar la definición. La baja es lógica: una fila que se fue
+queda con `deleted_at` y las consultas filtran. Una tabla nueva que no cumpla
+esto rompe el test que lo exige en `src/store.rs`, que además comprueba que el
+id sea de tipo texto y no un entero.
 
 | Tabla | Lo propio |
 | --- | --- |
 | `users` | `email`, `name` |
-| `orgs` | `name`, `personal_of` (el dueño, si es la org personal de alguien) |
+| `orgs` | `name`, `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
 | `memberships` | `org_id`, `user_id`, `role`, únicos por par |
 | `sessions` | `token`, `user_id`, `expires_at` |
 

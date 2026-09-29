@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    personal_of TEXT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    personal_of_id TEXT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
@@ -135,7 +135,7 @@ impl Store {
                     name: personal_name(&email),
                 };
                 tx.execute(
-                    "INSERT INTO orgs (id, name, personal_of, created_at, updated_at)
+                    "INSERT INTO orgs (id, name, personal_of_id, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?4)",
                     params![org.id, org.name, user.id, now()],
                 )
@@ -236,7 +236,7 @@ fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String>
 
 fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
     db.query_row(
-        "SELECT id, name FROM orgs WHERE personal_of = ?1",
+        "SELECT id, name FROM orgs WHERE personal_of_id = ?1",
         params![user],
         read_org,
     )

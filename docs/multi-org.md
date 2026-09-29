@@ -71,17 +71,37 @@ la capa de datos tiene que estar sola en un módulo, que es como está.
 
 ## El adapter
 
-El control plane no sabe de Tensorlake: habla con un trait.
+El control plane no sabe de Tensorlake: habla con dos traits.
 
 ```rust
+/// El ciclo de vida: dónde vive una org.
 trait Sandbox {
     fn ensure(&self, org: &Org) -> Handle;              // crea o despierta
-    fn turn(&self, h: &Handle, req: Turn) -> Stream<Event>;
     fn suspend(&self, h: &Handle);
     fn destroy(&self, h: &Handle);
-    fn files(&self, h: &Handle) -> &dyn Workspace;      // lo que vive adentro
 }
+```
 
+Y el trabajo adentro de esa org lo hace una **máquina**: el volumen y el shell
+juntos, que es el trait `Machine` de axe (`read`, `write`, `list`, `remove`,
+`run`). El path que una herramienta lee es el mismo que ve un comando, así que
+vienen juntos y apuntarlos a lugares distintos no se puede ni escribir.
+
+Dos implementaciones:
+
+- `Local` — este contenedor, su filesystem y sus procesos: el pool de hoy.
+- `Tensorlake` — la API de sandboxes: los archivos por `/files`, los comandos
+  por `/processes`, y el `Local` de adentro (el bash) como primitivo para todo
+  lo que la API no sabe hacer, como leer un pedazo de un archivo grande.
+
+El agente corre en el control plane, con sus herramientas apuntadas a la máquina
+de la org: sin binario adentro del sandbox, sin versiones que publicar y sin los
+secretos del modelo de ese lado.
+
+El `Workspace` de la web, abajo, se apoya en la misma máquina: deja de saber si
+el volumen está de este lado o del otro.
+
+```rust
 /// El workspace de una org, sin decir dónde está: lo que hay adentro y lo que
 /// se puede hacer con eso. La web no arma caminos, pide nombres.
 trait Workspace {
@@ -104,15 +124,6 @@ trait Workspace {
     fn delete_conversation(&self, key: &str) -> Result<(), String>;
 }
 ```
-
-Dos implementaciones:
-
-- `Local` — procesos en el contenedor del control plane, que es el pool de hoy.
-- `Tensorlake` — la API de sandboxes, con el mismo protocolo JSONL de
-  `protocol.rs` viajando por el stream del `run`.
-
-El agente no cambia: cambia el transporte del pipe. Eso permite arrancar con
-`Local` (comportamiento idéntico al actual) y mudar sin big bang.
 
 ## Cómo se le habla a Tensorlake
 
@@ -171,20 +182,10 @@ La imagen del sandbox queda congelada y sin jimmy adentro:
 `build-essential`.
 
 Así no hay que reconstruirla por un cambio de código, y sigue arrancando en
-los ~2 s medidos. El binario de jimmy vive en el FS de la org:
-
-```
-. jimmy/bin/<version>/jimmy
-.jimmy/current -> bin/<version>
-```
-
-Actualizar es escribir un archivo. El control plane publica la versión nueva y
-el sandbox la toma; si un turno no arranca, hay A/B con un solo reintento:
-
-1. Se escribe `bin/<nueva>`; `current` sigue apuntando a la vieja.
-2. Turno de humo: arranque y ping por el protocolo.
-3. Si responde, `current` pasa a la nueva; si no, se borra y queda la vieja.
-4. Cada turno registra qué versión corrió, así el rollback es volver el symlink.
+los ~2 s medidos. El binario de jimmy **no** va al sandbox: el turno lo corre el
+control plane y sus herramientas le piden los archivos y los comandos a la
+máquina de la org. Sin binario adentro no hay versiones que publicar, ni
+symlink, ni A/B: actualizar el agente es desplegar el control plane.
 
 ## heimdall
 
@@ -287,12 +288,31 @@ Está anotado: se resuelve a futuro y no condiciona el diseño.
 
 ## Pasos
 
-1. El trait `Sandbox` con la implementación `Local` y el pool detrás. Cero
-   cambio de comportamiento.
-2. `orgs`, `users`, `memberships` y `sessions` en la base, con el auth
-   apuntando ahí.
-3. La agenda a la DB, con cada turno corriendo en el workspace de su org.
-   Los medidores, pendientes.
-4. La implementación `Tensorlake`, la imagen mínima y el binario en el FS.
-5. heimdall por org y su UI.
-6. Cuotas, medidores y los dos planes.
+El orden manda: cada paso deja algo andando y verificable antes del siguiente.
+
+1. **Hecho** — El trait `Sandbox` con la implementación `Local` y el pool
+   detrás. Cero cambio de comportamiento.
+2. **Hecho** — `orgs`, `users`, `memberships` y `sessions` en la base, con el
+   auth apuntando ahí.
+3. **Hecho** — La agenda a la DB, con cada turno corriendo en el workspace de su
+   org.
+4. **A medias** — La máquina remota. Hecho: la costura en axe (el trait
+   `Machine`, `Local`, `build_tools_on`, PR #12) y las operaciones de archivos
+   del cliente de Tensorlake (`read_file`, `write_file`, `list_files`,
+   `remove_file`, verificadas contra la API con el test `#[ignore]`). Falta el
+   shell remoto (`run`), el `impl Machine` que junte las dos cosas, y la
+   elección de proveedor por org (una columna, no configuración).
+5. **La compuerta** — El test de equivalencia del bash: el mismo comando por las
+   dos vías, comparando salida, exit code, streaming parcial, timeout,
+   cancelación e hijos huérfanos. Si el remoto no aguanta esos bordes, se para
+   acá y lo hecho queda igual de útil (la costura de axe y los archivos por
+   HTTP).
+6. El turno en el control plane contra la máquina de la org, y se cae el
+   binario del sandbox.
+7. El índice de proyectos y conversaciones en la base: listar por HTTP son
+   viajes de ~183 ms, así que el sidebar no se puede armar a fuerza de listados.
+8. El alta del filesystem de una org, que hoy sólo saben hacer el SDK y el CLI.
+9. heimdall por org y su UI.
+10. Cuotas, medidores y los dos planes.
+11. Los transports por org (Slack y Telegram con sus credenciales), los previews
+    y los backups.

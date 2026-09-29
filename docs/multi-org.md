@@ -120,6 +120,21 @@ No por usuario: el workspace es de la org y dos personas de la misma empresa
 trabajan sobre lo mismo. Los turnos se serializan por proyecto, que es la
 forma barata de que dos agentes no pisen el mismo archivo.
 
+## Dónde corre un turno
+
+Una org tiene su raíz y su workspace adentro de esa raíz: eso es un `Place`, y
+es todo lo que hace falta para correr un turno suyo. El agente del control
+plane es uno solo —el bus, los candados y el pool son los mismos— y
+`Agent::at(&place)` devuelve ese mismo agente apuntado a otra org: mismo
+modelo, mismos candados, otro lugar donde trabajar. La web usa ese clon en
+cada request, así que el turno de una org resuelve su conversación y su log
+donde corresponde y no en la raíz del control plane.
+
+El entorno del worker es del turno, no del pool: viaja en `Sandbox::turn`
+junto con la conversación y el comando. Es lo que el worker necesita para
+reconstruirse del otro lado, y en un proveedor de verdad son los secretos con
+los que se levanta el sandbox.
+
 ## La imagen y el binario
 
 La imagen del sandbox queda congelada y sin jimmy adentro:
@@ -249,7 +264,8 @@ Está anotado: se resuelve a futuro y no condiciona el diseño.
 2. `orgs`, `users`, `memberships` y `sessions` en la base, con el auth
    apuntando ahí.
 3. La agenda y los medidores a la DB; cada org con su directorio para las
-   conversaciones y el workspace.
+   conversaciones y el workspace, y cada turno corriendo en el workspace de su
+   org.
 4. La implementación `Tensorlake`, la imagen mínima y el binario en el FS.
 5. heimdall por org y su UI.
 6. Cuotas, medidores y los dos planes.

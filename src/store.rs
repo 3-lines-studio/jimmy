@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS orgs (
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS machines (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    sandbox TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS memberships (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -743,6 +752,55 @@ fn is_member(db: &Connection, org: &str, user: &str) -> Result<bool, String> {
     .map_err(|e| e.to_string())
 }
 
+/// Dónde vive el trabajo de una org: el proveedor y el nombre de su máquina.
+/// Sin fila, el trabajo corre acá.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct Machine {
+    pub org_id: String,
+    pub provider: String,
+    pub sandbox: String,
+}
+
+#[allow(dead_code)]
+impl Store {
+    pub fn machine(&self, org: &str) -> Result<Option<Machine>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT org_id, provider, sandbox FROM machines WHERE org_id = ?1 AND deleted_at IS NULL",
+            params![org],
+            |row| {
+                Ok(Machine {
+                    org_id: row.get(0)?,
+                    provider: row.get(1)?,
+                    sandbox: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn set_machine(&self, org: &str, provider: &str, sandbox: &str) -> Result<(), String> {
+        if provider.trim().is_empty() || sandbox.trim().is_empty() {
+            return Err("la máquina necesita proveedor y sandbox".into());
+        }
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO machines (id, org_id, provider, sandbox, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(org_id) DO UPDATE SET
+                 provider = excluded.provider,
+                 sandbox = excluded.sandbox,
+                 updated_at = excluded.updated_at,
+                 deleted_at = NULL",
+            params![ulid::new(), org, provider, sandbox, now()],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,7 +936,7 @@ mod tests {
     fn todas_las_tablas_tienen_las_mismas_marcas() {
         let store = store("uniform");
         let db = store.db.lock().unwrap();
-        for table in ["users", "orgs", "memberships", "sessions"] {
+        for table in ["users", "orgs", "memberships", "sessions", "machines"] {
             let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
             let rows: Vec<(String, String)> = statement
                 .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))
@@ -1133,5 +1191,24 @@ mod tests {
             textos.iter().any(|texto| texto == "vuelta 204"),
             "las nuevas quedan"
         );
+    }
+    #[test]
+    fn una_org_puede_tener_su_maquina() {
+        let store = store("maquinas");
+        let (user, _) = store.register("bob@ejemplo.com").unwrap();
+        let org = store.create_org(&user.id, "La Empresa").unwrap();
+        assert_eq!(store.machine(&org.id).unwrap(), None);
+
+        store
+            .set_machine(&org.id, "tensorlake", "turno-remoto")
+            .unwrap();
+        let guardada = store.machine(&org.id).unwrap().unwrap();
+        assert_eq!(guardada.provider, "tensorlake");
+        assert_eq!(guardada.sandbox, "turno-remoto");
+
+        store.set_machine(&org.id, "tensorlake", "otra").unwrap();
+        assert_eq!(store.machine(&org.id).unwrap().unwrap().sandbox, "otra");
+
+        assert!(store.set_machine(&org.id, "", "x").is_err());
     }
 }

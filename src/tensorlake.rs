@@ -457,6 +457,17 @@ impl Tensorlake {
             }
             let estado = self.process(sandbox, pid)?;
             if estado.status != "running" {
+                let mut lineas = lineas;
+                // La salida puede llegar después del `exit`: el proceso ya
+                // terminó y la API todavía no la tiene. Medido: un `jimmy
+                // conversations --json` volvió vacío una vez, y al rato estaba.
+                for _ in 0..3 {
+                    if !lineas.is_empty() || estado.exit_code != Some(0) {
+                        break;
+                    }
+                    std::thread::sleep(POLL);
+                    lineas = self.lines(sandbox, pid)?;
+                }
                 let mut texto = cerrar(&lineas, None, estado.exit_code);
                 if let Some(signal) = estado.signal {
                     texto.push_str(&format!("\nerror: signal: {signal}"));

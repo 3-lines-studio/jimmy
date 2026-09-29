@@ -19,6 +19,7 @@ use crate::schedule;
 use crate::transport::Null;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,15 +102,36 @@ pub fn listen(port: u16) -> Result<TcpListener, String> {
         .map_err(|e| format!("no pude escuchar en el puerto {port}: {e}"))
 }
 
+/// Un thread por conexión: con la web expuesta, un tope es la diferencia entre
+/// atender y quedarse sin memoria por una cola de pedidos.
+const MAX_CONNECTIONS: usize = 64;
+
 pub fn serve(web: Arc<Web>, listener: TcpListener) {
+    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
+        if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            let mut stream = stream;
+            let _ = http::send_error(&mut stream, 503, "demasiados pedidos a la vez");
+            continue;
+        }
+        live.fetch_add(1, Ordering::Relaxed);
         let web = web.clone();
+        let live = live.clone();
         std::thread::spawn(move || {
+            let _live = Live(live);
             let mut stream = stream;
             if let Err(e) = handle(&web, &mut stream) {
                 eprintln!("jimmy web: {e}");
             }
         });
+    }
+}
+
+struct Live(Arc<AtomicUsize>);
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -129,6 +151,12 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     };
     if request.too_large {
         return http::send_error(stream, 413, "eso es demasiado grande");
+    }
+    if request
+        .param("conversation")
+        .is_some_and(|key| !conversations::valid_key(key))
+    {
+        return http::send_error(stream, 400, "esa conversación no existe");
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => app_page(web, &request, stream),
@@ -2047,6 +2075,45 @@ done
                 "{path} devolvió {response}"
             );
         }
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_conversation_cannot_leave_the_chats_directory() {
+        let server = start("chats-outside");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let afuera = server.root.parent().unwrap().join("afuera");
+        std::fs::create_dir_all(afuera.join("uploads")).unwrap();
+        std::fs::write(
+            afuera.join("conversation.jsonl"),
+            "{\"event\":\"presence\",\"users\":[\"afuera\"]}\n",
+        )
+        .unwrap();
+        std::fs::write(afuera.join("uploads/x.txt"), "afuera").unwrap();
+
+        let paths = [
+            "/api/history?conversation=..&before=5",
+            "/api/history?conversation=../../afuera&before=5",
+            "/api/file?conversation=../../afuera&name=x.txt",
+            "/api/history?conversation=..%2f..%2fafuera&before=5",
+        ];
+        for path in paths {
+            let response = get(server.port, path, Some(&cookie));
+            assert!(
+                response.starts_with("HTTP/1.1 400"),
+                "{path} devolvió {response}"
+            );
+            assert!(
+                !response.contains("afuera}"),
+                "{path} leyó afuera: {response}"
+            );
+        }
+        let legitima = get(
+            server.port,
+            "/api/history?conversation=123456789&before=5",
+            Some(&cookie),
+        );
+        assert!(legitima.starts_with("HTTP/1.1 200"), "{legitima}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

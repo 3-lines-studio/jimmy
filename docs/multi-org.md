@@ -345,14 +345,15 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    el volumen y el worker arranca ahí por la API de procesos. Los archivos que
    toca son los suyos y la agenda corre igual que la web. Sin fila, el trabajo
    corre acá.
-7. **A medias** — La web leyendo el volumen: el índice de la org ya está en la
-   base, sincronizado desde adentro en cada turno. Falta que los proyectos, los
-   archivos y los adjuntos se le pidan al sandbox en vivo —el `Machine` de axe,
-   que para eso lo despierta, como con el browser— y que lo que la web escribe lo
-   escriba en el volumen. El log lo sigue escribiendo el control plane.
-8. **Los adjuntos de los dos lados**: lo que el usuario sube tiene que llegar al
-   volumen, y lo que manda el asistente (`jimmy send`) tiene que poder la web
-   mostrarlo.
+7. **Hecho** — La web leyendo el volumen: la lista sale del índice —sin
+   despertar a nadie— y los archivos y los adjuntos se le piden al sandbox en
+   vivo, que para eso se despierta, como con el browser. Lo que la web escribe lo
+   escriben las mismas funciones que corren adentro, por el CLI del agente, y la
+   copia del índice se refresca en el momento. El log de cada conversación lo
+   sigue escribiendo el control plane, que es donde se produce.
+8. **Los adjuntos de los dos lados**: lo que el usuario sube ya llega al volumen
+   y lo que manda el asistente (`jimmy send`) ya lo puede mostrar la web; falta
+   probarlo de punta a punta con un adjunto de verdad.
 9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
    CLI— y su fila en `machines`.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`

@@ -21,20 +21,25 @@ CREATE TABLE IF NOT EXISTS users (
     ulid TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS orgs (
     id INTEGER PRIMARY KEY,
     ulid TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     personal_of INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS memberships (
     org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member',
     created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
     PRIMARY KEY (org_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -104,12 +109,21 @@ impl Store {
         let db = self.db.lock().unwrap();
         let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "INSERT OR IGNORE INTO users (ulid, email, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO users (ulid, email, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)",
             params![ulid::new(), email, now()],
         )
         .map_err(|e| e.to_string())?;
         let user = user_by_email(&tx, &email)?
             .ok_or_else(|| format!("no pude crear el usuario {email}"))?;
+        // Volver a entrar revive al que se había ido: no hay dos cuentas con el
+        // mismo mail, ni una cuenta que no pueda volver.
+        tx.execute(
+            "UPDATE users SET deleted_at = NULL, updated_at = ?1
+             WHERE id = ?2 AND deleted_at IS NOT NULL",
+            params![now(), user.id],
+        )
+        .map_err(|e| e.to_string())?;
         let org = match personal_org(&tx, user.id)? {
             Some(org) => org,
             None => {
@@ -119,15 +133,15 @@ impl Store {
                     name: personal_name(&email),
                 };
                 tx.execute(
-                    "INSERT INTO orgs (ulid, name, personal_of, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO orgs (ulid, name, personal_of, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?4)",
                     params![org.ulid, org.name, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
-                    "INSERT INTO memberships (org_id, user_id, role, created_at)
-                     VALUES (?1, ?2, 'owner', ?3)",
+                    "INSERT INTO memberships (org_id, user_id, role, created_at, updated_at)
+                     VALUES (?1, ?2, 'owner', ?3, ?3)",
                     params![id, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
@@ -201,11 +215,13 @@ fn user_by_email(db: &Connection, email: &str) -> Result<Option<User>, String> {
     .map_err(|e| e.to_string())
 }
 
+/// La sesión de alguien que ya no está no sirve, aunque siga viva.
 fn user_by_session(db: &Connection, token: &str) -> Result<Option<User>, String> {
     db.query_row(
         "SELECT users.id, users.ulid, users.email, users.name FROM users
          JOIN sessions ON sessions.user_id = users.id
-         WHERE sessions.token = ?1 AND sessions.expires_at > ?2",
+         WHERE sessions.token = ?1 AND sessions.expires_at > ?2
+           AND users.deleted_at IS NULL",
         params![token, now()],
         read_user,
     )
@@ -280,6 +296,59 @@ mod tests {
         assert!(!org_ana.ulid.contains("ana"), "{}", org_ana.ulid);
         assert!(!ana.ulid.contains("ejemplo"), "{}", ana.ulid);
         assert_eq!(orgs(&store).len(), 2);
+    }
+
+    #[test]
+    fn el_que_se_va_no_usa_su_sesion_y_vuelve_si_entra_de_nuevo() {
+        let store = store("deleted");
+        let (user, _) = store.register("don@berti.sh").unwrap();
+        store.open_session("viva", user.id, now() + 60).unwrap();
+        assert!(store.session_user("viva").unwrap().is_some());
+        store
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE users SET deleted_at = ?1 WHERE id = ?2",
+                params![now(), user.id],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_user("viva").unwrap(),
+            None,
+            "el que se fue no entra, aunque la sesión siga viva"
+        );
+        let (again, _) = store.register("don@berti.sh").unwrap();
+        assert_eq!(again, user);
+        assert!(
+            store.session_user("viva").unwrap().is_some(),
+            "volver a entrar lo revive"
+        );
+    }
+
+    #[test]
+    fn al_crear_no_hay_nada_que_actualizar_ni_que_borrar() {
+        let store = store("stamps");
+        store.register("don@berti.sh").unwrap();
+        let db = store.db.lock().unwrap();
+        let (created, updated, deleted): (i64, i64, Option<i64>) = db
+            .query_row(
+                "SELECT created_at, updated_at, deleted_at FROM users",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let (org_created, org_updated, org_deleted): (i64, i64, Option<i64>) = db
+            .query_row(
+                "SELECT created_at, updated_at, deleted_at FROM orgs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(created, updated, "recién creado no se tocó");
+        assert_eq!(org_created, org_updated);
+        assert_eq!(deleted, None);
+        assert_eq!(org_deleted, None);
     }
 
     #[test]

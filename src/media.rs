@@ -7,7 +7,9 @@ use crate::protocol::Event;
 use std::path::{Path, PathBuf};
 
 pub const UPLOADS: &str = "uploads";
-const OUTBOX: &str = "outbox.jsonl";
+/// La cola de lo que el asistente manda, al lado del chat: la escribe el CLI,
+/// que corre adentro del sandbox, y la lee el padre, que escribe el log.
+pub const OUTBOX: &str = "outbox.jsonl";
 
 /// Las que la web sabe mostrar.
 pub fn is_image(name: &str) -> bool {

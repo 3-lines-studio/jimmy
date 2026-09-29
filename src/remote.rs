@@ -10,6 +10,7 @@ use crate::files;
 use crate::log::Log;
 use crate::log::Window;
 use crate::media;
+use crate::media::OUTBOX;
 use crate::store::Store;
 use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use crate::workspace::{Conversation, Place, Project, Workspace};
@@ -403,6 +404,28 @@ impl Remoto {
             );
         }
     }
+}
+
+/// Lo que el asistente dejó en la cola de una conversación, leído del volumen y
+/// vaciado ahí: el CLI corre adentro y el log lo escribe el control plane, así
+/// que lo que anotó espera donde vive el chat. El nombre del adjunto es el mismo
+/// de los dos lados, así que la web lo puede mostrar.
+pub fn drenar(
+    cliente: &Tensorlake,
+    sandbox: &str,
+    raiz: &Path,
+    chat: &Path,
+) -> Result<Vec<crate::protocol::Event>, String> {
+    let cola = format!("{}/{OUTBOX}", al_sandbox(raiz, chat));
+    let texto = match cliente.read_file(sandbox, &cola) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => return Ok(Vec::new()),
+    };
+    cliente.write_file(sandbox, &cola, b"")?;
+    Ok(texto
+        .lines()
+        .filter_map(|linea| serde_json::from_str(linea).ok())
+        .collect())
 }
 
 /// Qué binario se publica en el sandbox: el de acá, que es el mismo. La prueba

@@ -330,10 +330,36 @@ impl Agent {
     /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
     /// CLI es otro proceso y no puede escribir el log, así que las deja en la
     /// cola de la conversación y esto las publica.
-    fn flush_media(&self, session: &Session) {
+    fn flush_media(&self, session: &Session, listo: Option<&SandboxInfo>) {
         let conversation = self.conversation(session);
-        for event in media::drain(&conversation) {
+        for event in self.media(&conversation, listo) {
             self.say(session, &event);
+        }
+    }
+
+    /// Lo que el asistente mandó durante el turno. Si el turno corrió adentro
+    /// del sandbox, el CLI dejó la cola en el volumen y se lee de ahí; si no,
+    /// está al lado del chat, acá.
+    fn media(
+        &self,
+        conversation: &conversations::Conversation,
+        listo: Option<&SandboxInfo>,
+    ) -> Vec<Event> {
+        let Some(listo) = listo else {
+            return media::drain(conversation);
+        };
+        let Some(cliente) = Tensorlake::from_env() else {
+            return Vec::new();
+        };
+        match crate::remote::drenar(&cliente, &listo.name, &self.root, &conversation.dir) {
+            Ok(eventos) => eventos,
+            Err(error) => {
+                eprintln!(
+                    "jimmy: no pude leer la cola de {}: {error}",
+                    conversation.key
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -384,7 +410,7 @@ impl Agent {
         if let Some(listo) = &sandbox {
             self.sincronizar(listo);
         }
-        self.flush_media(session);
+        self.flush_media(session, sandbox.as_ref());
         match turn {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, live.take(), &text);

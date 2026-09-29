@@ -351,9 +351,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    escriben las mismas funciones que corren adentro, por el CLI del agente, y la
    copia del índice se refresca en el momento. El log de cada conversación lo
    sigue escribiendo el control plane, que es donde se produce.
-8. **Los adjuntos de los dos lados**: lo que el usuario sube ya llega al volumen
-   y lo que manda el asistente (`jimmy send`) ya lo puede mostrar la web; falta
-   probarlo de punta a punta con un adjunto de verdad.
+8. **Hecho** — Los adjuntos de los dos lados: lo que sube la web llega al
+   volumen, donde lo ve el agente, y lo que manda el asistente espera en la cola
+   del chat —que vive adentro, porque la escribe el CLI— y el control plane la
+   lee de ahí y la vacía. Probado de punta a punta con un archivo de verdad.
 9. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
    CLI— y su fila en `machines`.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`

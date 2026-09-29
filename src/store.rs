@@ -310,20 +310,6 @@ impl Store {
         orgs_of(&db, user)
     }
 
-    /// Todas las orgs, en el orden en que se crearon: las recorre el control
-    /// plane cuando el trabajo no es de nadie en particular.
-    pub fn orgs(&self) -> Result<Vec<Org>, String> {
-        let db = self.db.lock().unwrap();
-        let mut statement = db
-            .prepare("SELECT id, name, dir FROM orgs WHERE deleted_at IS NULL ORDER BY id")
-            .map_err(|e| e.to_string())?;
-        let rows = statement
-            .query_map([], read_org)
-            .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<Org>>>()
-            .map_err(|e| e.to_string())
-    }
-
     /// Una org nueva, con el que la crea como dueño.
     pub fn create_org(&self, user: &str, name: &str) -> Result<Org, String> {
         let name = name.trim();
@@ -478,6 +464,23 @@ impl Store {
                 "UPDATE tasks SET paused = ?1, updated_at = ?2
                  WHERE org_id = ?3 AND name = ?4 AND deleted_at IS NULL",
                 params![paused, now(), org, name],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("no existe la tarea {name}"));
+        }
+        Ok(())
+    }
+
+    /// La baja es lógica, como todo lo demás: la fila queda con su horario y
+    /// sus corridas por si hay que mirarlas.
+    pub fn delete_task(&self, org: &str, name: &str) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let changed = db
+            .execute(
+                "UPDATE tasks SET deleted_at = ?1, updated_at = ?1
+                 WHERE org_id = ?2 AND name = ?3 AND deleted_at IS NULL",
+                params![now(), org, name],
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {

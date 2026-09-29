@@ -9,8 +9,7 @@ use crate::agent::Agent;
 use crate::store::{NewTask, Store, Task};
 use crate::transport::{Null, Session, Transport};
 use crate::workspace::{place, Place};
-use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -18,7 +17,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const TICK: Duration = Duration::from_secs(60);
 const HOUR: i64 = 3_600;
 const DAY: i64 = 86_400;
-const DIR: &str = "schedule";
 
 /// La agenda la mueve el control plane. El canal no lleva la tarea: sólo
 /// despierta al reloj cuando la web pide una corrida y no vale la pena esperar
@@ -60,7 +58,6 @@ struct Agenda<'a> {
 
 impl Agenda<'_> {
     fn tick(&self) {
-        migrate(self.store, &self.base.root, &self.base.workspace);
         let now = now_secs();
         let due = match self.store.claim_due(now) {
             Ok(due) => due,
@@ -144,6 +141,56 @@ fn outbound<'a>(
     }
 }
 
+/// Programa una tarea nueva: valida el horario y le calcula la primera vez que
+/// le toca. Una tarea sin horario queda para correr a mano.
+pub fn program(store: &Store, org: &str, new: NewTask) -> Result<Task, String> {
+    let horarios = [new.when_at.is_some(), new.at.is_some(), new.every.is_some()]
+        .iter()
+        .filter(|hay| **hay)
+        .count();
+    if horarios > 1 {
+        return Err("una tarea corre con un solo horario".into());
+    }
+    if new.prompt.trim().is_empty() {
+        return Err("la tarea necesita algo que hacer".into());
+    }
+    let name = new.name.trim().to_string();
+    if !name.is_empty() && store.task_named(org, &name)?.is_some() {
+        return Err(format!("ya hay una tarea que se llama {name}"));
+    }
+    let offset = tz_offset();
+    let next = match (
+        new.when_at.as_deref(),
+        new.at.as_deref(),
+        new.every.as_deref(),
+    ) {
+        (Some(when), _, _) if when_secs(when, offset).is_none() => {
+            return Err("esa fecha no se entiende: se escribe como 2026-09-14T15:00".into())
+        }
+        (_, Some(at), _) if hhmm(at).is_none() => {
+            return Err("esa hora no se entiende: se escribe como 05:00".into())
+        }
+        (_, _, Some(every)) if period(every).is_none() => {
+            return Err("ese intervalo no se entiende: se escribe como 30m, 6h o 2d".into())
+        }
+        _ => first_run(
+            new.when_at.as_deref(),
+            new.at.as_deref(),
+            new.every.as_deref(),
+            now_secs(),
+            offset,
+        ),
+    };
+    store.create_task(
+        org,
+        NewTask {
+            name,
+            next_run_at: next,
+            ..new
+        },
+    )
+}
+
 /// Cuándo le toca la primera vez. Una tarea `when` con la hora ya pasada corre
 /// apenas se cree: es una cita que se pidió una sola vez.
 fn first_run(
@@ -213,103 +260,6 @@ fn tz_offset() -> i64 {
         .unwrap_or(0)
 }
 
-/// Las tareas que quedaron en el disco del workspace entran a la base. El
-/// directorio se corre a un costado para no volver a leerlo: lo que quedó ahí
-/// son los archivos viejos, no la agenda.
-fn migrate(store: &Store, root: &Path, workspace: &Path) {
-    let orgs = match store.orgs() {
-        Ok(orgs) => orgs,
-        Err(error) => {
-            eprintln!("jimmy: agenda: no pude leer las orgs: {error}");
-            return;
-        }
-    };
-    for org in orgs {
-        let dir = place(root, workspace, &org.dir)
-            .workspace
-            .join("state")
-            .join(DIR);
-        migrate_org(store, &org.id, &dir);
-    }
-}
-
-fn migrate_org(store: &Store, org: &str, dir: &Path) {
-    if !dir.is_dir() {
-        return;
-    }
-    let now = now_secs();
-    let offset = tz_offset();
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|kind| kind != "toml") {
-            continue;
-        }
-        let Some(name) = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-        else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let file = match toml::from_str::<FileTask>(&text) {
-            Ok(file) => file,
-            Err(error) => {
-                eprintln!("jimmy: agenda: {}: {error}", path.display());
-                continue;
-            }
-        };
-        if store.task_named(org, &name).ok().flatten().is_some() {
-            continue;
-        }
-        let next = first_run(
-            file.when.as_deref(),
-            file.at.as_deref(),
-            file.every.as_deref(),
-            now,
-            offset,
-        );
-        let new = NewTask {
-            name,
-            prompt: file.prompt,
-            when_at: file.when,
-            at: file.at,
-            every: file.every,
-            target: file.target,
-            silent: file.silent,
-            next_run_at: next,
-        };
-        if let Err(error) = store.create_task(org, new) {
-            eprintln!("jimmy: agenda: no pude migrar {}: {error}", path.display());
-        }
-    }
-    let old = dir.with_file_name(format!("{DIR}.old"));
-    if !old.exists() {
-        if let Err(error) = std::fs::rename(dir, &old) {
-            eprintln!("jimmy: agenda: no pude guardar {}: {error}", dir.display());
-            return;
-        }
-        eprintln!("jimmy: agenda: migré {} a la base", dir.display());
-    }
-}
-
-/// El formato de las tareas cuando vivían en el disco.
-#[derive(Deserialize)]
-struct FileTask {
-    #[serde(default)]
-    when: Option<String>,
-    #[serde(default)]
-    at: Option<String>,
-    #[serde(default)]
-    every: Option<String>,
-    #[serde(default)]
-    target: Option<String>,
-    prompt: String,
-    #[serde(default)]
-    silent: bool,
-}
-
 fn hhmm(s: &str) -> Option<(i64, i64)> {
     let (hour, minute) = s.trim().split_once(':')?;
     let hour: i64 = hour.trim().parse().ok()?;
@@ -369,6 +319,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::transport::Msg;
+    use std::path::Path;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir =
@@ -543,42 +494,6 @@ mod tests {
         let (_, session, warning) = outbound(&Reject, &task);
         assert!(warning.is_none());
         assert_eq!(session.key(), "memoria");
-    }
-
-    #[test]
-    fn las_tareas_que_estaban_en_el_disco_entran_a_la_base() {
-        let base = scratch("migrar");
-        let root = base.join("root");
-        let workspace = root.join("workspace");
-        let dir = workspace.join("state").join(DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("limpieza.toml"),
-            "at = \"05:00\"\nprompt = \"p\"\nsilent = true\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("rota.toml"), "esto no es toml").unwrap();
-        let store = Store::open(&root.join("jimmy.db")).unwrap();
-        let (_, org) = store.register("bob@ejemplo.com").unwrap();
-
-        migrate(&store, &root, &workspace);
-
-        let tareas = store.tasks_of(&org.id).unwrap();
-        assert_eq!(tareas.len(), 1, "la rota se saltea");
-        assert_eq!(tareas[0].name, "limpieza");
-        assert!(tareas[0].silent);
-        assert!(
-            tareas[0].next_run_at.is_some(),
-            "entra con su próxima ya puesta"
-        );
-        assert!(
-            dir.with_file_name("schedule.old").is_dir(),
-            "y el disco viejo queda aparte"
-        );
-
-        migrate(&store, &root, &workspace);
-        assert_eq!(store.tasks_of(&org.id).unwrap().len(), 1, "no se duplica");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn wait_runs(store: &Store, task: &str) -> Vec<crate::store::Run> {

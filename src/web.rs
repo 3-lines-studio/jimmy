@@ -15,6 +15,7 @@ use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
+use crate::schedule;
 use crate::transport::Null;
 use crate::workspace::{place, Local, Workspace};
 use std::net::{TcpListener, TcpStream};
@@ -201,6 +202,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
         ("GET", "/api/agenda") => agenda(web, &request, stream),
+        ("POST", "/api/agenda") => agenda_create(web, &request, stream),
+        ("POST", "/api/agenda/delete") => agenda_delete(web, &request, stream),
         ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
@@ -867,6 +870,46 @@ fn agenda_tasks(web: &Web, org: &str) -> Result<Vec<serde_json::Value>, String> 
         }));
     }
     Ok(tasks)
+}
+
+/// Una tarea nueva de la org activa. El horario se valida acá: una tarea con
+/// un horario que no se entiende nunca correría, y eso es peor que un error.
+fn agenda_create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    let puesto = |name: &str| request.field(name).filter(|value| !value.trim().is_empty());
+    let new = crate::store::NewTask {
+        name: request.field("name").unwrap_or_default(),
+        prompt: request.field("prompt").unwrap_or_default(),
+        when_at: puesto("when"),
+        at: puesto("at"),
+        every: puesto("every"),
+        target: puesto("target"),
+        silent: request.flag("silent"),
+        next_run_at: None,
+    };
+    match schedule::program(web.auth.store(), &org.id, new) {
+        Ok(task) => http::send_json(stream, 200, &serde_json::json!({ "name": task.name })),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
+}
+
+fn agenda_delete(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let name = request.field("name").unwrap_or_default();
+    let Some(org) = web.org(request) else {
+        return http::send_error(stream, 400, "no hay ninguna org activa");
+    };
+    match web.auth.store().delete_task(&org.id, &name) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
 }
 
 fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -2873,14 +2916,16 @@ done
             "la org nueva arranca sin tareas: {body}"
         );
 
-        let empresa = server
-            .store
-            .orgs()
+        let empresa = json_in(&get(server.port, "/api/state", Some(&cookie)))["orgs"]
+            .as_array()
             .unwrap()
-            .into_iter()
-            .find(|org| org.id != personal)
-            .unwrap();
-        agenda_task(&server, &empresa.id, "de-la-empresa", Some("06:00"));
+            .iter()
+            .find(|org| org["id"] != personal.as_str())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        agenda_task(&server, &empresa, "de-la-empresa", Some("06:00"));
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["name"], "de-la-empresa");
 
@@ -2893,6 +2938,66 @@ done
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["name"], "de-bob");
         assert_eq!(body["tasks"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    /// Una tarea se crea y se borra desde la web, y un horario que no se
+    /// entiende se rechaza: es mejor un error que una tarea que nunca corre.
+    #[test]
+    fn una_tarea_se_crea_y_se_borra_desde_la_web() {
+        let server = start("agenda-create");
+        let cookie = login(server.port, "bob@ejemplo.com");
+
+        let made = post_with(
+            server.port,
+            "/api/agenda",
+            r#"{"name":"memoria","at":"05:00","prompt":"reportá"}"#,
+            Some(&cookie),
+        );
+        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert_eq!(body["tasks"][0]["name"], "memoria");
+        assert_eq!(body["tasks"][0]["at"], "05:00");
+
+        for (cuerpo, motivo) in [
+            (
+                r#"{"name":"memoria","at":"05:00","prompt":"p"}"#,
+                "repetida",
+            ),
+            (
+                r#"{"name":"tarde","at":"25:00","prompt":"p"}"#,
+                "hora que no existe",
+            ),
+            (
+                r#"{"name":"dos","at":"05:00","every":"1h","prompt":"p"}"#,
+                "dos horarios",
+            ),
+            (
+                r#"{"name":"vacia","every":"1h","prompt":"  "}"#,
+                "sin nada que hacer",
+            ),
+        ] {
+            let mala = post_with(server.port, "/api/agenda", cuerpo, Some(&cookie));
+            assert!(mala.starts_with("HTTP/1.1 400"), "{motivo}: {mala}");
+        }
+        assert_eq!(
+            json_in(&get(server.port, "/api/agenda", Some(&cookie)))["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "nada de eso creó una tarea"
+        );
+
+        let borrada = post_with(
+            server.port,
+            "/api/agenda/delete",
+            r#"{"name":"memoria"}"#,
+            Some(&cookie),
+        );
+        assert!(borrada.starts_with("HTTP/1.1 200"), "{borrada}");
+        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
+        assert!(body["tasks"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

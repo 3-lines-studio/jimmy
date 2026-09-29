@@ -59,7 +59,7 @@ pub fn safe_name(name: &str) -> Option<&str> {
 
 /// El cliente elige la parte legible y el sello de tiempo la hace única, así dos
 /// `foto.png` no se pisan.
-fn unique_name(name: &str) -> String {
+pub fn unique_name(name: &str) -> String {
     let base: String = name
         .chars()
         .map(|c| {

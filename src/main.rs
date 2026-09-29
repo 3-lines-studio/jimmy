@@ -109,10 +109,11 @@ fn workspace_from_env() -> PathBuf {
 }
 
 /// Los nombres que jimmy atiende como orden y no como arranque del bot.
-const SUBCOMMANDS: [&str; 6] = [
+const SUBCOMMANDS: [&str; 7] = [
     "memo",
     "send",
     "conversations",
+    "projects",
     "skill",
     "preview",
     "worker",
@@ -137,6 +138,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("conversations") {
         std::process::exit(conversations_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("projects") {
+        std::process::exit(projects_command(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
@@ -367,6 +371,48 @@ fn index_json(root: &Path, workspace: &Path) -> Result<String, String> {
         })
         .collect();
     serde_json::to_string(&serde_json::json!({ "projects": proyectos })).map_err(|e| e.to_string())
+}
+
+/// Los proyectos, para el que está adentro del sandbox: el control plane manda
+/// esto por el CLI en vez de armar los caminos y el layout por su cuenta, así lo
+/// que se crea, se renombra o se borra sale del mismo código de los dos lados.
+fn projects_command(args: &[String]) -> i32 {
+    use crate::workspace::Workspace;
+    let espacio = workspace::Local::new(root_from_env(), workspace_from_env());
+    let result = match args.first().map(String::as_str) {
+        Some("new") => match args.get(1) {
+            Some(name) => espacio.create_project(name),
+            None => return projects_usage(),
+        },
+        Some("rename") => match (args.get(1), args.get(2)) {
+            (Some(from), Some(to)) => espacio.rename_project(from, to),
+            _ => return projects_usage(),
+        },
+        Some("duplicate") => match (args.get(1), args.get(2)) {
+            (Some(from), Some(to)) => espacio.duplicate_project(from, to),
+            _ => return projects_usage(),
+        },
+        Some("delete") => match args.get(1) {
+            Some(name) => espacio.delete_project(name, args.iter().any(|arg| arg == "--force")),
+            None => return projects_usage(),
+        },
+        _ => return projects_usage(),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("jimmy projects: {e}");
+            2
+        }
+    }
+}
+
+fn projects_usage() -> i32 {
+    eprintln!(
+        "uso: jimmy projects [new <nombre> | rename <viejo> <nuevo> | duplicate <viejo> <nuevo> \
+         | delete <nombre> [--force]]"
+    );
+    2
 }
 
 fn conversations_command(args: &[String]) -> i32 {

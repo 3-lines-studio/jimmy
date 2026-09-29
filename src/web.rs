@@ -17,7 +17,7 @@ use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::schedule;
 use crate::transport::Null;
-use crate::workspace::{place, Local, Workspace};
+use crate::workspace::{place, Local, Place, Workspace};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -391,12 +391,34 @@ impl Web {
         self.auth.store().active_org(&user.id).ok().flatten()
     }
 
-    fn workspace(&self, request: &Request) -> Local {
-        // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
-        // propio directorio, con sus conversaciones y su workspace adentro.
+    /// Dónde trabaja la org activa: el lugar del control plane, que es lo que
+    /// necesita el agente para correr un turno acá.
+    fn place(&self, request: &Request) -> Place {
         match self.org(request) {
-            Some(org) => place(&self.root, &self.workspace, &org).into(),
-            None => Local::new(self.root.clone(), self.workspace.clone()),
+            Some(org) => place(&self.root, &self.workspace, &org),
+            None => Place {
+                root: self.root.clone(),
+                workspace: self.workspace.clone(),
+                org: None,
+            },
+        }
+    }
+
+    fn workspace(&self, request: &Request) -> Box<dyn Workspace> {
+        // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
+        // propio directorio, con sus conversaciones y su workspace adentro. La
+        // que tiene sandbox vive allá: la lista sale de su índice y los archivos
+        // se le piden en el momento.
+        match self.org(request) {
+            Some(org) => match self.auth.store().machine(&org.id).ok().flatten() {
+                Some(_) => Box::new(crate::remote::Remoto::new(
+                    org.id.clone(),
+                    self.auth.store().clone(),
+                    place(&self.root, &self.workspace, &org),
+                )),
+                None => Box::new(Local::from(place(&self.root, &self.workspace, &org))),
+            },
+            None => Box::new(Local::new(self.root.clone(), self.workspace.clone())),
         }
     }
 }
@@ -639,10 +661,9 @@ fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     }
     let needle = request.param("q").unwrap_or_default();
-    let org = web.workspace(request);
     let results: Vec<serde_json::Value> = web
         .agent
-        .at(&org.place())
+        .at(&web.place(request))
         .search(needle, 30)
         .into_iter()
         .map(|hit| {
@@ -670,7 +691,7 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
-    web.agent.at(&org.place()).cancel(&session, &user);
+    web.agent.at(&web.place(request)).cancel(&session, &user);
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
@@ -708,7 +729,7 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
 
-    let agent = web.agent.at(&org.place());
+    let agent = web.agent.at(&web.place(request));
     std::thread::spawn(move || {
         if let Err(error) = agent.respond(&Null, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
@@ -1703,7 +1724,28 @@ done
             .set_machine(&org.id, "otro", "caja", "fs")
             .unwrap();
 
-        let key = conversation(server.port, &cookie);
+        // La conversación se siembra en el índice y no se crea por la web: crearla
+        // adentro del sandbox es justamente lo que esta máquina no puede hacer.
+        let key = "web-prueba".to_string();
+        server
+            .store
+            .sync_index(
+                &org.id,
+                &[crate::store::IndexProject {
+                    name: "general".into(),
+                    size: 0,
+                    unversioned: false,
+                    conversations: vec![crate::store::IndexConversation {
+                        key: key.clone(),
+                        project: "general".into(),
+                        title: None,
+                        read_only: false,
+                        last: None,
+                        touched_at: 0,
+                    }],
+                }],
+            )
+            .unwrap();
         let sent = post_with(
             server.port,
             "/api/send",

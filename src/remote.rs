@@ -5,8 +5,14 @@
 //! van por el mismo cliente, así que el path que una herramienta lee es el
 //! mismo que ve un comando.
 
+use crate::conversations;
+use crate::files;
+use crate::log::Log;
+use crate::log::Window;
+use crate::media;
 use crate::store::Store;
 use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
+use crate::workspace::{Conversation, Place, Project, Workspace};
 use axe::machine::{resolve, Entry, Machine};
 use std::collections::HashSet;
 use std::path::Path;
@@ -94,7 +100,7 @@ pub fn publicar(cliente: &Tensorlake, sandbox: &SandboxInfo, exe: &Path) -> Resu
     let copia = format!("{MOUNT}/.jimmy/{huella}");
     let publicado = format!("publicado:{}:{huella}", sandbox.name);
     if !ya_hecho(&publicado) {
-        if cliente.list_files(&sandbox.name, &copia).is_err() {
+        if !completo(cliente, &sandbox.name, &copia, &bytes)? {
             cliente.write_file(&sandbox.name, &format!("{copia}/bin/jimmy"), &bytes)?;
             for (local, destino) in archivos()? {
                 let datos = std::fs::read(&local).map_err(|e| format!("{local:?}: {e}"))?;
@@ -126,6 +132,29 @@ fn instalar(copia: &str) -> String {
 /// Lo que el agente lee del disco y no está adentro del binario: los prompts,
 /// las skills y los CLIs. De este lado viven en la imagen del control plane y
 /// del otro tienen que estar en el sandbox.
+/// Lo publicado está entero o no está: el binario con su tamaño y los CLIs que
+/// van con él. Una subida que se corta deja la carpeta a medias, y el sandbox
+/// arrancaría sin agente; el directorio no alcanza como señal.
+fn completo(
+    cliente: &Tensorlake,
+    sandbox: &str,
+    copia: &str,
+    binario: &[u8],
+) -> Result<bool, String> {
+    let entradas = match cliente.list_files(sandbox, &format!("{copia}/bin")) {
+        Ok(entradas) => entradas,
+        Err(_) => return Ok(false),
+    };
+    let clis = archivos()?
+        .iter()
+        .filter(|(_, destino)| destino.starts_with("bin/"))
+        .count();
+    let servidor = entradas.iter().any(|entrada| {
+        !entrada.is_dir && entrada.name == "jimmy" && entrada.size == binario.len() as u64
+    });
+    Ok(servidor && entradas.len() == clis + 1)
+}
+
 fn archivos() -> Result<Vec<(PathBuf, String)>, String> {
     let mut archivos = Vec::new();
     for (dir, destino) in [
@@ -201,8 +230,10 @@ pub fn sincronizar(
         120,
         &mut |_| {},
     )?;
-    let json: serde_json::Value =
-        serde_json::from_str(salida.trim()).map_err(|e| format!("no entiendo el índice: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(salida.trim()).map_err(|e| {
+        let dicho: String = salida.chars().take(300).collect();
+        format!("no entiendo el índice: {e} · dijo: {dicho:?}")
+    })?;
     let proyectos: Vec<crate::store::IndexProject> = json["projects"]
         .as_array()
         .ok_or("el índice vino sin proyectos")?
@@ -213,14 +244,14 @@ pub fn sincronizar(
             unversioned: proyecto["unversioned"].as_bool().unwrap_or(false),
             conversations: proyecto["conversations"]
                 .as_array()
-                .map(|conversaciones| conversaciones.iter().map(conversacion).collect())
+                .map(|conversaciones| conversaciones.iter().map(charla_del_json).collect())
                 .unwrap_or_default(),
         })
         .collect();
     store.sync_index(org, &proyectos)
 }
 
-fn conversacion(json: &serde_json::Value) -> crate::store::IndexConversation {
+fn charla_del_json(json: &serde_json::Value) -> crate::store::IndexConversation {
     let texto = |campo: &str| {
         json[campo]
             .as_str()
@@ -276,6 +307,318 @@ impl Machine for Remote {
             Ok(texto) => texto,
             Err(error) => format!("error: {error}"),
         }
+    }
+}
+
+/// El workspace de una org que vive en su sandbox. La lista sale del índice que
+/// dejó el último turno —eso no despierta a nadie— y los archivos y los adjuntos
+/// se le piden al volumen en el momento: si el sandbox está dormido se lo
+/// despierta, igual que para usar el browser. Lo que la web escribe lo escriben
+/// las mismas funciones que corren adentro, por el CLI del agente, así el layout
+/// lo arma uno solo.
+pub struct Remoto {
+    org: String,
+    store: Arc<Store>,
+    lugar: Place,
+    listo: Mutex<Option<SandboxInfo>>,
+}
+
+impl Remoto {
+    pub fn new(org: String, store: Arc<Store>, lugar: Place) -> Remoto {
+        Remoto {
+            org,
+            store,
+            lugar,
+            listo: Mutex::new(None),
+        }
+    }
+
+    fn cliente(&self) -> Result<Arc<Tensorlake>, String> {
+        Ok(Arc::new(
+            Tensorlake::from_env().ok_or("esta org necesita TENSORLAKE_API_KEY")?,
+        ))
+    }
+
+    /// El sandbox, despierto. Se paga la primera vez que alguien mira un
+    /// archivo, no al abrir la página.
+    fn despierto(&self) -> Result<SandboxInfo, String> {
+        let mut listo = self.listo.lock().unwrap();
+        if let Some(listo) = listo.as_ref() {
+            return Ok(listo.clone());
+        }
+        let despierto = ensure(&self.org, &self.store)?.ok_or("esta org no tiene sandbox")?;
+        *listo = Some(despierto.clone());
+        Ok(despierto)
+    }
+
+    /// El directorio de un proyecto del lado del control plane, que es el que
+    /// después se traduce al volumen.
+    fn proyecto(&self, project: &str) -> Result<PathBuf, String> {
+        if project.is_empty() || project.contains('/') || project.starts_with('.') {
+            return Err("ese nombre no sirve para un proyecto".into());
+        }
+        Ok(conversations::project_dir(&self.lugar.workspace, project))
+    }
+
+    fn del_volumen(&self, path: &Path) -> String {
+        al_sandbox(&self.lugar.root, path)
+    }
+
+    fn adjunto(&self, key: &str, name: &str) -> String {
+        let dir = media::dir(&conversations::get(
+            &self.lugar.root,
+            &self.lugar.workspace,
+            key,
+        ));
+        format!("{}/{}", self.del_volumen(&dir), name)
+    }
+
+    /// El CLI del agente, adentro del sandbox: es el mismo binario y el mismo
+    /// código que el de acá, así que el layout —los proyectos, las
+    /// conversaciones— lo arma uno solo.
+    fn cli(&self, args: &str) -> Result<String, String> {
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        publicar(&cliente, &listo, &exe()?)?;
+        let comando =
+            format!("JIMMY_ROOT={MOUNT} JIMMY_WORKSPACE={MOUNT}/workspace {BIN}/jimmy {args}");
+        let (salida, codigo) =
+            cliente.run_codigo(&listo.name, MOUNT, &comando, 120, &mut |_| {})?;
+        match codigo {
+            Some(0) => {
+                self.refrescar(&cliente, &listo.name);
+                Ok(salida)
+            }
+            _ => Err(limpiar(&salida)),
+        }
+    }
+
+    /// La copia sigue al volumen: lo que se acaba de escribir ya se ve sin
+    /// esperar al próximo turno. Que no se pueda no rompe la escritura.
+    fn refrescar(&self, cliente: &Tensorlake, sandbox: &str) {
+        if let Err(error) = sincronizar(cliente, sandbox, &self.store, &self.org) {
+            eprintln!(
+                "jimmy: no pude refrescar el índice de {}: {error}",
+                self.org
+            );
+        }
+    }
+}
+
+/// Qué binario se publica en el sandbox: el de acá, que es el mismo. La prueba
+/// de integración lo apunta a mano, porque ella corre sobre el binario de test.
+pub fn exe() -> Result<PathBuf, String> {
+    match crate::env("JIMMY_TEST_EXE") {
+        Some(exe) => Ok(PathBuf::from(exe)),
+        None => std::env::current_exe().map_err(|e| e.to_string()),
+    }
+}
+
+/// El camino de una entrada del volumen, armado sin tocar el disco de acá: el
+/// archivo puede no existir de este lado, que es justamente el punto. Cada parte
+/// tiene que ser un nombre que se vería en el árbol, así un `..` no sale de la
+/// carpeta.
+fn camino(base: &Path, sub: &str) -> Result<PathBuf, String> {
+    let mut path = base.to_path_buf();
+    for parte in sub.split('/').filter(|parte| !parte.is_empty()) {
+        if !files::visible(parte) {
+            return Err("esa carpeta no está".into());
+        }
+        path.push(parte);
+    }
+    Ok(path)
+}
+
+/// El texto de un comando que salió mal: el CLI escribe el error y el código lo
+/// confirma.
+fn limpiar(salida: &str) -> String {
+    let texto = salida.lines().last().unwrap_or_default().trim();
+    match texto.is_empty() {
+        true => "no se pudo".to_string(),
+        false => texto.to_string(),
+    }
+}
+
+fn entre_comillas(texto: &str) -> String {
+    format!("'{}'", texto.replace('\'', "'\\''"))
+}
+
+impl Workspace for Remoto {
+    fn label(&self) -> String {
+        MOUNT.to_string()
+    }
+
+    fn projects(&self) -> Result<Vec<Project>, String> {
+        Ok(self
+            .store
+            .index(&self.org)?
+            .into_iter()
+            .map(|proyecto| Project {
+                name: proyecto.name,
+                size: proyecto.size,
+                unversioned: proyecto.unversioned,
+                conversations: proyecto
+                    .conversations
+                    .into_iter()
+                    .map(conversacion)
+                    .collect(),
+            })
+            .collect())
+    }
+
+    fn conversations(&self, project: &str) -> Result<Vec<Conversation>, String> {
+        Ok(self
+            .projects()?
+            .into_iter()
+            .find(|candidato| candidato.name == project)
+            .map(|proyecto| proyecto.conversations)
+            .unwrap_or_default())
+    }
+
+    fn tree(&self, project: &str, path: &str) -> Result<Vec<files::Entry>, String> {
+        let dir = camino(&self.proyecto(project)?, path)?;
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        let mut entradas: Vec<files::Entry> = cliente
+            .list_files(&listo.name, &self.del_volumen(&dir))
+            .map_err(|_| "esa carpeta no está".to_string())?
+            .into_iter()
+            .filter(|entrada| files::visible(&entrada.name))
+            .map(|entrada| files::Entry {
+                kind: files::kind(&entrada.name, entrada.is_dir),
+                name: entrada.name,
+                dir: entrada.is_dir,
+                size: entrada.size,
+            })
+            .collect();
+        files::ordenar(&mut entradas);
+        Ok(entradas)
+    }
+
+    fn read_file(
+        &self,
+        project: &str,
+        path: &str,
+        limit: Option<u64>,
+    ) -> Result<(Vec<u8>, u64), String> {
+        let dir = camino(&self.proyecto(project)?, path)?;
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        let bytes = cliente
+            .read_file(&listo.name, &self.del_volumen(&dir))
+            .map_err(|_| "ese archivo no está".to_string())?;
+        let size = bytes.len() as u64;
+        let recortado = match limit {
+            Some(limit) if size > limit => bytes[..limit as usize].to_vec(),
+            _ => bytes,
+        };
+        Ok((recortado, size))
+    }
+
+    fn window(&self, key: &str, end: usize) -> Result<Window, String> {
+        let dir = conversations::chat_dir(&self.lugar.root, key);
+        if !dir.is_dir() {
+            return Err("esa conversación no existe".into());
+        }
+        Ok(Log::in_dir(&dir).window(end))
+    }
+
+    fn read_attachment(&self, key: &str, name: &str) -> Result<Vec<u8>, String> {
+        let name = media::safe_name(name).ok_or("ese nombre no sirve")?;
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        cliente.read_file(&listo.name, &self.adjunto(key, name))
+    }
+
+    fn read_attachments(&self, key: &str, names: &[String]) -> Result<Vec<axe::Image>, String> {
+        names
+            .iter()
+            .map(|name| {
+                let name = media::safe_name(name).ok_or("ese adjunto no sirve")?;
+                axe::image::attach(&self.adjunto(key, name))
+            })
+            .collect()
+    }
+
+    fn write_attachment(&self, key: &str, name: &str, data: &[u8]) -> Result<String, String> {
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        let name = media::unique_name(name);
+        cliente.write_file(&listo.name, &self.adjunto(key, &name), data)?;
+        Ok(name)
+    }
+
+    fn writable(&self, key: &str) -> Result<Conversation, String> {
+        let charla = self
+            .store
+            .conversation_index(&self.org, key)?
+            .ok_or("esa conversación no existe")?;
+        if charla.read_only {
+            return Err("esa conversación no se escribe desde acá".into());
+        }
+        Ok(conversacion(charla))
+    }
+
+    fn create_project(&self, name: &str) -> Result<(), String> {
+        self.cli(&format!("projects new {name}")).map(|_| ())
+    }
+
+    fn rename_project(&self, from: &str, to: &str) -> Result<(), String> {
+        self.cli(&format!("projects rename {from} {to}"))
+            .map(|_| ())
+    }
+
+    fn duplicate_project(&self, from: &str, to: &str) -> Result<(), String> {
+        self.cli(&format!("projects duplicate {from} {to}"))
+            .map(|_| ())
+    }
+
+    fn delete_project(&self, name: &str, force: bool) -> Result<(), String> {
+        let force = match force {
+            true => " --force",
+            false => "",
+        };
+        self.cli(&format!("projects delete {name}{force}"))
+            .map(|_| ())
+    }
+
+    fn create_conversation(&self, project: &str, title: &str) -> Result<String, String> {
+        let salida = self.cli(&format!(
+            "conversations new {project} {}",
+            entre_comillas(title)
+        ))?;
+        Ok(salida.trim().to_string())
+    }
+
+    fn rename_conversation(&self, key: &str, title: &str) -> Result<(), String> {
+        self.cli(&format!(
+            "conversations rename {key} {}",
+            entre_comillas(title)
+        ))
+        .map(|_| ())
+    }
+
+    fn delete_conversation(&self, key: &str) -> Result<(), String> {
+        if !conversations::valid_key(key) {
+            return Err("esa conversación no existe".into());
+        }
+        let listo = self.despierto()?;
+        let cliente = self.cliente()?;
+        let dir = conversations::chat_dir(&self.lugar.root, key);
+        let comando = format!("rm -rf -- {}", entre_comillas(&self.del_volumen(&dir)));
+        cliente.run(&listo.name, MOUNT, &comando, 60, &mut |_| {})?;
+        self.refrescar(&cliente, &listo.name);
+        Ok(())
+    }
+}
+
+fn conversacion(charla: crate::store::IndexConversation) -> Conversation {
+    Conversation {
+        key: charla.key,
+        project: charla.project,
+        title: charla.title,
+        read_only: charla.read_only,
+        last: charla.last,
     }
 }
 

@@ -860,16 +860,76 @@ mod remoto {
         crate::remote::sincronizar(&cliente, "turno-adentro", &store, &org.id).unwrap();
         eprintln!("la copia: {:?}", antes.elapsed());
         let indice = store.index(&org.id).unwrap();
-        assert_eq!(indice.len(), 1, "sólo el proyecto general: {indice:?}");
-        assert_eq!(indice[0].name, "general");
-        let charla = indice[0]
-            .conversations
+        let charla = indice
             .iter()
-            .find(|charla| charla.key == "adentro-del-sandbox")
+            .find(|proyecto| proyecto.name == "general")
+            .and_then(|proyecto| {
+                proyecto
+                    .conversations
+                    .iter()
+                    .find(|charla| charla.key == "adentro-del-sandbox")
+            })
             .expect("la conversación está en el índice");
         assert!(
             charla.last.as_deref().unwrap_or_default().contains("hola"),
             "el índice no trae el último mensaje: {charla:?}"
+        );
+
+        // El workspace de la web contra el sandbox: la lista sale del índice y
+        // los archivos se le piden al volumen en el momento.
+        use crate::workspace::Workspace;
+        let espacio = crate::remote::Remoto::new(
+            org.id.clone(),
+            store.clone(),
+            place(&root, &workspace, &org),
+        );
+        let general = espacio.tree("general", "").unwrap();
+        assert!(
+            general
+                .iter()
+                .any(|entrada| entrada.name == "hola.txt" && entrada.size == 5),
+            "el árbol en vivo no trae el archivo del modelo: {:?}",
+            general
+                .iter()
+                .map(|entrada| entrada.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        let (bytes, size) = espacio.read_file("general", "hola.txt", None).unwrap();
+        assert_eq!(size, 5);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("hola"),
+            "el archivo en vivo: {bytes:?}"
+        );
+
+        // Y lo que la web escribe lo escriben las mismas funciones de adentro,
+        // por el CLI: no hay un segundo layout.
+        espacio.create_project("nuevo").unwrap();
+        assert!(
+            espacio
+                .projects()
+                .unwrap()
+                .iter()
+                .any(|proyecto| proyecto.name == "nuevo"),
+            "el proyecto nuevo no quedó en la lista"
+        );
+        let clave = espacio.create_conversation("nuevo", "una charla").unwrap();
+        let charla = espacio.writable(&clave).unwrap();
+        assert_eq!(charla.project, "nuevo");
+        assert_eq!(charla.title.as_deref(), Some("una charla"));
+        assert_eq!(
+            espacio.tree("nuevo", "").unwrap().len(),
+            0,
+            "el proyecto nuevo arranca vacío"
+        );
+        espacio.delete_conversation(&clave).unwrap();
+        espacio.delete_project("nuevo", true).unwrap();
+        assert!(
+            !espacio
+                .projects()
+                .unwrap()
+                .iter()
+                .any(|proyecto| proyecto.name == "nuevo"),
+            "el proyecto borrado sigue en la lista"
         );
 
         let _ = std::fs::remove_dir_all(&base);

@@ -121,24 +121,11 @@ pub fn place(root: &Path, workspace: &Path, org: &Org) -> Place {
 pub struct Local {
     root: PathBuf,
     workspace: PathBuf,
-    org: Option<String>,
 }
 
 impl Local {
     pub fn new(root: PathBuf, workspace: PathBuf) -> Local {
-        Local {
-            root,
-            workspace,
-            org: None,
-        }
-    }
-
-    pub fn place(&self) -> Place {
-        Place {
-            root: self.root.clone(),
-            workspace: self.workspace.clone(),
-            org: self.org.clone(),
-        }
+        Local { root, workspace }
     }
 
     fn chat_dir(&self, key: &str) -> PathBuf {
@@ -168,7 +155,6 @@ impl From<Place> for Local {
         Local {
             root: place.root,
             workspace: place.workspace,
-            org: place.org,
         }
     }
 }

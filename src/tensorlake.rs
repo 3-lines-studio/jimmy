@@ -13,6 +13,7 @@ use std::time::Duration;
 
 const API: &str = "https://api.tensorlake.ai";
 const PROXY: &str = ".sandbox.tensorlake.ai";
+const MOUNT: &str = "/work";
 const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -242,6 +243,34 @@ impl Tensorlake {
         let url = format!("{}/{id}/resume", self.sandboxes());
         self.finish(self.auth(ureq::post(&url)).call())?;
         Ok(())
+    }
+
+    /// El estado de un sandbox puntual. Es el único que dice la verdad: la
+    /// lista viene con retraso y puede mostrar el estado de antes.
+    pub fn state(&self, id: &str) -> Result<SandboxInfo, String> {
+        let url = format!("{}/{id}", self.sandboxes());
+        let response = self.finish(self.auth(ureq::get(&url)).call())?;
+        response.into_json().map_err(|e| e.to_string())
+    }
+
+    /// El sandbox de una org, despierto: si no está se crea, y si estaba
+    /// dormido se despierta.
+    pub fn ensure(&self, name: &str, image: &str, fs: &str) -> Result<SandboxInfo, String> {
+        let Some(actual) = self.find(name)? else {
+            return self.create(name, image, MOUNT, fs);
+        };
+        let mut estado = self.state(&actual.id)?;
+        for _ in 0..20 {
+            if estado.status == "running" {
+                break;
+            }
+            if estado.status == "suspended" {
+                self.resume(&actual.id)?;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            estado = self.state(&actual.id)?;
+        }
+        Ok(estado)
     }
 
     /// Lanzar un proceso con la entrada por pipe y la salida guardada: es lo
@@ -568,6 +597,37 @@ mod tests {
         assert!(
             colgado.contains("error: command timed out after 2 seconds"),
             "{colgado}"
+        );
+
+        credencial.terminate(&creado.id).unwrap();
+    }
+    /// El ciclo de vida: la máquina de una org se crea una vez y después se
+    /// despierta. Crea recursos, así que corre a mano con la clave puesta:
+    ///
+    ///     heimdall run -p jimmy -c dev -- cargo test --bin jimmy -- --ignored el_sandbox_se_despierta
+    #[test]
+    #[ignore]
+    fn el_sandbox_se_despierta() {
+        let Some(credencial) = Tensorlake::from_env() else {
+            panic!("falta TENSORLAKE_API_KEY");
+        };
+        let name = format!("ensure-{}", crate::random::hex(4));
+        let image = std::env::var("TENSORLAKE_IMAGE").unwrap_or_else(|_| "jimmy-min".into());
+
+        let creado = credencial.ensure(&name, &image, "jimmy-org").unwrap();
+        assert_eq!(creado.status, "running", "{creado:?}");
+
+        let otra_vez = credencial.ensure(&name, &image, "jimmy-org").unwrap();
+        assert_eq!(otra_vez.id, creado.id, "creó otro en vez de encontrarlo");
+
+        credencial.suspend(&creado.id).unwrap();
+        let despierto = credencial.ensure(&name, &image, "jimmy-org").unwrap();
+        assert_eq!(despierto.id, creado.id);
+        let despues = credencial.find(&name).unwrap();
+        assert_eq!(
+            despues.map(|box_| box_.status),
+            Some("running".to_string()),
+            "no despertó"
         );
 
         credencial.terminate(&creado.id).unwrap();

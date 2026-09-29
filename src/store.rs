@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS conversations (
     deleted_at INTEGER,
     UNIQUE (org_id, key)
 );
+CREATE TABLE IF NOT EXISTS entries (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    space TEXT NOT NULL,
+    parent TEXT NOT NULL,
+    name TEXT NOT NULL,
+    directory INTEGER NOT NULL DEFAULT 0,
+    size INTEGER NOT NULL DEFAULT 0,
+    modified INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE (org_id, space, parent, name)
+);
 CREATE TABLE IF NOT EXISTS memberships (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -860,6 +874,122 @@ pub struct IndexConversation {
     pub touched_at: i64,
 }
 
+/// Una entrada del árbol de una org: dónde está, cómo se llama y qué dice el
+/// volumen de ella. `space` es de qué parte del volumen se trata —un proyecto,
+/// o `chats/<clave>/uploads` para los adjuntos—, y `parent` la carpeta que la
+/// contiene, vacío si está en la raíz.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreeEntry {
+    pub space: String,
+    pub parent: String,
+    pub name: String,
+    pub directory: bool,
+    pub size: u64,
+    pub modified: i64,
+}
+
+impl Store {
+    /// Las entradas de una carpeta, de la copia que dejó la última
+    /// sincronización. Vacío también significa "no sé": el que llama decide si
+    /// le pregunta al volumen.
+    #[allow(dead_code)]
+    pub fn tree(&self, org: &str, space: &str, parent: &str) -> Result<Vec<TreeEntry>, String> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT space, parent, name, directory, size, modified FROM entries
+                 WHERE org_id = ?1 AND space = ?2 AND parent = ?3 AND deleted_at IS NULL
+                 ORDER BY directory DESC, name",
+            )
+            .map_err(|e| e.to_string())?;
+        let filas = statement
+            .query_map(params![org, space, parent], |row| {
+                Ok(TreeEntry {
+                    space: row.get(0)?,
+                    parent: row.get(1)?,
+                    name: row.get(2)?,
+                    directory: row.get(3)?,
+                    size: row.get::<_, i64>(4)?.max(0) as u64,
+                    modified: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut entradas = Vec::new();
+        for fila in filas {
+            entradas.push(fila.map_err(|e| e.to_string())?);
+        }
+        Ok(entradas)
+    }
+
+    /// Una entrada, por su lugar: es lo que valida el contenido cacheado.
+    #[allow(dead_code)]
+    pub fn entry(
+        &self,
+        org: &str,
+        space: &str,
+        parent: &str,
+        name: &str,
+    ) -> Result<Option<TreeEntry>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT space, parent, name, directory, size, modified FROM entries
+             WHERE org_id = ?1 AND space = ?2 AND parent = ?3 AND name = ?4 AND deleted_at IS NULL",
+            params![org, space, parent, name],
+            |row| {
+                Ok(TreeEntry {
+                    space: row.get(0)?,
+                    parent: row.get(1)?,
+                    name: row.get(2)?,
+                    directory: row.get(3)?,
+                    size: row.get::<_, i64>(4)?.max(0) as u64,
+                    modified: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// Reemplaza el árbol de la org con lo que se acaba de leer de su volumen,
+    /// igual que el índice: lo que ya no está queda dado de baja.
+    pub fn sync_tree(&self, org: &str, entries: &[TreeEntry]) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let ahora = now();
+        tx.execute(
+            "UPDATE entries SET deleted_at = ?1 WHERE org_id = ?2 AND deleted_at IS NULL",
+            params![ahora, org],
+        )
+        .map_err(|e| e.to_string())?;
+        for entrada in entries {
+            tx.execute(
+                "INSERT INTO entries (id, org_id, space, parent, name, directory, size, modified,
+                                      created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                 ON CONFLICT(org_id, space, parent, name) DO UPDATE SET
+                     directory = excluded.directory,
+                     size = excluded.size,
+                     modified = excluded.modified,
+                     updated_at = excluded.updated_at,
+                     deleted_at = NULL",
+                params![
+                    ulid::new(),
+                    org,
+                    entrada.space,
+                    entrada.parent,
+                    entrada.name,
+                    entrada.directory,
+                    entrada.size as i64,
+                    entrada.modified,
+                    ahora
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+}
+
 impl Store {
     /// Lo que hay en la org, como quedó en la última sincronización. Lo usa la
     /// web, que es el paso que sigue: mostrar la lista sin despertar el sandbox.
@@ -1155,6 +1285,7 @@ mod tests {
             "machines",
             "projects",
             "conversations",
+            "entries",
         ] {
             let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
             let rows: Vec<(String, String)> = statement

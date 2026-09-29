@@ -258,11 +258,33 @@ impl Tensorlake {
     /// El sandbox de una org, despierto: si no está se crea, y si estaba
     /// dormido se despierta.
     pub fn ensure(&self, name: &str, image: &str, fs: &str) -> Result<SandboxInfo, String> {
-        let listo = match self.find(name)? {
-            Some(actual) => actual,
-            None => self.create(name, image, MOUNT, fs)?,
+        let (listo, despierto) = match self.find(name)? {
+            Some(actual) => {
+                let despierto = self.state(&actual.id)?.status == "running";
+                (actual, despierto)
+            }
+            None => (self.create(name, image, MOUNT, fs)?, false),
         };
-        self.esperar(&listo.id)
+        let estado = self.esperar(&listo.id)?;
+        match despierto {
+            true => Ok(estado),
+            false => self.probar(&listo.id).map(|_| estado),
+        }
+    }
+
+    /// Que conteste de verdad. El estado dice `running` antes de que el sandbox
+    /// pueda aceptar un proceso: medido, uno recién creado contesta `running` y
+    /// después rechaza el proceso con `SANDBOX_NOT_RUNNING (status: pending)`.
+    fn probar(&self, id: &str) -> Result<(), String> {
+        let mut ultimo = String::new();
+        for _ in 0..40 {
+            match self.run(id, MOUNT, "true", 30, &mut |_| {}) {
+                Ok(_) => return Ok(()),
+                Err(error) => ultimo = error,
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Err(format!("el sandbox no arranca: {ultimo}"))
     }
 
     /// Que diga `running`, y que lo diga él: la respuesta del `create` dice
@@ -440,6 +462,20 @@ impl Tensorlake {
         timeout: u64,
         progress: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
+        self.run_codigo(sandbox, dir, command, timeout, progress)
+            .map(|(texto, _)| texto)
+    }
+
+    /// Lo mismo, con el código de salida: el que manda un comando que puede
+    /// fallar —el CLI del agente, por ejemplo— necesita saber si salió bien.
+    pub fn run_codigo(
+        &self,
+        sandbox: &str,
+        dir: &str,
+        command: &str,
+        timeout: u64,
+        progress: &mut dyn FnMut(&str),
+    ) -> Result<(String, Option<i64>), String> {
         let pid = self.start(
             sandbox,
             "/bin/bash",
@@ -472,12 +508,12 @@ impl Tensorlake {
                 if let Some(signal) = estado.signal {
                     texto.push_str(&format!("\nerror: signal: {signal}"));
                 }
-                return Ok(texto);
+                return Ok((texto, estado.exit_code.map(i64::from)));
             }
             if arranque.elapsed() >= Duration::from_secs(timeout) {
                 let _ = self.kill(sandbox, pid);
                 let texto = cerrar(&lineas, Some(timeout), None);
-                return Ok(texto);
+                return Ok((texto, None));
             }
             std::thread::sleep(POLL);
         }

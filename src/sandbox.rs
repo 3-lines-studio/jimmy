@@ -18,8 +18,21 @@ pub enum Turn {
 /// como el log de la conversación.
 pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
-/// Quién corre el turno de una conversación.
+/// Quién corre el turno de una conversación, y dónde.
+///
+/// Un sandbox es de una org: adentro vive su workspace y corre su trabajo. En
+/// local el sandbox es este mismo proceso, así que prepararlo o dormirlo no
+/// hace falta; en un proveedor de verdad, `ensure` lo crea o lo despierta y
+/// `suspend` lo guarda sin bajarlo.
 pub trait Sandbox: Send + Sync {
+    /// Dejarlo listo: crearlo si no existe, despertarlo si está dormido.
+    ///
+    /// Los tres métodos de vida no tienen quien los llame todavía: en local no
+    /// hay nada que preparar y todavía no se borra una org. El día que el
+    /// sandbox sea de un proveedor, se llaman antes y después de cada turno.
+    #[allow(dead_code)]
+    fn ensure(&self, org: &str) -> Result<(), String>;
+
     fn turn(
         &self,
         session: &Session,
@@ -36,4 +49,12 @@ pub trait Sandbox: Send + Sync {
     fn kill(&self, key: &str);
 
     fn running(&self, key: &str) -> bool;
+
+    /// Guardarlo sin bajarlo, para que despierte cuando haga falta.
+    #[allow(dead_code)]
+    fn suspend(&self, org: &str) -> Result<(), String>;
+
+    /// Bajarlo y llevarse lo efímero. Lo que vive en el workspace queda.
+    #[allow(dead_code)]
+    fn destroy(&self, org: &str) -> Result<(), String>;
 }

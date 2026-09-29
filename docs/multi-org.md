@@ -82,15 +82,26 @@ trait Sandbox {
     fn files(&self, h: &Handle) -> &dyn Workspace;      // lo que vive adentro
 }
 
-/// El workspace de una org, sin decir dónde está: listar proyectos, leer y
-/// escribir archivos, mover y borrar. La web no abre caminos, pide nombres.
+/// El workspace de una org, sin decir dónde está: lo que hay adentro y lo que
+/// se puede hacer con eso. La web no arma caminos, pide nombres.
 trait Workspace {
-    fn projects(&self) -> Vec<Project>;
-    fn conversations(&self, project: &str) -> Vec<Conversation>;
-    fn read(&self, path: &str) -> Result<Vec<u8>, String>;
-    fn write(&self, path: &str, data: &[u8]) -> Result<(), String>;
+    fn label(&self) -> String;                       // cómo se llama, para mostrar
+    fn projects(&self) -> Result<Vec<Project>, String>;
+    fn conversations(&self, project: &str) -> Result<Vec<Conversation>, String>;
+    fn tree(&self, project: &str, path: &str) -> Result<Vec<Entry>, String>;
+    fn read_file(&self, project: &str, path: &str, limit: Option<u64>) -> Result<(Vec<u8>, u64), String>;
+    fn window(&self, key: &str, end: usize) -> Result<Window, String>;
+    fn read_attachment(&self, key: &str, name: &str) -> Result<Vec<u8>, String>;
+    fn read_attachments(&self, key: &str, names: &[String]) -> Result<Vec<Image>, String>;
+    fn write_attachment(&self, key: &str, name: &str, data: &[u8]) -> Result<String, String>;
+    fn writable(&self, key: &str) -> Result<Conversation, String>;
     fn create_project(&self, name: &str) -> Result<(), String>;
-    fn remove(&self, path: &str) -> Result<(), String>;
+    fn rename_project(&self, from: &str, to: &str) -> Result<(), String>;
+    fn duplicate_project(&self, from: &str, to: &str) -> Result<(), String>;
+    fn delete_project(&self, name: &str, force: bool) -> Result<(), String>;
+    fn create_conversation(&self, project: &str, title: &str) -> Result<String, String>;
+    fn rename_conversation(&self, key: &str, title: &str) -> Result<(), String>;
+    fn delete_conversation(&self, key: &str) -> Result<(), String>;
 }
 ```
 

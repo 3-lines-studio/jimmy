@@ -97,18 +97,10 @@ impl Agent {
         self.pool.cancel(&session.key());
     }
 
-    /// Corta el worker y se lleva la carpeta de la conversación.
-    pub fn delete(&self, key: &str) -> Result<(), String> {
+    /// Suelta la conversación: corta el worker, si hay alguno. Lo que quedó en
+    /// el disco lo borra el workspace, que es de quien es.
+    pub fn release(&self, key: &str) {
         self.pool.kill(key);
-        let dir = self.conversation_dir(key);
-        if !dir.is_dir() {
-            return Ok(());
-        }
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
-    }
-
-    pub fn conversation_dir(&self, key: &str) -> PathBuf {
-        conversations::get(&self.root, Path::new(&self.workspace), key).dir
     }
 
     /// Busca en lo que se dijo, no en lo que se escribió en los archivos: es lo

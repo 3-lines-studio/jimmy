@@ -170,6 +170,11 @@ impl Pool {
 }
 
 impl Sandbox for Pool {
+    /// En local el sandbox es este proceso: no hay nada que preparar.
+    fn ensure(&self, _org: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     fn turn(
         &self,
         session: &Session,
@@ -190,6 +195,16 @@ impl Sandbox for Pool {
 
     fn running(&self, key: &str) -> bool {
         Pool::running(self, key)
+    }
+
+    /// Nada que dormir: los procesos viven lo que dura el turno.
+    fn suspend(&self, _org: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Nada que bajar: cuando el proceso muere no queda nada suyo.
+    fn destroy(&self, _org: &str) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -316,6 +331,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn en_local_no_hay_nada_que_preparar_ni_dormir() {
+        let pool = Pool::new(Vec::new(), None);
+        for org in ["una-org", ""] {
+            assert!(pool.ensure(org).is_ok(), "preparar no hace nada");
+            assert!(pool.suspend(org).is_ok(), "dormir no hace nada");
+            assert!(pool.destroy(org).is_ok(), "bajar no hace nada");
+        }
     }
 
     #[test]

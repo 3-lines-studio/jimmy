@@ -181,6 +181,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             versioned(MANIFEST).as_bytes(),
         ),
         ("POST", "/api/login") => login(web, &request, stream),
+        ("POST", "/api/org") => set_org(web, &request, stream),
+        ("POST", "/api/orgs") => create_org(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
@@ -378,9 +380,21 @@ fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
 }
 
 fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(user) = web.user(request) else {
+    let Some(user) = current_user(web, request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
+    let store = web.auth.store();
+    let orgs: Vec<serde_json::Value> = store
+        .orgs_of(&user.id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|org| serde_json::json!({ "id": org.id, "name": org.name }))
+        .collect();
+    let org = store
+        .active_org(&user.id)
+        .ok()
+        .flatten()
+        .map(|org| serde_json::json!({ "id": org.id, "name": org.name }));
     let projects: Vec<serde_json::Value> = conversations::projects(&web.root, &web.workspace)
         .into_iter()
         .map(|project| {
@@ -430,13 +444,49 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
         stream,
         200,
         &serde_json::json!({
-            "user": user,
+            "user": user_name(user.email),
+            "org": org,
+            "orgs": orgs,
             "workspace": web.workspace.display().to_string(),
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
         }),
     )
+}
+
+/// El usuario de esta request con su id, que es lo que necesitan las orgs: el
+/// nombre que muestra la web no alcanza para saber a quién pertenece nada.
+fn current_user(web: &Arc<Web>, request: &Request) -> Option<crate::store::User> {
+    web.auth.session_user(&request.cookie(auth::COOKIE)?)
+}
+
+/// Cambiar de org activa: sólo vale una org de la que se es parte.
+fn set_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(user) = current_user(web, request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let org = request.field("id").unwrap_or_default();
+    if let Err(error) = web.auth.store().set_active_org(&user.id, &org) {
+        return http::send_error(stream, 400, &error);
+    }
+    state(web, request, stream)
+}
+
+/// Una org nueva queda activa: el que la acaba de crear quiere trabajar ahí.
+fn create_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let Some(user) = current_user(web, request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let name = request.field("name").unwrap_or_default();
+    let org = match web.auth.store().create_org(&user.id, &name) {
+        Ok(org) => org,
+        Err(error) => return http::send_error(stream, 400, &error),
+    };
+    if let Err(error) = web.auth.store().set_active_org(&user.id, &org.id) {
+        return http::send_error(stream, 400, &error);
+    }
+    state(web, request, stream)
 }
 
 fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1131,7 +1181,8 @@ done
         agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let auth = Auth::new(&root, "bob@ejemplo.com, ana@ejemplo.com", None, dev).unwrap();
+        let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
+        let auth = Auth::new(store, "bob@ejemplo.com, ana@ejemplo.com", None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(

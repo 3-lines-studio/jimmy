@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL DEFAULT '',
+    active_org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
@@ -146,6 +147,14 @@ impl Store {
                     params![ulid::new(), org.id, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
+                // La primera org en la que se entra es la que queda activa: la
+                // personal. Si ya tenía una elegida, no se pisa.
+                tx.execute(
+                    "UPDATE users SET active_org_id = ?1
+                     WHERE id = ?2 AND active_org_id IS NULL",
+                    params![org.id, user.id],
+                )
+                .map_err(|e| e.to_string())?;
                 org
             }
         };
@@ -191,6 +200,77 @@ impl Store {
             params![now()],
         )
         .map_err(|e| e.to_string())
+    }
+
+    /// Las orgs de ese usuario, en el orden en que se crearon.
+    pub fn orgs_of(&self, user: &str) -> Result<Vec<Org>, String> {
+        let db = self.db.lock().unwrap();
+        orgs_of(&db, user)
+    }
+
+    /// Una org nueva, con el que la crea como dueño.
+    pub fn create_org(&self, user: &str, name: &str) -> Result<Org, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("la org necesita un nombre".into());
+        }
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let org = Org {
+            id: ulid::new(),
+            name: name.to_string(),
+        };
+        tx.execute(
+            "INSERT INTO orgs (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params![org.id, org.name, now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO memberships (id, org_id, user_id, role, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'owner', ?4, ?4)",
+            params![ulid::new(), org.id, user, now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(org)
+    }
+
+    /// Sólo se puede estar en una org de la que se es parte.
+    pub fn set_active_org(&self, user: &str, org: &str) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        if !is_member(&db, org, user)? {
+            return Err("esa org no es tuya".into());
+        }
+        db.execute(
+            "UPDATE users SET active_org_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![org, now(), user],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// La org en la que está trabajando, o su org personal si la elegida ya no
+    /// está a mano.
+    pub fn active_org(&self, user: &str) -> Result<Option<Org>, String> {
+        let db = self.db.lock().unwrap();
+        let elegida = db
+            .query_row(
+                "SELECT orgs.id, orgs.name FROM orgs
+                 JOIN users ON users.active_org_id = orgs.id
+                 JOIN memberships ON memberships.org_id = orgs.id
+                     AND memberships.user_id = users.id
+                 WHERE users.id = ?1
+                   AND orgs.deleted_at IS NULL
+                   AND memberships.deleted_at IS NULL",
+                params![user],
+                read_org,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match elegida {
+            Some(org) => Ok(Some(org)),
+            None => personal_org(&db, user),
+        }
     }
 }
 
@@ -241,6 +321,36 @@ fn personal_org(db: &Connection, user: &str) -> Result<Option<Org>, String> {
         read_org,
     )
     .optional()
+    .map_err(|e| e.to_string())
+}
+
+fn orgs_of(db: &Connection, user: &str) -> Result<Vec<Org>, String> {
+    let mut statement = db
+        .prepare(
+            "SELECT orgs.id, orgs.name FROM orgs
+             JOIN memberships ON memberships.org_id = orgs.id
+             WHERE memberships.user_id = ?1
+               AND memberships.deleted_at IS NULL
+               AND orgs.deleted_at IS NULL
+             ORDER BY orgs.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(params![user], read_org)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<Org>>>()
+        .map_err(|e| e.to_string())
+}
+
+fn is_member(db: &Connection, org: &str, user: &str) -> Result<bool, String> {
+    db.query_row(
+        "SELECT 1 FROM memberships
+         WHERE org_id = ?1 AND user_id = ?2 AND deleted_at IS NULL",
+        params![org, user],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
     .map_err(|e| e.to_string())
 }
 
@@ -423,6 +533,57 @@ mod tests {
         assert_eq!(again, user);
         assert_eq!(same_org, org);
         assert_eq!(memberships(&reopened).len(), 1);
+    }
+
+    #[test]
+    fn la_org_activa_arranca_en_la_personal_y_se_puede_cambiar() {
+        let store = store("activa");
+        let (user, personal) = store.register("don@berti.sh").unwrap();
+        assert_eq!(store.active_org(&user.id).unwrap(), Some(personal.clone()));
+        let empresa = store.create_org(&user.id, "La Empresa").unwrap();
+        assert_eq!(
+            store.orgs_of(&user.id).unwrap(),
+            vec![personal.clone(), empresa.clone()]
+        );
+        store.set_active_org(&user.id, &empresa.id).unwrap();
+        assert_eq!(store.active_org(&user.id).unwrap(), Some(empresa));
+    }
+
+    #[test]
+    fn una_org_de_la_que_no_sos_parte_no_se_activa() {
+        let store = store("ajena");
+        let (ana, org_ana) = store.register("ana@ejemplo.com").unwrap();
+        let (_, org_beto) = store.register("beto@ejemplo.com").unwrap();
+        assert!(store.set_active_org(&ana.id, &org_beto.id).is_err());
+        assert_eq!(store.active_org(&ana.id).unwrap(), Some(org_ana));
+        assert_eq!(store.orgs_of(&ana.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn si_la_org_elegida_desaparece_vuelve_a_la_personal() {
+        let store = store("huerfana");
+        let (user, personal) = store.register("don@berti.sh").unwrap();
+        let empresa = store.create_org(&user.id, "La Empresa").unwrap();
+        store.set_active_org(&user.id, &empresa.id).unwrap();
+        store
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE orgs SET deleted_at = ?1 WHERE id = ?2",
+                params![now(), empresa.id],
+            )
+            .unwrap();
+        assert_eq!(store.active_org(&user.id).unwrap(), Some(personal));
+        assert_eq!(store.orgs_of(&user.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn una_org_sin_nombre_no_se_crea() {
+        let store = store("sin-nombre");
+        let (user, _) = store.register("don@berti.sh").unwrap();
+        assert!(store.create_org(&user.id, "   ").is_err());
+        assert_eq!(store.orgs_of(&user.id).unwrap().len(), 1);
     }
 
     #[test]

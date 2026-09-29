@@ -9,7 +9,6 @@ use crate::mail::Mail;
 use crate::random;
 use crate::store::Store;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,21 +40,31 @@ pub struct Auth {
 
 impl Auth {
     /// `allowed` es la lista de mails autorizados, separados por coma. La base
-    /// del control plane se abre al lado del resto del estado.
-    pub fn new(root: &Path, allowed: &str, mail: Option<Mail>, dev: bool) -> Result<Auth, String> {
+    /// del control plane la abre quien arma todo esto, que es el que sabe dónde
+    /// vive.
+    pub fn new(store: Arc<Store>, allowed: &str, mail: Option<Mail>, dev: bool) -> Auth {
         let allowed = allowed
             .split(',')
             .map(|email| email.trim().to_lowercase())
             .filter(|email| !email.is_empty())
             .collect();
-        let store = Arc::new(Store::open(&root.join("jimmy.db"))?);
-        Ok(Auth {
+        Auth {
             allowed,
             links: Mutex::new(HashMap::new()),
             store,
             mail,
             dev,
-        })
+        }
+    }
+
+    /// Quién es el dueño de la sesión, con su id, si sigue viva.
+    pub fn session_user(&self, token: &str) -> Option<crate::store::User> {
+        self.store.session_user(token).ok().flatten()
+    }
+
+    /// El control plane, para lo que no es entrar: orgs, conversaciones, agenda.
+    pub fn store(&self) -> &Arc<Store> {
+        &self.store
     }
 
     pub fn allowed(&self) -> &[String] {
@@ -127,13 +136,24 @@ impl Auth {
     }
 }
 
+/// Un auth sobre una base temporal, que es de lo único que depende.
+#[cfg(test)]
+fn test_auth(root: &std::path::Path, emails: &str) -> Auth {
+    Auth::new(
+        Arc::new(Store::open(&root.join("jimmy.db")).unwrap()),
+        emails,
+        None,
+        true,
+    )
+}
+
 #[test]
 fn una_sesion_vencida_no_deja_entrar_a_nadie() {
     let root = std::env::temp_dir().join(format!("jimmy-auth-{}-expired", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let auth = Auth::new(&root, "bob@ejemplo.com", None, false).unwrap();
-    let (user, _) = auth.store.register("bob@ejemplo.com").unwrap();
-    auth.store
+    let auth = test_auth(&root, "bob@ejemplo.com");
+    let (user, _) = auth.store().register("bob@ejemplo.com").unwrap();
+    auth.store()
         .open_session("vieja", &user.id, (now() - 1) as i64)
         .unwrap();
     assert!(auth.user("vieja").is_none(), "la vieja ya venció");
@@ -150,7 +170,7 @@ mod tests {
     fn auth(tag: &str, emails: &str) -> (Auth, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("jimmy-auth-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let auth = Auth::new(&root, emails, None, true).unwrap();
+        let auth = test_auth(&root, emails);
         (auth, root)
     }
 
@@ -178,7 +198,7 @@ mod tests {
 
         let session = auth.open_session("bob@ejemplo.com").unwrap();
         assert_eq!(auth.user(&session).as_deref(), Some("bob@ejemplo.com"));
-        let reopened = Auth::new(&root, "bob@ejemplo.com", None, true).unwrap();
+        let reopened = test_auth(&root, "bob@ejemplo.com");
         assert_eq!(
             reopened.user(&session).as_deref(),
             Some("bob@ejemplo.com"),

@@ -375,18 +375,19 @@ fn serve_web(
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
-    let auth = match auth::Auth::new(
-        &config.root,
-        &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
-        mail::Mail::from_env(),
-        env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
-    ) {
-        Ok(auth) => auth,
+    let store = match store::Store::open(&config.root.join("jimmy.db")) {
+        Ok(store) => Arc::new(store),
         Err(error) => {
             eprintln!("jimmy: no pude abrir la base del control plane: {error}");
             return;
         }
     };
+    let auth = auth::Auth::new(
+        store,
+        &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
+        mail::Mail::from_env(),
+        env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
+    );
     if auth.allowed().is_empty() {
         eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");
     } else if auth.mail.is_none() && !auth.dev {

@@ -592,6 +592,76 @@ textarea:focus {
   border-radius: var(--r-full);
 }
 
+#orgs {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--row);
+  margin: var(--s3) var(--s3) var(--s2);
+  background: var(--raised);
+  border-radius: var(--r-full);
+}
+
+#orgs select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  color: inherit;
+  font: inherit;
+}
+
+#orgs select:focus-visible {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--ring);
+}
+
+#orgs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--row);
+  height: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+#orgs button:hover {
+  color: var(--text);
+}
+
+#new-org-form {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--row);
+  margin: 0 var(--s3) var(--s2);
+  background: var(--raised);
+  border-radius: var(--r-full);
+}
+
+#new-org-form input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s3);
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--r-full);
+}
+
+#new-org-form input:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
 #new-project {
   display: flex;
   align-items: center;

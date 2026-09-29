@@ -27,6 +27,18 @@
   <body>
     <div id="app">
       <aside id="sidebar">
+        <div id="orgs">
+          <select id="org" aria-label="Organización"></select>
+          <button id="new-org" aria-label="Nueva organización" title="Nueva organización">+</button>
+        </div>
+        <form id="new-org-form" hidden>
+          <input
+            id="org-name"
+            placeholder="Nueva organización"
+            aria-label="Nueva organización"
+            spellcheck="false"
+          />
+        </form>
         <form id="new-project">
           <input
             id="project-name"

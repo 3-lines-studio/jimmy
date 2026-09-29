@@ -89,6 +89,10 @@ const expanded = new Set();
 const VISIBLE = 10;
 
 const projectsEl = document.getElementById("projects");
+const orgEl = document.getElementById("org");
+const newOrgEl = document.getElementById("new-org");
+const newOrgForm = document.getElementById("new-org-form");
+const orgNameEl = document.getElementById("org-name");
 const previewsEl = document.getElementById("previews");
 const machineEl = document.getElementById("machine");
 const tabsEl = document.getElementById("tabs");
@@ -250,6 +254,7 @@ async function refresh() {
     if (!live.has(id) && !isFiles(id) && !isAgenda(id)) closeTab(id);
   }
   renderSidebar();
+  renderOrgs();
   renderPreviews();
   renderMachine();
   renderTabs();
@@ -260,6 +265,46 @@ async function refresh() {
 /* Sidebar */
 
 const groupEls = new Map();
+
+/* Orgs
+
+   La org activa manda: es la que se ve arriba de todo y de la que van a
+   colgar los proyectos. Cambiar de org es un POST y el estado vuelve entero. */
+
+function renderOrgs() {
+  const orgs = state.orgs || [];
+  const active = state.org ? state.org.id : null;
+  orgEl.replaceChildren(
+    ...orgs.map((org) => {
+      const option = document.createElement("option");
+      option.value = org.id;
+      option.textContent = org.name;
+      option.selected = org.id === active;
+      return option;
+    }),
+  );
+}
+
+orgEl.onchange = async () => {
+  await api("/api/org", { id: orgEl.value });
+  await refresh();
+};
+
+newOrgEl.onclick = () => {
+  newOrgForm.hidden = !newOrgForm.hidden;
+  if (!newOrgForm.hidden) orgNameEl.focus();
+};
+
+newOrgForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const name = orgNameEl.value.trim();
+  if (!name) return;
+  const created = await api("/api/orgs", { name });
+  if (!created) return;
+  orgNameEl.value = "";
+  newOrgForm.hidden = true;
+  await refresh();
+};
 
 async function stopPreview(name) {
   await api("/api/preview/stop", { name });

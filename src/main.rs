@@ -175,7 +175,14 @@ fn main() {
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
-    let agent = match build_agent(&config) {
+    let store = match store::Store::open(&config.root.join("jimmy.db")) {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
+            std::process::exit(1);
+        }
+    };
+    let agent = match build_agent(&config, Some(store.clone())) {
         Ok(agent) => agent,
         Err(e) => {
             eprintln!("jimmy: {e}");
@@ -198,13 +205,6 @@ fn main() {
     };
     let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
-    let store = match store::Store::open(&config.root.join("jimmy.db")) {
-        Ok(store) => Arc::new(store),
-        Err(error) => {
-            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
-            std::process::exit(1);
-        }
-    };
     let agenda = schedule::spawn(
         transport.clone(),
         agent.clone(),
@@ -438,11 +438,11 @@ fn serve_web(
     std::thread::spawn(move || preview::listen(previews));
 }
 
-fn build_agent(config: &Config) -> Result<Agent, String> {
+fn build_agent(config: &Config, store: Option<Arc<store::Store>>) -> Result<Agent, String> {
     let mut vars = prompt::parse_vars(&config.vars);
     vars.push(("skills".into(), skill::index(&skills_dirs())));
     let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
-    Ok(Agent::new(
+    let mut agent = Agent::new(
         config.base.clone(),
         config.model.clone(),
         config.api_key.clone(),
@@ -450,7 +450,12 @@ fn build_agent(config: &Config) -> Result<Agent, String> {
         config.root.clone(),
         config.workspace.clone(),
         fragments,
-    ))
+    );
+    if let Some(store) = store {
+        agent.set_store(store);
+    }
+    agent.set_sandbox(env("JIMMY_SANDBOX"));
+    Ok(agent)
 }
 
 pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {

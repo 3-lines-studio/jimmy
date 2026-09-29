@@ -395,7 +395,7 @@ impl Web {
         // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
         // propio directorio, con sus conversaciones y su workspace adentro.
         match self.org(request) {
-            Some(org) => place(&self.root, &self.workspace, &org.dir).into(),
+            Some(org) => place(&self.root, &self.workspace, &org).into(),
             None => Local::new(self.root.clone(), self.workspace.clone()),
         }
     }
@@ -1141,6 +1141,7 @@ done
 
         let bus = Bus::new();
         let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
+        agent.set_store(store.clone());
         let auth = Auth::new(store.clone(), "bob@ejemplo.com, ana@ejemplo.com", None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
@@ -1686,6 +1687,34 @@ done
             )),
             "el turno no corrió en el workspace de la org: {log}"
         );
+
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    /// Una org cuya máquina no sé despertar no arranca el turno: se avisa en la
+    /// conversación y no se trabaja acá, que no es el lugar de esa org.
+    #[test]
+    fn una_maquina_que_no_se_puede_despertar_frena_el_turno() {
+        let server = start("maquina-rota");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let (_, org) = server.store.register("bob@ejemplo.com").unwrap();
+        server
+            .store
+            .set_machine(&org.id, "otro", "caja", "fs")
+            .unwrap();
+
+        let key = conversation(server.port, &cookie);
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"hola"}}"#),
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
+
+        let log = wait_for(&server.root, &key, "proveedor");
+        assert!(log.contains("no sé hablar con el proveedor otro"), "{log}");
+        assert!(!log.contains("eco"), "el turno corrió igual: {log}");
 
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }

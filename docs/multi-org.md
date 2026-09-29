@@ -71,18 +71,12 @@ la capa de datos tiene que estar sola en un módulo, que es como está.
 
 ## El adapter
 
-El control plane no sabe de Tensorlake: habla con dos traits.
+El control plane no sabe de Tensorlake: le pide la máquina de una org a
+`remote::ensure`, que lee su fila en `machines` —el proveedor, el nombre del
+sandbox y el filesystem que monta— y lo crea si no está o lo despierta si está
+dormido. Sin fila, el trabajo corre acá y no hay nada que despertar.
 
-```rust
-/// El ciclo de vida: dónde vive una org.
-trait Sandbox {
-    fn ensure(&self, org: &Org) -> Handle;              // crea o despierta
-    fn suspend(&self, h: &Handle);
-    fn destroy(&self, h: &Handle);
-}
-```
-
-Y el trabajo adentro de esa org lo hace una **máquina**: el volumen y el shell
+El trabajo adentro de esa org lo hace una **máquina**: el volumen y el shell
 juntos, que es el trait `Machine` de axe (`read`, `write`, `list`, `remove`,
 `run`). El path que una herramienta lee es el mismo que ve un comando, así que
 vienen juntos y apuntarlos a lugares distintos no se puede ni escribir.
@@ -166,6 +160,13 @@ El entorno del worker es del turno, no del pool: viaja en `Sandbox::turn`
 junto con la conversación y el comando. Es lo que el worker necesita para
 reconstruirse del otro lado, y en un proveedor de verdad son los secretos con
 los que se levanta el sandbox.
+
+La máquina de una org la resuelve el control plane, que es el que tiene la
+base: `Place` lleva el id de la org, `remote::ensure` la despierta antes de que
+el turno toque nada y el worker lo recibe en su entorno (`JIMMY_SANDBOX`). El
+worker no abre la base. Si el sandbox no contesta, el turno se frena y lo dice:
+nunca se cae al disco local por las dudas, que sería escribir lo de una org en
+el lugar de otra.
 
 La agenda es de cada org y vive en la base, no en el workspace: el control
 plane la lee y la escribe sin despertar a nadie. El reloj es uno y cada vuelta
@@ -296,22 +297,18 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    auth apuntando ahí.
 3. **Hecho** — La agenda a la DB, con cada turno corriendo en el workspace de su
    org.
-4. **A medias** — La máquina remota. Hecho: la costura en axe (el trait
-   `Machine`, `Local`, `build_tools_on`, PR #12) y las operaciones de archivos
-   del cliente de Tensorlake (`read_file`, `write_file`, `list_files`,
-   `remove_file`, verificadas contra la API con el test `#[ignore]`). Falta el
-   shell remoto (`run`), el `impl Machine` que junte las dos cosas, y la
-   elección de proveedor por org (una columna, no configuración).
-5. **La compuerta** — El test de equivalencia del bash: el mismo comando por las
-   dos vías, comparando salida, exit code, streaming parcial, timeout,
-   cancelación e hijos huérfanos. Si el remoto no aguanta esos bordes, se para
-   acá y lo hecho queda igual de útil (la costura de axe y los archivos por
-   HTTP).
-6. El turno en el control plane contra la máquina de la org, y se cae el
-   binario del sandbox.
-7. El índice de proyectos y conversaciones en la base: listar por HTTP son
+4. **Hecho** — La máquina remota: la costura de axe (el trait `Machine`,
+   `Local`, `build_tools_on`), el cliente de Tensorlake con los archivos y el
+   shell, y el `impl Machine` que los junta.
+5. **Hecho** — La compuerta: `el_bash_remoto_se_comporta_igual` corre el mismo
+   comando por las dos vías y compara los textos.
+6. **Hecho** — El turno contra la máquina de la org: la fila de `machines` dice
+   dónde vive el trabajo, `remote::ensure` la despierta antes del turno y el
+   worker la recibe en su entorno. Sin fila, el trabajo corre acá.
+7. **El alta de una org**: su filesystem —que hoy sólo saben crear el SDK y el
+   CLI— y su fila en `machines`.
+8. El índice de proyectos y conversaciones en la base: listar por HTTP son
    viajes de ~183 ms, así que el sidebar no se puede armar a fuerza de listados.
-8. El alta del filesystem de una org, que hoy sólo saben hacer el SDK y el CLI.
 9. heimdall por org y su UI.
 10. Cuotas, medidores y los dos planes.
 11. Los transports por org (Slack y Telegram con sus credenciales), los previews

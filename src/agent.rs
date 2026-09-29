@@ -5,6 +5,8 @@ use crate::media;
 use crate::pool::Pool;
 use crate::protocol::{self, Event};
 use crate::sandbox::{Sandbox, Turn};
+use crate::store::Store;
+use crate::tensorlake::SandboxInfo;
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
 use crate::workspace::Place;
@@ -35,6 +37,13 @@ pub struct Agent {
     root: PathBuf,
     workspace: String,
     cwd: String,
+    /// De quién es este turno. El worker no la sabe: corre donde el control
+    /// plane le dice.
+    org: Option<String>,
+    /// El sandbox donde vive el volumen de la org, si no es este contenedor.
+    sandbox: Option<String>,
+    /// La base del control plane, para lo que el turno necesita saber de la org.
+    store: Option<Arc<Store>>,
     fragments: String,
     context: String,
     pool: Arc<dyn Sandbox>,
@@ -66,6 +75,9 @@ impl Agent {
             root,
             cwd: workspace.clone(),
             workspace,
+            org: None,
+            sandbox: None,
+            store: None,
             fragments,
             context,
             pool,
@@ -154,12 +166,34 @@ impl Agent {
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
+    /// La base del control plane. La abre quien arma el agente: el worker no la
+    /// necesita, porque sabe dónde trabajar por el entorno del turno.
+    pub(crate) fn set_store(&mut self, store: Arc<Store>) {
+        self.store = Some(store);
+    }
+
+    /// El sandbox donde vive el volumen de la org, si no es este contenedor. El
+    /// control plane se lo pasa al worker en el entorno del turno, y el turno
+    /// que corre en este proceso lo resuelve antes de arrancar.
+    pub(crate) fn set_sandbox(&mut self, sandbox: Option<String>) {
+        self.sandbox = sandbox.filter(|name| !name.is_empty());
+    }
+
+    /// Despertar la máquina de la org antes del turno. Sin org o sin fila en
+    /// `machines` el trabajo corre acá y no hay nada que despertar.
+    fn wake(&self) -> Result<Option<SandboxInfo>, String> {
+        let (Some(org), Some(store)) = (&self.org, &self.store) else {
+            return Ok(None);
+        };
+        crate::remote::ensure(org, store)
+    }
+
     /// La máquina donde trabaja el turno: el sandbox de la org si lo tiene, y
     /// si no este contenedor. El `cwd` es de esa máquina, no de este proceso.
-    fn machine(&self) -> Arc<dyn axe::machine::Machine> {
-        match crate::remote::de_la_org(&self.cwd) {
-            Some(machine) => machine,
-            None => Arc::new(axe::machine::Local::new(&self.cwd)),
+    fn machine(&self) -> Result<Arc<dyn axe::machine::Machine>, String> {
+        match &self.sandbox {
+            Some(sandbox) => crate::remote::de_la_org(sandbox, &self.cwd),
+            None => Ok(Arc::new(axe::machine::Local::new(&self.cwd))),
         }
     }
 
@@ -183,6 +217,8 @@ impl Agent {
         agent.root = place.root.clone();
         agent.workspace = place.workspace.display().to_string();
         agent.cwd = agent.workspace.clone();
+        agent.org = place.org.clone();
+        agent.sandbox = None;
         agent.context = runtime_context(
             &agent.model,
             &agent.base,
@@ -295,7 +331,18 @@ impl Agent {
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let log = Log::in_dir(&conversation.dir);
-        let env = self.worker_env();
+        let mut env = self.worker_env();
+        match self.wake() {
+            Ok(Some(sandbox)) => env.push(("JIMMY_SANDBOX".into(), sandbox.name)),
+            Ok(None) => {}
+            Err(error) => {
+                let message = format!("⚠️ {error}");
+                transport.fail(session, live.take(), &message);
+                self.bus
+                    .publish(&conversation.key, &log, &Event::Error { message });
+                return Err(error);
+            }
+        }
         let turn = self
             .pool
             .turn(session, &conversation, &env, command, &mut |event| {
@@ -428,7 +475,9 @@ impl Agent {
             reasoning: String::new(),
             images: Vec::new(),
         };
-        self.execute(transport, session, vec![user], Vec::new(), None, silent)
+        let mut agent = self.clone();
+        agent.set_sandbox(agent.wake()?.map(|sandbox| sandbox.name));
+        agent.execute(transport, session, vec![user], Vec::new(), None, silent)
     }
 
     pub(crate) fn conversation(&self, session: &Session) -> conversations::Conversation {
@@ -444,7 +493,7 @@ impl Agent {
         dir: Option<PathBuf>,
         silent: bool,
     ) -> Result<String, String> {
-        let mut tools = axe::tui::build_tools_on(self.machine());
+        let mut tools = axe::tui::build_tools_on(self.machine()?);
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
@@ -900,10 +949,6 @@ fn worker_env(
         ),
         ("JIMMY_ROOT".into(), root.display().to_string()),
         ("JIMMY_WORKSPACE".into(), workspace.to_string()),
-        (
-            "JIMMY_SANDBOX".into(),
-            crate::env("JIMMY_SANDBOX").unwrap_or_default(),
-        ),
     ]
 }
 
@@ -1371,6 +1416,7 @@ mod tests {
         let otro = Place {
             root: org.clone(),
             workspace: org.join("workspace"),
+            org: Some("01ABC".into()),
         };
 
         let clon = agent.at(&otro);
@@ -1378,6 +1424,7 @@ mod tests {
         assert_eq!(clon.root, org);
         assert_eq!(clon.workspace, workspace);
         assert_eq!(clon.cwd, workspace);
+        assert_eq!(clon.org.as_deref(), Some("01ABC"));
         assert!(clon.context.contains(&workspace), "{}", clon.context);
         assert_eq!(agent.root, root, "el de siempre no se movió");
         assert!(Arc::ptr_eq(&agent.pool, &clon.pool));

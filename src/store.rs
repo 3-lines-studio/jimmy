@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS machines (
     org_id TEXT NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     sandbox TEXT NOT NULL,
+    file_system TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
@@ -752,28 +753,28 @@ fn is_member(db: &Connection, org: &str, user: &str) -> Result<bool, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Dónde vive el trabajo de una org: el proveedor y el nombre de su máquina.
-/// Sin fila, el trabajo corre acá.
+/// Dónde vive el trabajo de una org: el proveedor, el nombre de su máquina y
+/// el filesystem que monta, que es su volumen. Sin fila, el trabajo corre acá.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct Machine {
     pub org_id: String,
     pub provider: String,
     pub sandbox: String,
+    pub file_system: String,
 }
 
-#[allow(dead_code)]
 impl Store {
     pub fn machine(&self, org: &str) -> Result<Option<Machine>, String> {
         let db = self.db.lock().unwrap();
         db.query_row(
-            "SELECT org_id, provider, sandbox FROM machines WHERE org_id = ?1 AND deleted_at IS NULL",
+            "SELECT org_id, provider, sandbox, file_system FROM machines WHERE org_id = ?1 AND deleted_at IS NULL",
             params![org],
             |row| {
                 Ok(Machine {
                     org_id: row.get(0)?,
                     provider: row.get(1)?,
                     sandbox: row.get(2)?,
+                    file_system: row.get(3)?,
                 })
             },
         )
@@ -781,20 +782,31 @@ impl Store {
         .map_err(|e| e.to_string())
     }
 
-    pub fn set_machine(&self, org: &str, provider: &str, sandbox: &str) -> Result<(), String> {
-        if provider.trim().is_empty() || sandbox.trim().is_empty() {
-            return Err("la máquina necesita proveedor y sandbox".into());
+    /// La escribe el alta de una org, que todavía no existe: hoy sólo la
+    /// llaman las pruebas.
+    #[allow(dead_code)]
+    pub fn set_machine(
+        &self,
+        org: &str,
+        provider: &str,
+        sandbox: &str,
+        file_system: &str,
+    ) -> Result<(), String> {
+        if provider.trim().is_empty() || sandbox.trim().is_empty() || file_system.trim().is_empty()
+        {
+            return Err("la máquina necesita proveedor, sandbox y filesystem".into());
         }
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT INTO machines (id, org_id, provider, sandbox, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            "INSERT INTO machines (id, org_id, provider, sandbox, file_system, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT(org_id) DO UPDATE SET
                  provider = excluded.provider,
                  sandbox = excluded.sandbox,
+                 file_system = excluded.file_system,
                  updated_at = excluded.updated_at,
                  deleted_at = NULL",
-            params![ulid::new(), org, provider, sandbox, now()],
+            params![ulid::new(), org, provider, sandbox, file_system, now()],
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -1200,15 +1212,21 @@ mod tests {
         assert_eq!(store.machine(&org.id).unwrap(), None);
 
         store
-            .set_machine(&org.id, "tensorlake", "turno-remoto")
+            .set_machine(&org.id, "tensorlake", "turno-remoto", "jimmy-org")
             .unwrap();
         let guardada = store.machine(&org.id).unwrap().unwrap();
         assert_eq!(guardada.provider, "tensorlake");
         assert_eq!(guardada.sandbox, "turno-remoto");
+        assert_eq!(guardada.file_system, "jimmy-org");
 
-        store.set_machine(&org.id, "tensorlake", "otra").unwrap();
-        assert_eq!(store.machine(&org.id).unwrap().unwrap().sandbox, "otra");
+        store
+            .set_machine(&org.id, "tensorlake", "otra", "otro-fs")
+            .unwrap();
+        let guardada = store.machine(&org.id).unwrap().unwrap();
+        assert_eq!(guardada.sandbox, "otra");
+        assert_eq!(guardada.file_system, "otro-fs");
 
-        assert!(store.set_machine(&org.id, "", "x").is_err());
+        assert!(store.set_machine(&org.id, "", "x", "fs").is_err());
+        assert!(store.set_machine(&org.id, "tensorlake", "x", "").is_err());
     }
 }

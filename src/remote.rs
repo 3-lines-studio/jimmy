@@ -5,7 +5,8 @@
 //! van por el mismo cliente, así que el path que una herramienta lee es el
 //! mismo que ve un comando.
 
-use crate::tensorlake::Tensorlake;
+use crate::store::Store;
+use crate::tensorlake::{SandboxInfo, Tensorlake};
 use axe::machine::{resolve, Entry, Machine};
 use std::sync::Arc;
 
@@ -25,12 +26,35 @@ impl Remote {
     }
 }
 
-/// La máquina de una org cuando el turno corre contra su sandbox. Sin
-/// `JIMMY_SANDBOX` no hay máquina remota y el turno trabaja acá, como siempre.
-pub fn de_la_org(dir: &str) -> Option<Arc<dyn Machine>> {
-    let sandbox = crate::env("JIMMY_SANDBOX")?;
-    let cliente = Tensorlake::from_env()?;
-    Some(Arc::new(Remote::new(Arc::new(cliente), &sandbox, dir)))
+/// La imagen del sandbox: la del despliegue, no la de una org. Va sin jimmy
+/// adentro, así no hay que reconstruirla por un cambio de código.
+fn image() -> String {
+    crate::env("TENSORLAKE_IMAGE").unwrap_or_else(|| "jimmy-min".into())
+}
+
+/// La máquina de una org lista para el turno: sin fila en `machines` el trabajo
+/// corre acá y no hay nada que despertar; con fila, el sandbox se crea si no
+/// está y se despierta si está dormido.
+pub fn ensure(org: &str, store: &Store) -> Result<Option<SandboxInfo>, String> {
+    let Some(row) = store.machine(org)? else {
+        return Ok(None);
+    };
+    if row.provider != "tensorlake" {
+        return Err(format!("no sé hablar con el proveedor {}", row.provider));
+    }
+    let cliente = Tensorlake::from_env().ok_or("falta TENSORLAKE_API_KEY")?;
+    let mut listo = cliente.ensure(&row.sandbox, &image(), &row.file_system)?;
+    if listo.name.is_empty() {
+        listo.name = row.sandbox;
+    }
+    Ok(Some(listo))
+}
+
+/// La máquina de una org, que ya está despierta: sus archivos y sus comandos
+/// van por el mismo cliente, así que las herramientas no saben que está lejos.
+pub fn de_la_org(sandbox: &str, dir: &str) -> Result<Arc<dyn Machine>, String> {
+    let cliente = Tensorlake::from_env().ok_or("falta TENSORLAKE_API_KEY")?;
+    Ok(Arc::new(Remote::new(Arc::new(cliente), sandbox, dir)))
 }
 
 impl Machine for Remote {
@@ -69,6 +93,65 @@ impl Machine for Remote {
 mod tests {
     use super::*;
     use axe::machine::Local;
+
+    fn store(nombre: &str) -> Store {
+        let dir =
+            std::env::temp_dir().join(format!("jimmy-remote-{nombre}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("jimmy.db"));
+        Store::open(&dir.join("jimmy.db")).unwrap()
+    }
+
+    /// Una org sin fila en `machines` trabaja acá: no hay nada que despertar ni
+    /// a quién pedirle el filesystem.
+    #[test]
+    fn una_org_sin_maquina_no_tiene_sandbox() {
+        let store = store("sin-maquina");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        assert_eq!(ensure(&org.id, &store).unwrap(), None);
+    }
+
+    /// El proveedor que no conozco se avisa antes de tocar la red: preferimos
+    /// que el turno falle a que trabaje en un lugar que no es el suyo.
+    #[test]
+    fn un_proveedor_desconocido_es_un_error() {
+        let store = store("proveedor");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store.set_machine(&org.id, "otro", "caja", "fs").unwrap();
+        assert!(ensure(&org.id, &store).unwrap_err().contains("otro"));
+    }
+
+    /// El camino entero contra la API de verdad: la fila de `machines` despierta
+    /// la máquina de la org y las herramientas trabajan del otro lado.
+    ///
+    ///     heimdall run -p jimmy -c dev -- cargo test --bin jimmy -- --ignored la_maquina_de_la_org
+    #[test]
+    #[ignore]
+    fn la_maquina_de_la_org_se_despierta_y_trabaja() {
+        let store = store("despierta");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store
+            .set_machine(&org.id, "tensorlake", "turno-remoto", "jimmy-org")
+            .unwrap();
+
+        let sandbox = ensure(&org.id, &store).unwrap().unwrap();
+        assert_eq!(sandbox.name, "turno-remoto");
+        let cliente = Arc::new(Tensorlake::from_env().unwrap());
+        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
+
+        let maquina = de_la_org(&sandbox.name, "/work").unwrap();
+        maquina.write("de-la-org.txt", b"hola\n").unwrap();
+        assert_eq!(maquina.read("de-la-org.txt").unwrap(), b"hola\n");
+        assert!(maquina
+            .list("/work")
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name == "de-la-org.txt"));
+        let salida = maquina.run("cat de-la-org.txt", 30, &mut |_| {});
+        assert!(salida.contains("hola"), "{salida}");
+        maquina.remove("de-la-org.txt").unwrap();
+        assert!(maquina.read("de-la-org.txt").is_err());
+    }
 
     /// Baja el sandbox aunque el test falle a mitad de camino: el plan de
     /// prueba deja uno solo a la vez.

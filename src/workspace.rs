@@ -10,6 +10,7 @@ use crate::conversations;
 use crate::files;
 use crate::log::{self, Log};
 use crate::media;
+use crate::store::Org;
 use std::path::{Path, PathBuf};
 
 /// Un proyecto con lo que la lista necesita saber: cuánto ocupa y si tiene
@@ -87,27 +88,31 @@ pub trait Workspace: Send + Sync {
     fn delete_conversation(&self, key: &str) -> Result<(), String>;
 }
 
-/// Dónde trabaja una org: la raíz del control plane que le toca y el workspace
-/// adentro. Es todo lo que hace falta para correr un turno suyo.
+/// Dónde trabaja una org: la raíz del control plane que le toca, el workspace
+/// adentro y de quién es. Es todo lo que hace falta para correr un turno suyo.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     pub root: PathBuf,
     pub workspace: PathBuf,
+    pub org: Option<String>,
 }
 
 /// El lugar de una org: la que se quedó la raíz trabaja donde siempre, y las
 /// demás tienen su propio directorio adentro, con su workspace.
-pub fn place(root: &Path, workspace: &Path, dir: &str) -> Place {
+pub fn place(root: &Path, workspace: &Path, org: &Org) -> Place {
+    let dir = org.dir.as_str();
     if dir == "." {
         return Place {
             root: root.to_path_buf(),
             workspace: workspace.to_path_buf(),
+            org: Some(org.id.clone()),
         };
     }
     let root = root.join(dir);
     Place {
         workspace: root.join("workspace"),
         root,
+        org: Some(org.id.clone()),
     }
 }
 
@@ -116,17 +121,23 @@ pub fn place(root: &Path, workspace: &Path, dir: &str) -> Place {
 pub struct Local {
     root: PathBuf,
     workspace: PathBuf,
+    org: Option<String>,
 }
 
 impl Local {
     pub fn new(root: PathBuf, workspace: PathBuf) -> Local {
-        Local { root, workspace }
+        Local {
+            root,
+            workspace,
+            org: None,
+        }
     }
 
     pub fn place(&self) -> Place {
         Place {
             root: self.root.clone(),
             workspace: self.workspace.clone(),
+            org: self.org.clone(),
         }
     }
 
@@ -154,7 +165,11 @@ impl Local {
 
 impl From<Place> for Local {
     fn from(place: Place) -> Local {
-        Local::new(place.root, place.workspace)
+        Local {
+            root: place.root,
+            workspace: place.workspace,
+            org: place.org,
+        }
     }
 }
 

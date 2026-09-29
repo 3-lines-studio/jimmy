@@ -35,7 +35,11 @@ pub fn spawn(
             transport: transport.as_ref(),
             agent: &agent,
             store: &store,
-            base: Place { root, workspace },
+            base: Place {
+                root,
+                workspace,
+                org: None,
+            },
             offset,
         };
         loop {
@@ -86,7 +90,7 @@ impl Agenda<'_> {
                 return;
             }
         };
-        let home = place(&self.base.root, &self.base.workspace, &org.dir);
+        let home = place(&self.base.root, &self.base.workspace, &org);
         eprintln!("jimmy: agenda: corriendo {} de {}", task.name, org.name);
         let (outbound, session, warning) = outbound(self.transport, task);
         let started = Instant::now();

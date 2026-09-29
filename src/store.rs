@@ -56,6 +56,40 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions (user_id);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    when_at TEXT,
+    at TEXT,
+    every TEXT,
+    target TEXT,
+    prompt TEXT NOT NULL,
+    silent INTEGER NOT NULL DEFAULT 0,
+    paused INTEGER NOT NULL DEFAULT 0,
+    next_run_at INTEGER,
+    claimed_at INTEGER,
+    last_read_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_by_name ON tasks (org_id, name)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS tasks_by_next_run ON tasks (next_run_at)
+    WHERE deleted_at IS NULL AND paused = 0;
+CREATE TABLE IF NOT EXISTS task_runs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    started_at INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    ok INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS task_runs_by_task ON task_runs (task_id, started_at);
 ";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,12 +113,66 @@ pub struct Store {
     db: Mutex<Connection>,
 }
 
+/// Una tarea de la agenda, con su reloj ya resuelto: `next_run_at` dice cuándo
+/// le toca, y se recalcula cada vez que corre. Una tarea `when` sin correr
+/// nunca no tiene próxima: corrió una sola vez.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Task {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub when_at: Option<String>,
+    pub at: Option<String>,
+    pub every: Option<String>,
+    pub target: Option<String>,
+    pub prompt: String,
+    pub silent: bool,
+    pub paused: bool,
+    pub next_run_at: Option<i64>,
+    pub last_read_at: i64,
+}
+
+/// Lo que hace falta para crear una tarea: el reloj lo pone quien sabe dónde
+/// está la hora local.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewTask {
+    pub name: String,
+    pub prompt: String,
+    pub when_at: Option<String>,
+    pub at: Option<String>,
+    pub every: Option<String>,
+    pub target: Option<String>,
+    pub silent: bool,
+    pub next_run_at: Option<i64>,
+}
+
+/// Una corrida de una tarea, con lo que contestó.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Run {
+    pub id: String,
+    pub started_at: i64,
+    pub ms: i64,
+    pub ok: bool,
+    pub text: String,
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or(0)
 }
+
+const TASK_COLUMNS: &str = "SELECT id, org_id, name, when_at, at, every, target, prompt, silent,
+     paused, next_run_at, last_read_at FROM tasks";
+
+/// Una tarea reclamada hace más que esto se considera abandonada: el proceso
+/// que la tenía se murió. Un turno largo dura una hora, así que hay margen.
+const STALE: i64 = 2 * 3600;
+
+/// Cuántas corridas se guardan por tarea. El historial es para mirar, no para
+/// archivar: con una tarea cada cinco minutos, veinte alcanzaban.
+const KEEP_RUNS: i64 = 200;
 
 /// Cómo se llama la org personal de alguien: la parte de su mail antes del
 /// arroba. Es sólo el nombre, que se puede cambiar; el identificador es el id.
@@ -302,6 +390,218 @@ impl Store {
             None => personal_org(&db, user),
         }
     }
+
+    /// Las tareas de una org, por nombre.
+    pub fn tasks_of(&self, org: &str) -> Result<Vec<Task>, String> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db
+            .prepare(&format!(
+                "{TASK_COLUMNS} WHERE org_id = ?1 AND deleted_at IS NULL ORDER BY name"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map(params![org], read_task)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<Task>>>()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn task_named(&self, org: &str, name: &str) -> Result<Option<Task>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            &format!("{TASK_COLUMNS} WHERE org_id = ?1 AND name = ?2 AND deleted_at IS NULL"),
+            params![org, name],
+            read_task,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn create_task(&self, org: &str, new: NewTask) -> Result<Task, String> {
+        let name = new.name.trim();
+        if name.is_empty() {
+            return Err("la tarea necesita un nombre".into());
+        }
+        let task = Task {
+            id: ulid::new(),
+            org_id: org.to_string(),
+            name: name.to_string(),
+            when_at: new.when_at,
+            at: new.at,
+            every: new.every,
+            target: new.target,
+            prompt: new.prompt,
+            silent: new.silent,
+            paused: false,
+            next_run_at: new.next_run_at,
+            last_read_at: 0,
+        };
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO tasks (id, org_id, name, when_at, at, every, target, prompt, silent,
+                                paused, next_run_at, last_read_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 0, ?11, ?11)",
+            params![
+                task.id,
+                task.org_id,
+                task.name,
+                task.when_at,
+                task.at,
+                task.every,
+                task.target,
+                task.prompt,
+                task.silent,
+                task.next_run_at,
+                now()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(task)
+    }
+
+    pub fn set_paused(&self, org: &str, name: &str, paused: bool) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let changed = db
+            .execute(
+                "UPDATE tasks SET paused = ?1, updated_at = ?2
+                 WHERE org_id = ?3 AND name = ?4 AND deleted_at IS NULL",
+                params![paused, now(), org, name],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("no existe la tarea {name}"));
+        }
+        Ok(())
+    }
+
+    /// La baja es lógica, como todo lo demás: la fila queda con su hora y sus
+    /// corridas por si hay que mirarlas.
+    pub fn delete_task(&self, org: &str, name: &str) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let changed = db
+            .execute(
+                "UPDATE tasks SET deleted_at = ?1, updated_at = ?1
+                 WHERE org_id = ?2 AND name = ?3 AND deleted_at IS NULL",
+                params![now(), org, name],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("no existe la tarea {name}"));
+        }
+        Ok(())
+    }
+
+    /// Marca leída la última corrida de una tarea, o la de todas: lo leído se
+    /// guarda como el momento, y todo lo que llegó después es nuevo.
+    pub fn mark_read(&self, org: &str, name: Option<&str>) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        let stamp = now();
+        match name {
+            Some(name) => db.execute(
+                "UPDATE tasks SET last_read_at = ?1, updated_at = ?1
+                 WHERE org_id = ?2 AND name = ?3 AND deleted_at IS NULL",
+                params![stamp, org, name],
+            ),
+            None => db.execute(
+                "UPDATE tasks SET last_read_at = ?1, updated_at = ?1
+                 WHERE org_id = ?2 AND deleted_at IS NULL",
+                params![stamp, org],
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Las últimas corridas de una tarea, de la más nueva a la más vieja.
+    pub fn runs_of(&self, task: &str, limit: usize) -> Result<Vec<Run>, String> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT id, started_at, ms, ok, text FROM task_runs
+                 WHERE task_id = ?1 AND deleted_at IS NULL
+                 ORDER BY started_at DESC, id DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map(params![task, limit as i64], read_run)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<Run>>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Las tareas vencidas, reclamadas en la misma transacción: el que las
+    /// saca de acá es el único que las va a correr. Una tarea reclamada hace
+    /// demasiado se suelta sola, así que un proceso que muere en el medio no
+    /// deja la tarea colgada para siempre.
+    pub fn claim_due(&self, now: i64) -> Result<Vec<Task>, String> {
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let due: Vec<Task> = {
+            let mut statement = tx
+                .prepare(&format!(
+                    "{TASK_COLUMNS} WHERE deleted_at IS NULL AND paused = 0
+                     AND next_run_at IS NOT NULL AND next_run_at <= ?1
+                     AND (claimed_at IS NULL OR claimed_at < ?2)
+                     ORDER BY next_run_at"
+                ))
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map(params![now, now - STALE], read_task)
+                .map_err(|e| e.to_string())?;
+            rows.collect::<rusqlite::Result<Vec<Task>>>()
+                .map_err(|e| e.to_string())?
+        };
+        for task in &due {
+            tx.execute(
+                "UPDATE tasks SET claimed_at = ?1, updated_at = ?1 WHERE id = ?2",
+                params![now, task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(due)
+    }
+
+    /// Deja la corrida y reprograma la tarea. `None` en la próxima es una tarea
+    /// que ya no vuelve a correr.
+    pub fn record_run(
+        &self,
+        task: &Task,
+        next_run_at: Option<i64>,
+        ms: i64,
+        ok: bool,
+        text: &str,
+    ) -> Result<Run, String> {
+        let run = Run {
+            id: ulid::new(),
+            started_at: now(),
+            ms,
+            ok,
+            text: text.to_string(),
+        };
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO task_runs (id, task_id, started_at, ms, ok, text, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?3, ?3)",
+            params![run.id, task.id, run.started_at, run.ms, run.ok, run.text],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE tasks SET next_run_at = ?1, claimed_at = NULL, updated_at = ?2 WHERE id = ?3",
+            params![next_run_at, run.started_at, task.id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM task_runs WHERE task_id = ?1 AND id NOT IN
+                 (SELECT id FROM task_runs WHERE task_id = ?1
+                  ORDER BY started_at DESC, id DESC LIMIT ?2)",
+            params![task.id, KEEP_RUNS],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(run)
+    }
 }
 
 fn read_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
@@ -317,6 +617,33 @@ fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
         id: row.get(0)?,
         name: row.get(1)?,
         dir: row.get(2)?,
+    })
+}
+
+fn read_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        name: row.get(2)?,
+        when_at: row.get(3)?,
+        at: row.get(4)?,
+        every: row.get(5)?,
+        target: row.get(6)?,
+        prompt: row.get(7)?,
+        silent: row.get(8)?,
+        paused: row.get(9)?,
+        next_run_at: row.get(10)?,
+        last_read_at: row.get(11)?,
+    })
+}
+
+fn read_run(row: &rusqlite::Row) -> rusqlite::Result<Run> {
+    Ok(Run {
+        id: row.get(0)?,
+        started_at: row.get(1)?,
+        ms: row.get(2)?,
+        ok: row.get(3)?,
+        text: row.get(4)?,
     })
 }
 
@@ -634,5 +961,147 @@ mod tests {
         assert_eq!(personal_name("don@berti.sh"), "don");
         assert_eq!(personal_name("a.b+c@x.com"), "a.b+c");
         assert_eq!(personal_name("don"), "don");
+    }
+
+    fn tarea(name: &str, next: Option<i64>) -> NewTask {
+        NewTask {
+            name: name.into(),
+            prompt: "p".into(),
+            when_at: None,
+            at: Some("05:00".into()),
+            every: None,
+            target: None,
+            silent: false,
+            next_run_at: next,
+        }
+    }
+
+    /// Dos orgs pueden tener una tarea con el mismo nombre: cada una ve la suya.
+    #[test]
+    fn las_tareas_de_una_org_son_suyas() {
+        let store = store("tareas");
+        let (user, personal) = store.register("don@berti.sh").unwrap();
+        let empresa = store.create_org(&user.id, "La Empresa").unwrap();
+        let de_bob = store
+            .create_task(&personal.id, tarea("memoria", Some(100)))
+            .unwrap();
+        store
+            .create_task(&empresa.id, tarea("memoria", Some(100)))
+            .unwrap();
+
+        assert_eq!(store.tasks_of(&personal.id).unwrap().len(), 1);
+        assert_eq!(store.tasks_of(&empresa.id).unwrap().len(), 1);
+        assert!(store.task_named(&personal.id, "otra").unwrap().is_none());
+
+        store.set_paused(&personal.id, "memoria", true).unwrap();
+        let mia = store.task_named(&personal.id, "memoria").unwrap().unwrap();
+        assert!(mia.paused);
+        let ajena = store.task_named(&empresa.id, "memoria").unwrap().unwrap();
+        assert!(!ajena.paused, "la de la otra org no se toca");
+        assert!(store.set_paused(&personal.id, "nada", true).is_err());
+        assert_eq!(de_bob.id, mia.id);
+
+        store.delete_task(&empresa.id, "memoria").unwrap();
+        assert!(store.tasks_of(&empresa.id).unwrap().is_empty());
+        assert_eq!(store.tasks_of(&personal.id).unwrap().len(), 1);
+    }
+
+    /// El que reclama una tarea es el único que la corre: dos instancias del
+    /// control plane no pueden hacer la misma dos veces.
+    #[test]
+    fn una_tarea_vencida_se_reclama_una_sola_vez() {
+        let store = store("claim");
+        let (_, org) = store.register("don@berti.sh").unwrap();
+        store
+            .create_task(&org.id, tarea("memoria", Some(100)))
+            .unwrap();
+        store
+            .create_task(&org.id, tarea("futura", Some(10_000)))
+            .unwrap();
+        store
+            .create_task(&org.id, tarea("pausada", Some(100)))
+            .unwrap();
+        store.set_paused(&org.id, "pausada", true).unwrap();
+
+        let due = store.claim_due(1_000).unwrap();
+        assert_eq!(due.len(), 1, "sólo la vencida y sin pausar");
+        assert_eq!(due[0].name, "memoria");
+        assert!(
+            store.claim_due(1_000).unwrap().is_empty(),
+            "ya está adentro"
+        );
+
+        store
+            .record_run(&due[0], Some(5_000), 5, true, "listo")
+            .unwrap();
+        assert!(
+            store.claim_due(1_000).unwrap().is_empty(),
+            "todavía no le toca"
+        );
+        assert_eq!(
+            store.claim_due(6_000).unwrap().len(),
+            1,
+            "y a su hora vuelve"
+        );
+    }
+
+    /// Un proceso que muere en el medio deja la tarea reclamada: pasado un
+    /// rato, otro la puede volver a tomar.
+    #[test]
+    fn una_tarea_reclamada_y_abandonada_se_vuelve_a_reclamar() {
+        let store = store("abandonada");
+        let (_, org) = store.register("don@berti.sh").unwrap();
+        store
+            .create_task(&org.id, tarea("memoria", Some(100)))
+            .unwrap();
+        assert_eq!(store.claim_due(1_000).unwrap().len(), 1);
+        assert!(
+            store.claim_due(1_000 + STALE).unwrap().is_empty(),
+            "el reclamo todavía vale"
+        );
+        assert_eq!(store.claim_due(1_000 + STALE + 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn el_historial_guarda_las_ultimas_corridas() {
+        let store = store("historial");
+        let (_, org) = store.register("don@berti.sh").unwrap();
+        let task = store
+            .create_task(&org.id, tarea("memoria", Some(100)))
+            .unwrap();
+        for vuelta in 0..(KEEP_RUNS + 5) {
+            store
+                .record_run(
+                    &task,
+                    Some(200 + vuelta),
+                    vuelta,
+                    true,
+                    &format!("vuelta {vuelta}"),
+                )
+                .unwrap();
+        }
+
+        let runs = store.runs_of(&task.id, 5).unwrap();
+        assert_eq!(runs.len(), 5, "la vista muestra las últimas");
+        let guardadas: i64 = {
+            let db = store.db.lock().unwrap();
+            db.query_row("SELECT count(*) FROM task_runs", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(guardadas, KEEP_RUNS, "y no se acumulan sin fin");
+        let textos: Vec<String> = store
+            .runs_of(&task.id, KEEP_RUNS as usize)
+            .unwrap()
+            .into_iter()
+            .map(|run| run.text)
+            .collect();
+        assert!(
+            !textos.iter().any(|texto| texto == "vuelta 0"),
+            "las viejas se van"
+        );
+        assert!(
+            textos.iter().any(|texto| texto == "vuelta 204"),
+            "las nuevas quedan"
+        );
     }
 }

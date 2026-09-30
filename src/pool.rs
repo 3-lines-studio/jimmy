@@ -131,9 +131,7 @@ impl Pool {
         for (name, value) in &self.env {
             process.env(name, value);
         }
-        let mut child = process
-            .spawn()
-            .map_err(|e| format!("no pude lanzar el worker: {e}"))?;
+        let mut child = lanzar(&mut process)?;
         let stdin = child.stdin.take().ok_or("el worker no tiene stdin")?;
         let stdout = child.stdout.take().ok_or("el worker no tiene stdout")?;
         let pid = child.id() as i32;
@@ -197,6 +195,21 @@ impl Worker {
             .recv()
             .map_err(|_| "el worker terminó sin responder".to_string())
     }
+}
+
+fn lanzar(process: &mut Process) -> Result<Child, String> {
+    let mut ultimo = String::new();
+    for intento in 0..20 {
+        match process.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                ultimo = error.to_string();
+            }
+            Err(error) => return Err(format!("no pude lanzar el worker: {error}")),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25 * (intento + 1).min(8)));
+    }
+    Err(format!("no pude lanzar el worker: {ultimo}"))
 }
 
 fn wait(worker: &Worker) {
@@ -417,6 +430,27 @@ done
         .unwrap();
         assert!(seen);
         assert!(!pool.running("test"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn un_ejecutable_ocupado_no_rompe_el_lanzamiento() {
+        let dir = scratch("busy");
+        let exe = script(&dir, "worker.sh", "exit 0\n");
+        let abierto = std::fs::OpenOptions::new().write(true).open(&exe).unwrap();
+        let suelta = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            drop(abierto);
+        });
+        assert!(
+            Process::new(&exe).spawn().is_err(),
+            "el archivo ocupado se lanzó igual: esta prueba no estaría probando nada"
+        );
+
+        let mut process = Process::new(&exe);
+        let child = lanzar(&mut process).expect("el archivo se libera y el worker arranca");
+        assert!(child.wait_with_output().unwrap().status.success());
+        suelta.join().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

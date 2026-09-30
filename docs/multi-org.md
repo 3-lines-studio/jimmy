@@ -367,6 +367,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
 11. **El proxy del modelo** en el control plane: la clave deja de viajar al
     sandbox y ahí caen los medidores.
 12. heimdall por org y su UI.
-13. Cuotas, medidores y los dos planes.
+13. **A medias** — Cuotas, medidores y los dos planes: el consumo ya se ve en
+   la web (el plan y los tokens de la org activa, al lado del workspace) y en
+   modo dev hay con qué mover el plan a mano —lo que hace falta para probar el
+   sistema entero antes de la pasarela—. Falta la cuota: cortar cuando el plan
+   se pasa.
 14. Los transports por org (Slack y Telegram con sus credenciales), los previews
     y los backups.

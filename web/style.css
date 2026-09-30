@@ -221,6 +221,19 @@ textarea:focus {
   white-space: nowrap;
 }
 
+#cuenta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--faint);
+  font-size: 12px;
+}
+
+#cuenta .value {
+  color: var(--text);
+  white-space: nowrap;
+}
+
 #footer {
   display: flex;
   align-items: center;

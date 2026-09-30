@@ -95,6 +95,7 @@ const newOrgForm = document.getElementById("new-org-form");
 const orgNameEl = document.getElementById("org-name");
 const previewsEl = document.getElementById("previews");
 const machineEl = document.getElementById("machine");
+const cuentaEl = document.getElementById("cuenta");
 const tabsEl = document.getElementById("tabs");
 const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
@@ -257,6 +258,7 @@ async function refresh() {
   renderOrgs();
   renderPreviews();
   renderMachine();
+  renderCuenta();
   renderTabs();
   renderActions();
   updateTitle();
@@ -337,6 +339,43 @@ function renderPreviews() {
   const previews = state.previews || [];
   previewsEl.hidden = previews.length === 0;
   previewsEl.replaceChildren(...previews.map(previewEl));
+}
+
+/* La cuenta de la org: el plan y lo que gastó en el modelo. En modo dev,
+   además, la forma de moverlo sin pasarela — que es lo que hace falta para
+   probar el sistema entero. */
+
+function tokens(cantidad) {
+  return (cantidad || 0).toLocaleString("es-AR") + " tokens";
+}
+
+function renderCuenta() {
+  const org = state.org;
+  cuentaEl.replaceChildren();
+  if (!org) return;
+
+  const plan = document.createElement("span");
+  plan.className = "value";
+  plan.title = "Cómo está el plan de esta organización";
+  plan.textContent = org.plan === "paid" ? "pago" : "gratis";
+
+  const uso = document.createElement("span");
+  uso.className = "value";
+  uso.title = "Los tokens que consumió el modelo en esta organización";
+  uso.textContent = tokens(state.usage ? state.usage.total : 0);
+
+  cuentaEl.append(plan, uso);
+
+  if (!state.dev) return;
+  const boton = document.createElement("button");
+  boton.className = "link";
+  boton.textContent = org.plan === "paid" ? "volver a gratis" : "pasar a pago";
+  boton.onclick = async () => {
+    const plan = org.plan === "paid" ? "free" : "paid";
+    if (!(await api("/api/dev/plan", { plan }))) return;
+    await refresh();
+  };
+  cuentaEl.append(boton);
 }
 
 function machineStat(name, value, title) {

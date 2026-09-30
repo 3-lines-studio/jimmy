@@ -184,6 +184,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/login") => login(web, &request, stream),
         ("POST", "/api/org") => set_org(web, &request, stream),
         ("POST", "/api/orgs") => create_org(web, &request, stream),
+        ("POST", "/api/dev/plan") => dev_plan(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
@@ -436,11 +437,14 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
         .into_iter()
         .map(|org| serde_json::json!({ "id": org.id, "name": org.name }))
         .collect();
-    let active = store
-        .active_org(&user.id)
-        .ok()
-        .flatten()
-        .map(|org| serde_json::json!({ "id": org.id, "name": org.name }));
+    let activa = store.active_org(&user.id).ok().flatten();
+    let active = activa
+        .as_ref()
+        .map(|org| serde_json::json!({ "id": org.id, "name": org.name, "plan": org.plan }));
+    let uso = activa
+        .as_ref()
+        .and_then(|org| store.uso_de(&org.id, None).ok())
+        .unwrap_or_default();
     let projects: Vec<serde_json::Value> = org
         .projects()
         .unwrap_or_default()
@@ -492,6 +496,13 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             "org": active,
             "orgs": orgs,
             "workspace": org.label(),
+            "usage": {
+                "calls": uso.calls,
+                "prompt": uso.prompt,
+                "completion": uso.completion,
+                "total": uso.total(),
+            },
+            "dev": web.auth.dev || plan_de_prueba(),
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
@@ -513,6 +524,37 @@ fn set_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io
     let org = request.field("id").unwrap_or_default();
     if let Err(error) = web.auth.store().set_active_org(&user.id, &org) {
         return http::send_error(stream, 400, &error);
+    }
+    state(web, request, stream)
+}
+
+/// Si esta instancia deja mover el plan a mano. Es una puerta aparte de
+/// `JIMMY_WEB_DEV` a propósito: aquélla deja entrar sin mail, y para probar el
+/// sistema no hace falta eso.
+fn plan_de_prueba() -> bool {
+    crate::env("JIMMY_WEB_DEV_PLAN").is_some()
+}
+
+/// Marcar el plan a mano, para probar el sistema antes de que exista la
+/// pasarela: pasar a pago da de alta el sandbox de la org.
+fn dev_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if !plan_de_prueba() && !web.auth.dev {
+        return http::send_error(stream, 403, "esa puerta no está abierta");
+    }
+    let Some(user) = current_user(web, request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let Some(org) = web.auth.store().active_org(&user.id).ok().flatten() else {
+        return http::send_error(stream, 400, "no hay org activa");
+    };
+    let plan = request.field("plan").unwrap_or_default();
+    if let Err(error) = web.auth.store().set_plan(&org.id, &plan) {
+        return http::send_error(stream, 400, &error);
+    }
+    if plan == "paid" {
+        if let Err(error) = crate::remote::alta(&org.id, web.auth.store()) {
+            return http::send_error(stream, 500, &error);
+        }
     }
     state(web, request, stream)
 }
@@ -1244,6 +1286,30 @@ done
             }
         });
         (port, visto)
+    }
+
+    /// El plan y el consumo se ven en el estado, y la puerta para mover el plan
+    /// a mano sólo está abierta en modo dev: es con lo que se prueba el sistema
+    /// entero sin pasarela.
+    #[test]
+    fn el_estado_muestra_el_plan_y_el_consumo() {
+        let server = start("cuenta");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let estado = get(server.port, "/api/state", Some(&cookie));
+        assert!(estado.contains("\"plan\":\"free\""), "{estado}");
+        assert!(estado.contains("\"usage\""), "{estado}");
+        assert!(estado.contains("\"dev\":true"), "{estado}");
+
+        // Con la puerta abierta (acá el modo dev la abre) el que falta es la
+        // sesión; cerrada, no hay puerta.
+        let sin_sesion = post_with(server.port, "/api/dev/plan", r#"{"plan":"free"}"#, None);
+        assert!(sin_sesion.starts_with("HTTP/1.1 401"), "{sin_sesion}");
+        let sin_dev = start_with("cuenta-sin-dev", false);
+        let puerta = post_with(sin_dev.port, "/api/dev/plan", r#"{"plan":"paid"}"#, None);
+        assert!(puerta.starts_with("HTTP/1.1 403"), "{puerta}");
+
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+        let _ = std::fs::remove_dir_all(sin_dev.root.parent().unwrap());
     }
 
     /// El modelo pasa por el control plane: el sandbox lleva un pase y no la

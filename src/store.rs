@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS conversations (
     deleted_at INTEGER,
     UNIQUE (org_id, key)
 );
+CREATE TABLE IF NOT EXISTS usage (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    day INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    calls INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE (org_id, model, day)
+);
 CREATE TABLE IF NOT EXISTS memberships (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -428,6 +442,63 @@ impl Store {
         )
         .optional()
         .map_err(|e| e.to_string())
+    }
+
+    /// Suma lo que consumió una llamada. Se guarda por org, modelo y día, así
+    /// el gasto de un mes es una suma y la tabla no crece con cada llamada.
+    pub fn sumar_uso(&self, org: &str, model: &str, uso: &Uso) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO usage (id, org_id, model, day, prompt_tokens, completion_tokens,
+                               cached_tokens, calls, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+             ON CONFLICT(org_id, model, day) DO UPDATE SET
+                 prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                 completion_tokens = completion_tokens + excluded.completion_tokens,
+                 cached_tokens = cached_tokens + excluded.cached_tokens,
+                 calls = calls + excluded.calls,
+                 updated_at = excluded.updated_at,
+                 deleted_at = NULL",
+            params![
+                ulid::new(),
+                org,
+                model,
+                dia(now()),
+                uso.prompt as i64,
+                uso.completion as i64,
+                uso.cached as i64,
+                uso.calls as i64,
+                now()
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Lo que consumió una org desde un día (incluido). Sin desde, todo.
+    pub fn uso_de(&self, org: &str, desde: Option<i64>) -> Result<Uso, String> {
+        let db = self.db.lock().unwrap();
+        let mut uso = Uso::default();
+        let mut statement = db
+            .prepare(
+                "SELECT prompt_tokens, completion_tokens, cached_tokens, calls FROM usage
+                 WHERE org_id = ?1 AND deleted_at IS NULL AND day >= ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let filas = statement
+            .query_map(params![org, desde.unwrap_or(i64::MIN)], |row| {
+                Ok(Uso {
+                    prompt: row.get::<_, i64>(0)?.max(0) as u64,
+                    completion: row.get::<_, i64>(1)?.max(0) as u64,
+                    cached: row.get::<_, i64>(2)?.max(0) as u64,
+                    calls: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for fila in filas {
+            uso.sumar(&fila.map_err(|e| e.to_string())?);
+        }
+        Ok(uso)
     }
 
     /// El plan de una org: `free` o `paid`. Es lo que decide si tiene sandbox:
@@ -1047,6 +1118,35 @@ impl Store {
     }
 }
 
+/// Lo que consumió una org: los tokens que le manda al modelo y los que le
+/// contesta, más cuántas llamadas fueron.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Uso {
+    pub prompt: u64,
+    pub completion: u64,
+    pub cached: u64,
+    pub calls: u64,
+}
+
+impl Uso {
+    pub fn sumar(&mut self, otro: &Uso) {
+        self.prompt += otro.prompt;
+        self.completion += otro.completion;
+        self.cached += otro.cached;
+        self.calls += otro.calls;
+    }
+
+    pub fn total(&self) -> u64 {
+        self.prompt + self.completion
+    }
+}
+
+/// El día de un momento, sin calendario: los segundos enteros divididos por un
+/// día. Alcanza para sumar por mes y no depende de ninguna zona horaria.
+pub fn dia(de: i64) -> i64 {
+    de.div_euclid(86_400)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1190,6 +1290,7 @@ mod tests {
             "machines",
             "projects",
             "conversations",
+            "usage",
         ] {
             let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
             let rows: Vec<(String, String)> = statement
@@ -1446,6 +1547,46 @@ mod tests {
             "las nuevas quedan"
         );
     }
+    /// El consumo se acumula por día y por modelo: dos llamadas del mismo día
+    /// son una fila, y el total de un rango es una suma.
+    #[test]
+    fn el_consumo_de_una_org_se_acumula_por_dia() {
+        let store = store("consumo");
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        assert_eq!(store.uso_de(&org.id, None).unwrap(), Uso::default());
+
+        let uno = Uso {
+            prompt: 100,
+            completion: 20,
+            cached: 10,
+            calls: 1,
+        };
+        store.sumar_uso(&org.id, "deepseek-flash", &uno).unwrap();
+        store.sumar_uso(&org.id, "deepseek-flash", &uno).unwrap();
+        store
+            .sumar_uso(
+                &org.id,
+                "otro-modelo",
+                &Uso {
+                    prompt: 5,
+                    calls: 1,
+                    ..Uso::default()
+                },
+            )
+            .unwrap();
+
+        let total = store.uso_de(&org.id, None).unwrap();
+        assert_eq!(total.prompt, 205);
+        assert_eq!(total.completion, 40);
+        assert_eq!(total.calls, 3);
+        assert_eq!(total.total(), 245);
+        assert_eq!(
+            store.uso_de(&org.id, Some(dia(i64::MAX))).unwrap(),
+            Uso::default()
+        );
+        assert_eq!(store.uso_de(&org.id, Some(0)).unwrap().calls, 3);
+    }
+
     #[test]
     fn el_plan_de_una_org_decide_si_tiene_sandbox() {
         let store = store("plan");

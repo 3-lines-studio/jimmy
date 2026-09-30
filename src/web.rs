@@ -750,10 +750,10 @@ fn modelo_web(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std:
         .header("authorization")
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
-    let Some(_org) = modelo.org(pase) else {
+    let Some(org) = modelo.org(pase) else {
         return http::send_error(stream, 401, "ese pase no sirve");
     };
-    modelo.responder(&request.body, stream)
+    modelo.responder(&org, &request.body, stream)
 }
 
 fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1185,12 +1185,13 @@ done
             String::new(),
         );
         agent.use_worker_exe(script);
-        if let Some(modelo) = modelo {
-            agent.set_modelo(modelo);
-        }
 
         let bus = Bus::new();
         let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
+        if let Some(modelo) = modelo {
+            modelo.set_store(store.clone());
+            agent.set_modelo(modelo);
+        }
         agent.set_store(store.clone());
         let auth = Auth::new(store.clone(), "bob@ejemplo.com, ana@ejemplo.com", None, dev);
         let previews = crate::preview::Previews::new(&workspace);
@@ -1231,7 +1232,7 @@ done
                 let mut buffer = [0u8; 8192];
                 let leidos = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
                 *guardado.lock().unwrap() = String::from_utf8_lossy(&buffer[..leidos]).into_owned();
-                let cuerpo = "data: {\"hola\":1}\n\n";
+                let cuerpo = "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":10}}\n\n";
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
@@ -1254,19 +1255,21 @@ done
             format!("http://127.0.0.1:{proveedor}"),
             "la-clave-de-verdad".into(),
             "http://127.0.0.1".into(),
+            None,
         ));
         let server = start_con_modelo("modelo", modelo.clone());
+        let (_, org) = server.store.register("quien@ejemplo.com").unwrap();
 
         let sin_pase = post_with(server.port, "/modelo/chat/completions", "{}", None);
         assert!(sin_pase.starts_with("HTTP/1.1 401"), "{sin_pase}");
 
-        let pase = modelo.pase("org-1");
+        let pase = modelo.pase(&org.id);
         let mut stream = connect(server.port);
         write!(
             stream,
             "POST /modelo/chat/completions HTTP/1.1\r\nHost: jimmy\r\n\
              Authorization: Bearer {pase}\r\nContent-Type: application/json\r\n\
-             Content-Length: 15\r\n\r\n{{\"stream\":true}}"
+             Content-Length: 38\r\n\r\n{{\"stream\":true,\"model\":\"deepseek-flash\"}}"
         )
         .unwrap();
         let respuesta = whole(stream);
@@ -1290,6 +1293,14 @@ done
             !pedido.contains(&pase),
             "el pase del sandbox llegó al proveedor: {pedido}"
         );
+
+        // Y el consumo queda anotado: es lo que después se mira para saber
+        // cuánto gastó una org.
+        let uso = server.store.uso_de(&org.id, None).unwrap();
+        assert_eq!(uso.calls, 1, "no se anotó la llamada: {uso:?}");
+        assert_eq!(uso.prompt, 100);
+        assert_eq!(uso.completion, 20);
+        assert_eq!(uso.cached, 10);
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

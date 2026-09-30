@@ -191,8 +191,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // El modelo del otro lado, para los que corren adentro de un sandbox.
-    let modelo = modelo_from_env();
+    // El modelo del otro lado: por acá pasan todos los pedidos, y acá queda
+    // anotado el consumo de cada org.
+    let modelo = modelo_from_env(Some(store.clone()));
     let agent = match build_agent(&config, Some(store.clone()), modelo.clone()) {
         Ok(agent) => agent,
         Err(e) => {
@@ -395,6 +396,7 @@ fn orgs_command(args: &[String]) -> i32 {
             (email.clone(), plan.cloned().unwrap_or_default())
         }
         (Some(accion), Some(email), _) if accion == "alta" => (email.clone(), "paid".to_string()),
+        (Some(accion), Some(email), _) if accion == "uso" => (email.clone(), String::new()),
         _ => return orgs_usage(),
     };
     let org = match store.org_of_email(&email) {
@@ -408,6 +410,26 @@ fn orgs_command(args: &[String]) -> i32 {
             return 1;
         }
     };
+    if args.first().map(String::as_str) == Some("uso") {
+        return match store.uso_de(&org.id, None) {
+            Ok(uso) => {
+                println!(
+                    "{} · {} llamadas · {} tokens ({} de ida, {} de vuelta, {} en caché)",
+                    org.name,
+                    uso.calls,
+                    uso.total(),
+                    uso.prompt,
+                    uso.completion,
+                    uso.cached
+                );
+                0
+            }
+            Err(error) => {
+                eprintln!("jimmy orgs: {error}");
+                1
+            }
+        };
+    }
     let result = match args.first().map(String::as_str) {
         Some("alta") => crate::remote::alta(&org.id, &store),
         _ => store
@@ -430,7 +452,7 @@ fn orgs_command(args: &[String]) -> i32 {
 }
 
 fn orgs_usage() -> i32 {
-    eprintln!("uso: jimmy orgs [plan <mail> <free|paid> | alta <mail>]");
+    eprintln!("uso: jimmy orgs [plan <mail> <free|paid> | alta <mail> | uso <mail>]");
     2
 }
 
@@ -532,11 +554,16 @@ fn usage() -> i32 {
 /// El modelo del otro lado: el control plane les pone la clave a los sandboxes,
 /// así no viaja hasta allá. Sin URL pública —el sandbox tiene que poder llegar—
 /// o sin clave no hay proxy, y el que corre adentro usa la clave como antes.
-fn modelo_from_env() -> Option<Arc<modelo::Modelo>> {
+fn modelo_from_env(store: Option<Arc<store::Store>>) -> Option<Arc<modelo::Modelo>> {
     let base = env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into());
     let key = env("OPENAI_API_KEY")?;
     let publico = env("JIMMY_WEB_URL")?;
-    Some(Arc::new(modelo::Modelo::new(base, key, publico)))
+    let local = env("JIMMY_WEB_PORT").map(|port| format!("http://127.0.0.1:{port}/modelo"));
+    let modelo = modelo::Modelo::new(base, key, publico, local);
+    if let Some(store) = store {
+        modelo.set_store(store);
+    }
+    Some(Arc::new(modelo))
 }
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it

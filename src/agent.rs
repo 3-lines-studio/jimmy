@@ -283,15 +283,20 @@ impl Agent {
                 &self.workspace,
             ),
         };
-        let (true, Some(modelo), Some(org)) = (en_sandbox, &self.modelo, &self.org) else {
+        let Some(modelo) = &self.modelo else {
             return env;
         };
-        // Adentro del sandbox el modelo es el control plane: la clave del
-        // proveedor no viaja, y el pase sólo sirve para pedirle turnos a la org.
-        for (nombre, valor) in [
-            ("AXE_BASE", modelo.url()),
-            ("OPENAI_API_KEY", modelo.pase(org)),
-        ] {
+        let destino = match en_sandbox {
+            true => Some(modelo.url()),
+            false => modelo.url_local(),
+        };
+        let (Some(destino), Some(org)) = (destino, &self.org) else {
+            return env;
+        };
+        // El modelo es el control plane: adentro del sandbox porque la clave no
+        // viaja, y acá adentro para que todo el consumo pase por un solo lugar.
+        // El pase sólo sirve para pedirle turnos a esa org.
+        for (nombre, valor) in [("AXE_BASE", destino), ("OPENAI_API_KEY", modelo.pase(org))] {
             match env.iter_mut().find(|(otro, _)| *otro == nombre) {
                 Some(par) => par.1 = valor,
                 None => env.push((nombre.to_string(), valor)),
@@ -1301,31 +1306,44 @@ mod tests {
         .at(&lugar)
     }
 
-    /// Adentro del sandbox el modelo es el control plane: la clave del proveedor
-    /// no viaja, va un pase de la org. De este lado no cambia nada.
+    /// El modelo es el control plane, de los dos lados: adentro del sandbox
+    /// porque la clave no viaja, y acá adentro para que el consumo pase por un
+    /// solo lugar. La clave del proveedor no aparece en ningún entorno.
     #[test]
-    fn adentro_del_sandbox_el_modelo_es_el_control_plane() {
+    fn el_modelo_pasa_por_el_control_plane_en_los_dos_casos() {
         let modelo = Arc::new(crate::modelo::Modelo::new(
             "https://api.deepseek.com".into(),
             "la-clave".into(),
             "https://jimmy.ejemplo".into(),
+            Some("http://127.0.0.1:9/modelo".into()),
         ));
         let mut agent = agente(Some("org-1"));
         agent.set_modelo(modelo.clone());
+        let pase = modelo.pase("org-1");
 
         let adentro: std::collections::HashMap<String, String> =
             agent.worker_env(true).into_iter().collect();
         assert_eq!(adentro["AXE_BASE"], "https://jimmy.ejemplo/modelo");
-        assert_eq!(adentro["OPENAI_API_KEY"], modelo.pase("org-1"));
-        assert!(
-            !adentro["OPENAI_API_KEY"].contains("la-clave"),
-            "la clave del proveedor se fue al sandbox"
-        );
+        assert_eq!(adentro["OPENAI_API_KEY"], pase);
 
         let aca: std::collections::HashMap<String, String> =
             agent.worker_env(false).into_iter().collect();
-        assert_eq!(aca["AXE_BASE"], "https://api.deepseek.com");
-        assert_eq!(aca["OPENAI_API_KEY"], "la-clave");
+        assert_eq!(aca["AXE_BASE"], "http://127.0.0.1:9/modelo");
+        assert_eq!(aca["OPENAI_API_KEY"], pase);
+        for entorno in [&adentro, &aca] {
+            assert!(
+                !entorno["OPENAI_API_KEY"].contains("la-clave"),
+                "la clave del proveedor se fue con el turno"
+            );
+        }
+
+        // Sin org no hay a quién anotarle el consumo: se va derecho al proveedor.
+        let mut sin_org = agente(None);
+        sin_org.set_modelo(modelo.clone());
+        let suelto: std::collections::HashMap<String, String> =
+            sin_org.worker_env(false).into_iter().collect();
+        assert_eq!(suelto["AXE_BASE"], "https://api.deepseek.com");
+        assert_eq!(suelto["OPENAI_API_KEY"], "la-clave");
     }
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {

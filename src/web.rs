@@ -822,6 +822,22 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if text.trim().is_empty() && images.is_empty() {
         return http::send_error(stream, 400, "el mensaje está vacío");
     }
+    let Some(session) = crate::session_from_key(&key) else {
+        return http::send_error(stream, 400, "clave de conversación inválida");
+    };
+
+    // Compactar no es un mensaje para el modelo: es un turno que resume lo que
+    // ya hay. El mismo atajo que en los transports.
+    if text.split_whitespace().next() == Some("/compact") {
+        let agent = web.agent.at(&web.place(request));
+        std::thread::spawn(move || {
+            if let Err(error) = agent.compact(&Null, &session) {
+                eprintln!("jimmy web: {error}");
+            }
+        });
+        return http::send_json(stream, 202, &serde_json::json!({ "started": true }));
+    }
+
     if conversation.title.is_none()
         || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
     {
@@ -832,9 +848,6 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         };
         let _ = org.rename_conversation(&key, &title);
     }
-    let Some(session) = crate::session_from_key(&key) else {
-        return http::send_error(stream, 400, "clave de conversación inválida");
-    };
 
     let agent = web.agent.at(&web.place(request));
     std::thread::spawn(move || {
@@ -2055,6 +2068,52 @@ done
             "un turno que no arranca no deja rastro: {log}"
         );
 
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    /// Compactar es un atajo, no un mensaje: el worker recibe la orden de
+    /// compactar y no el texto `/compact`.
+    #[test]
+    fn compactar_desde_la_web_no_es_un_mensaje() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let server = start("compactar");
+        let cookie = entrar(&server, "bob@ejemplo.com");
+        let script = server.root.parent().unwrap().join("worker.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+echo '{"event":"ready"}'
+while read -r line; do
+  case "$line" in *shutdown*) exit 0 ;; esac
+  case "$line" in *'"cmd":"compact"'*) echo '{"event":"done","text":"compactado"}'
+  ;; *) echo '{"event":"done","text":"mensaje"}' ;; esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let key = conversation(server.port, &cookie);
+        let rx = watching(&server, &key);
+        let sent = post_with(
+            server.port,
+            "/api/send",
+            &format!(r#"{{"conversation":"{key}","text":"/compact"}}"#),
+            Some(&cookie),
+        );
+        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
+
+        let flujo = until(&rx, "\"done\"").join("\n");
+        assert!(
+            flujo.contains("compactado"),
+            "la orden no llegó como compactar: {flujo}"
+        );
+        let estado = get(server.port, "/api/state", Some(&cookie));
+        assert!(
+            !estado.contains("/compact"),
+            "el atajo quedó como título de la conversación: {estado}"
+        );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

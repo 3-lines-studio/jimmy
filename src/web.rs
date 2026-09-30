@@ -10,17 +10,15 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::files;
 use crate::http::{self, Request};
-use crate::log::Window;
+use crate::log::{Log, Window};
 use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::schedule;
 use crate::transport::Null;
-use crate::workspace::{place, Local, Place, Workspace};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +55,7 @@ pub struct Web {
     agent: Agent,
     auth: Auth,
     previews: Arc<Previews>,
-    agenda: Sender<()>,
+    agenda: Sender<String>,
 }
 
 impl Web {
@@ -68,7 +66,7 @@ impl Web {
         agent: Agent,
         auth: Auth,
         previews: Arc<Previews>,
-        agenda: Sender<()>,
+        agenda: Sender<String>,
     ) -> Arc<Web> {
         Arc::new(Web {
             root,
@@ -103,36 +101,15 @@ pub fn listen(port: u16) -> Result<TcpListener, String> {
         .map_err(|e| format!("no pude escuchar en el puerto {port}: {e}"))
 }
 
-/// Un thread por conexión: con la web expuesta, un tope es la diferencia entre
-/// atender y quedarse sin memoria por una cola de pedidos.
-const MAX_CONNECTIONS: usize = 64;
-
 pub fn serve(web: Arc<Web>, listener: TcpListener) {
-    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
-        if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-            let mut stream = stream;
-            let _ = http::send_error(&mut stream, 503, "demasiados pedidos a la vez");
-            continue;
-        }
-        live.fetch_add(1, Ordering::Relaxed);
         let web = web.clone();
-        let live = live.clone();
         std::thread::spawn(move || {
-            let _live = Live(live);
             let mut stream = stream;
             if let Err(e) = handle(&web, &mut stream) {
                 eprintln!("jimmy web: {e}");
             }
         });
-    }
-}
-
-struct Live(Arc<AtomicUsize>);
-
-impl Drop for Live {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -152,12 +129,6 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     };
     if request.too_large {
         return http::send_error(stream, 413, "eso es demasiado grande");
-    }
-    if request
-        .param("conversation")
-        .is_some_and(|key| !conversations::valid_key(key))
-    {
-        return http::send_error(stream, 400, "esa conversación no existe");
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => app_page(web, &request, stream),
@@ -182,9 +153,6 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             versioned(MANIFEST).as_bytes(),
         ),
         ("POST", "/api/login") => login(web, &request, stream),
-        ("POST", "/api/org") => set_org(web, &request, stream),
-        ("POST", "/api/orgs") => create_org(web, &request, stream),
-        ("POST", "/api/plan") => set_plan(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
@@ -195,7 +163,6 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/conversations") => create(web, &request, stream),
         ("POST", "/api/projects") => create_project(web, &request, stream),
         ("POST", "/api/rename") => rename(web, &request, stream),
-        ("POST", "/modelo/chat/completions") => modelo_web(web, &request, stream),
         ("POST", "/api/send") => send(web, &request, stream),
         ("POST", "/api/upload") => upload(web, &request, stream),
         ("GET", "/api/file") => file(web, &request, stream),
@@ -203,12 +170,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/api/raw") => raw(web, &request, stream),
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
-        ("GET", "/api/secret") => secret_get(web, &request, stream),
-        ("POST", "/api/secret") => secret_set(web, &request, stream),
-        ("POST", "/api/secret/delete") => secret_delete(web, &request, stream),
         ("GET", "/api/agenda") => agenda(web, &request, stream),
-        ("POST", "/api/agenda") => agenda_create(web, &request, stream),
-        ("POST", "/api/agenda/delete") => agenda_delete(web, &request, stream),
         ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
@@ -358,9 +320,7 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
             b"",
         );
     };
-    let Some(session) = web.auth.open_session(&email) else {
-        return http::send_error(stream, 500, "no pude abrir la sesión");
-    };
+    let session = web.auth.open_session(&email);
     let cookie = format!(
         "{}={session}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age={}",
         auth::COOKIE,
@@ -387,129 +347,11 @@ fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     )
 }
 
-/// El workspace de la org activa: lo que la web necesita de las cosas de una
-/// org sale de acá, y no de un camino que la web arme por su cuenta.
-impl Web {
-    /// La org en la que está parado quien pide.
-    fn org(&self, request: &Request) -> Option<crate::store::Org> {
-        let user = current_user(self, request)?;
-        self.auth.store().active_org(&user.id).ok().flatten()
-    }
-
-    /// Dónde trabaja la org activa: el lugar del control plane, que es lo que
-    /// necesita el agente para correr un turno acá.
-    fn place(&self, request: &Request) -> Place {
-        match self.org(request) {
-            Some(org) => place(&self.root, &self.workspace, &org),
-            None => Place {
-                root: self.root.clone(),
-                workspace: self.workspace.clone(),
-                org: None,
-            },
-        }
-    }
-
-    fn workspace(&self, request: &Request) -> Box<dyn Workspace> {
-        // La org que se quedó la raíz trabaja donde siempre; las demás tienen su
-        // propio directorio, con sus conversaciones y su workspace adentro. La
-        // que tiene sandbox vive allá: la lista sale de su índice y los archivos
-        // se le piden en el momento.
-        match self.org(request) {
-            Some(org) => match self.auth.store().machine(&org.id).ok().flatten() {
-                Some(row) if row.provider == "tensorlake" => Box::new(crate::remote::Remoto::new(
-                    org.id.clone(),
-                    self.auth.store().clone(),
-                    place(&self.root, &self.workspace, &org),
-                )),
-                _ => Box::new(Local::from(place(&self.root, &self.workspace, &org))),
-            },
-            None => Box::new(Local::new(self.root.clone(), self.workspace.clone())),
-        }
-    }
-}
-
-/// Los secretos de la org activa: quién los escribe y quién los lee. Sin clave
-/// en el despliegue no hay secretos, y se dice.
-#[allow(clippy::type_complexity)]
-fn org_y_secretos(
-    web: &Arc<Web>,
-    request: &Request,
-) -> Result<(crate::store::Org, Arc<crate::secrets::Secretos>), (u16, String)> {
-    let Some(user) = current_user(web, request) else {
-        return Err((401, "no estás adentro".into()));
-    };
-    let Some(org) = web.auth.store().active_org(&user.id).ok().flatten() else {
-        return Err((400, "no hay org activa".into()));
-    };
-    let Some(secretos) = web.agent.secretos() else {
-        return Err((400, "este despliegue no tiene secretos".into()));
-    };
-    Ok((org, secretos))
-}
-
-/// El valor de un secreto, cuando lo piden: es de la org y de quien la mira.
-fn secret_get(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let (org, secretos) = match org_y_secretos(web, request) {
-        Ok(par) => par,
-        Err((code, error)) => return http::send_error(stream, code, &error),
-    };
-    let name = request.param("name").unwrap_or_default();
-    match secretos.get(&org.id, name) {
-        Ok(Some(valor)) => http::send_json(stream, 200, &serde_json::json!({ "value": valor })),
-        Ok(None) => http::send_error(stream, 404, "ese secreto no está"),
-        Err(error) => http::send_error(stream, 400, &error),
-    }
-}
-
-/// Guardar un secreto devuelve el estado: el valor no vuelve nunca por acá.
-fn secret_set(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let (org, secretos) = match org_y_secretos(web, request) {
-        Ok(par) => par,
-        Err((code, error)) => return http::send_error(stream, code, &error),
-    };
-    let name = request.field("name").unwrap_or_default();
-    let valor = request.field("value").unwrap_or_default();
-    if let Err(error) = secretos.set(&org.id, &name, &valor) {
-        return http::send_error(stream, 400, &error);
-    }
-    state(web, request, stream)
-}
-
-fn secret_delete(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let (org, secretos) = match org_y_secretos(web, request) {
-        Ok(par) => par,
-        Err((code, error)) => return http::send_error(stream, code, &error),
-    };
-    let name = request.field("name").unwrap_or_default();
-    if let Err(error) = secretos.borrar(&org.id, &name) {
-        return http::send_error(stream, 400, &error);
-    }
-    state(web, request, stream)
-}
-
 fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(user) = current_user(web, request) else {
+    let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let org = web.workspace(request);
-    let store = web.auth.store();
-    let orgs: Vec<serde_json::Value> = store
-        .orgs_of(&user.id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|org| serde_json::json!({ "id": org.id, "name": org.name }))
-        .collect();
-    let activa = store.active_org(&user.id).ok().flatten();
-    let active = activa
-        .as_ref()
-        .map(|org| serde_json::json!({ "id": org.id, "name": org.name, "plan": org.plan }));
-    let uso = activa
-        .as_ref()
-        .and_then(|org| store.uso_de(&org.id, None).ok())
-        .unwrap_or_default();
-    let projects: Vec<serde_json::Value> = org
-        .projects()
-        .unwrap_or_default()
+    let projects: Vec<serde_json::Value> = conversations::projects(&web.root, &web.workspace)
         .into_iter()
         .map(|project| {
             let conversations: Vec<serde_json::Value> = project
@@ -527,12 +369,16 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 .collect();
             serde_json::json!({
                 "name": project.name,
-                "unversioned": project.unversioned,
-                "size": project.size,
+                "path": project.path.display().to_string(),
+                "unversioned": unversioned(&project.path),
+                "size": match project.name == conversations::GENERAL {
+                    true => 0,
+                    false => conversations::size(&project.path),
+                },
                 "last": project
                     .conversations
                     .iter()
-                    .find_map(|conversation| conversation.last.clone()),
+                    .find_map(|conversation| conversations::last_message(&conversation.dir)),
                 "conversations": conversations,
             })
         })
@@ -550,27 +396,12 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             })
         })
         .collect();
-    let secretos = match (&activa, web.agent.secretos()) {
-        (Some(org), Some(secretos)) => Some(secretos.nombres(&org.id).unwrap_or_default()),
-        _ => None,
-    };
-    let admin = web.auth.is_admin(&user.email);
     http::send_json(
         stream,
         200,
         &serde_json::json!({
-            "user": user_name(user.email),
-            "org": active,
-            "orgs": orgs,
-            "workspace": org.label(),
-            "usage": {
-                "calls": uso.calls,
-                "prompt": uso.prompt,
-                "completion": uso.completion,
-                "total": uso.total(),
-            },
-            "admin": admin,
-            "secrets": secretos,
+            "user": user,
+            "workspace": web.workspace.display().to_string(),
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
@@ -578,77 +409,15 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     )
 }
 
-/// El usuario de esta request con su id, que es lo que necesitan las orgs: el
-/// nombre que muestra la web no alcanza para saber a quién pertenece nada.
-fn current_user(web: &Web, request: &Request) -> Option<crate::store::User> {
-    web.auth.session_user(&request.cookie(auth::COOKIE)?)
-}
-
-/// Cambiar de org activa: sólo vale una org de la que se es parte.
-fn set_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(user) = current_user(web, request) else {
-        return http::send_error(stream, 401, "no estás adentro");
-    };
-    let org = request.field("id").unwrap_or_default();
-    if let Err(error) = web.auth.store().set_active_org(&user.id, &org) {
-        return http::send_error(stream, 400, &error);
-    }
-    state(web, request, stream)
-}
-
-/// Mover el plan de la org activa. Es una acción de administración, no una
-/// puerta de prueba: la va a hacer el pago, y hasta que exista la hace el dueño
-/// de la instancia. Pasar a pago da de alta el sandbox.
-fn set_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(user) = current_user(web, request) else {
-        return http::send_error(stream, 401, "no estás adentro");
-    };
-    if !web.auth.is_admin(&user.email) {
-        return http::send_error(stream, 403, "el plan de una org lo mueve un administrador");
-    }
-    let Some(org) = web.auth.store().active_org(&user.id).ok().flatten() else {
-        return http::send_error(stream, 400, "no hay org activa");
-    };
-    let plan = request.field("plan").unwrap_or_default();
-    let plan = plan.trim();
-    if !plan.is_empty() {
-        if let Err(error) = crate::remote::alta(&org.id, web.auth.store()) {
-            return http::send_error(stream, 500, &error);
-        }
-    }
-    let plan = (!plan.is_empty()).then_some(plan);
-    if let Err(error) = web.auth.store().set_plan(&org.id, plan) {
-        return http::send_error(stream, 400, &error);
-    }
-    state(web, request, stream)
-}
-
-/// Una org nueva queda activa: el que la acaba de crear quiere trabajar ahí.
-fn create_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(user) = current_user(web, request) else {
-        return http::send_error(stream, 401, "no estás adentro");
-    };
-    let name = request.field("name").unwrap_or_default();
-    let org = match web.auth.store().create_org(&user.id, &name) {
-        Ok(org) => org,
-        Err(error) => return http::send_error(stream, 400, &error),
-    };
-    if let Err(error) = web.auth.store().set_active_org(&user.id, &org.id) {
-        return http::send_error(stream, 400, &error);
-    }
-    state(web, request, stream)
-}
-
 fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let org = web.workspace(request);
     let project = request.field("project").unwrap_or_default();
     let title = request
         .field("title")
         .unwrap_or_else(|| conversations::NEW_TITLE.to_string());
-    match org.create_conversation(&project, &title) {
+    match conversations::create(&web.root, &web.workspace, &project, &title) {
         Ok(key) => http::send_json(stream, 200, &serde_json::json!({ "key": key })),
         Err(error) => http::send_error(stream, 400, &error),
     }
@@ -663,11 +432,22 @@ fn create_project(
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name").unwrap_or_default();
-    let org = web.workspace(request);
-    match org.create_project(name.trim()) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": name.trim() })),
-        Err(error) => http::send_error(stream, 400, &error),
+    let name = name.trim();
+    if name.is_empty()
+        || name == conversations::GENERAL
+        || name.contains('/')
+        || name.starts_with('.')
+    {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
+    let dir = web.workspace.join("projects").join(name);
+    if dir.exists() {
+        return http::send_error(stream, 400, "ese proyecto ya existe");
+    }
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return http::send_error(stream, 500, &error.to_string());
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
 fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -676,11 +456,10 @@ fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     }
     let key = request.field("conversation").unwrap_or_default();
     let title = request.field("title").unwrap_or_default();
-    let org = web.workspace(request);
-    if org.writable(&key).is_err() {
+    if writable(web, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
-    match org.rename_conversation(&key, &title) {
+    match conversations::rename(&web.root, &key, &title) {
         Ok(()) => http::send_json(
             stream,
             200,
@@ -699,12 +478,10 @@ fn delete_conversation(
         return http::send_error(stream, 401, "no estás adentro");
     }
     let key = request.field("conversation").unwrap_or_default();
-    let org = web.workspace(request);
-    if org.writable(&key).is_err() {
+    if writable(web, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
-    web.agent.release(&key);
-    match org.delete_conversation(&key) {
+    match web.agent.delete(&key) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
         Err(error) => http::send_error(stream, 500, &error),
     }
@@ -720,9 +497,12 @@ fn rename_project(
     }
     let from = request.field("project").unwrap_or_default();
     let to = request.field("name").unwrap_or_default();
-    let org = web.workspace(request);
-    match org.rename_project(from.trim(), to.trim()) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to.trim() })),
+    let to = to.trim();
+    if to.is_empty() || to.contains('/') || to.starts_with('.') {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    match conversations::rename_project(&web.root, &web.workspace, from.trim(), to) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -737,9 +517,12 @@ fn duplicate_project(
     }
     let from = request.field("project").unwrap_or_default();
     let to = request.field("name").unwrap_or_default();
-    let org = web.workspace(request);
-    match org.duplicate_project(from.trim(), to.trim()) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to.trim() })),
+    let to = to.trim();
+    if to.is_empty() || to.contains('/') || to.starts_with('.') {
+        return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
+    }
+    match conversations::duplicate(&web.workspace, from.trim(), to) {
+        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -753,14 +536,86 @@ fn delete_project(
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("project").unwrap_or_default();
-    let org = web.workspace(request);
-    for conversation in org.conversations(name.trim()).unwrap_or_default() {
-        web.agent.release(&conversation.key);
+    let name = name.trim();
+    if name.is_empty()
+        || name == conversations::GENERAL
+        || name.contains('/')
+        || name.starts_with('.')
+    {
+        return http::send_error(stream, 400, "ese nombre no es un proyecto");
     }
-    match org.delete_project(name.trim(), request.flag("force")) {
+    let dir = web.workspace.join("projects").join(name);
+    if !dir.is_dir() {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    }
+    if let Err(why) = disposable(&dir, request.flag("force")) {
+        return http::send_error(stream, 400, &format!("no lo borro: {why}"));
+    }
+    let conversations = conversations::projects(&web.root, &web.workspace)
+        .into_iter()
+        .find(|project| project.name == name)
+        .map(|project| project.conversations)
+        .unwrap_or_default();
+    for conversation in conversations {
+        let _ = web.agent.delete(&conversation.key);
+    }
+    match std::fs::remove_dir_all(&dir) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
-        Err(error) => http::send_error(stream, 400, &format!("no lo borro: {error}")),
+        Err(error) => http::send_error(stream, 500, &error.to_string()),
     }
+}
+
+/// Un proyecto se borra si está vacío o si es un clon con todo commiteado y
+/// pusheado. Lo que no está en git se borra solo si el pedido se hace cargo
+/// (`force`): puede tener trabajo adentro que no existe en ningún otro lado.
+fn disposable(dir: &Path, force: bool) -> Result<(), String> {
+    if empty(dir) {
+        return Ok(());
+    }
+    if unversioned(dir) {
+        return match force {
+            true => Ok(()),
+            false => Err("tiene archivos que no están en git".into()),
+        };
+    }
+    if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
+        return Err("tiene cambios sin commitear".into());
+    }
+    if !git(
+        dir,
+        &["log", "--branches", "--not", "--remotes", "--oneline"],
+    )?
+    .trim()
+    .is_empty()
+    {
+        return Err("tiene commits sin pushear".into());
+    }
+    Ok(())
+}
+
+/// Un proyecto sin git y con algo adentro: no hay copia en ningún otro lado,
+/// así que borrarlo es una decisión del que lo pide.
+fn unversioned(dir: &Path) -> bool {
+    !empty(dir) && !dir.join(".git").exists()
+}
+
+fn empty(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.count() == 0)
+        .unwrap_or(true)
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err("no pude preguntarle a git".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -770,7 +625,6 @@ fn search(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let needle = request.param("q").unwrap_or_default();
     let results: Vec<serde_json::Value> = web
         .agent
-        .at(&web.place(request))
         .search(needle, 30)
         .into_iter()
         .map(|hit| {
@@ -791,14 +645,13 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let key = request.field("conversation").unwrap_or_default();
-    let org = web.workspace(request);
-    if org.writable(&key).is_err() {
+    if writable(web, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
-    web.agent.at(&web.place(request)).cancel(&session, &user);
+    web.agent.cancel(&session, &user);
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
@@ -811,33 +664,16 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     };
     let key = request.field("conversation").unwrap_or_default();
     let text = request.field("text").unwrap_or_default();
-    let org = web.workspace(request);
-    let Ok(conversation) = org.writable(&key) else {
+    let Ok(conversation) = writable(web, &key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     };
-    let images = match org.read_attachments(&key, &request.list("images")) {
+    let images = match read_attachments(&conversation, &request.list("images")) {
         Ok(images) => images,
         Err(error) => return http::send_error(stream, 400, &error),
     };
     if text.trim().is_empty() && images.is_empty() {
         return http::send_error(stream, 400, "el mensaje está vacío");
     }
-    let Some(session) = crate::session_from_key(&key) else {
-        return http::send_error(stream, 400, "clave de conversación inválida");
-    };
-
-    // Compactar no es un mensaje para el modelo: es un turno que resume lo que
-    // ya hay. El mismo atajo que en los transports.
-    if text.split_whitespace().next() == Some("/compact") {
-        let agent = web.agent.at(&web.place(request));
-        std::thread::spawn(move || {
-            if let Err(error) = agent.compact(&Null, &session) {
-                eprintln!("jimmy web: {error}");
-            }
-        });
-        return http::send_json(stream, 202, &serde_json::json!({ "started": true }));
-    }
-
     if conversation.title.is_none()
         || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
     {
@@ -846,52 +682,55 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
         } else {
             title_from(&text)
         };
-        let _ = org.rename_conversation(&key, &title);
+        let _ = conversations::rename(&web.root, &key, &title);
     }
+    let Some(session) = crate::session_from_key(&key) else {
+        return http::send_error(stream, 400, "clave de conversación inválida");
+    };
 
-    let agent = web.agent.at(&web.place(request));
+    let web = web.clone();
     std::thread::spawn(move || {
-        if let Err(error) = agent.respond(&Null, &session, &text, images, &user) {
+        if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
     });
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
 }
 
-/// El modelo, para quien corre adentro de un sandbox: acá no hay sesión ni
-/// cookie, hay un pase que sólo sirve para esto. La clave del proveedor se pone
-/// de este lado y no viaja.
-fn modelo_web(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let Some(modelo) = web.agent.modelo() else {
-        return http::send_error(stream, 503, "no hay modelo del otro lado");
-    };
-    let pase = request
-        .header("authorization")
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    let Some(org) = modelo.org(pase) else {
-        return http::send_error(stream, 401, "ese pase no sirve");
-    };
-    modelo.responder(&org, &request.body, stream)
+/// Los adjuntos ya subidos, leídos del disco: el mensaje viaja con los bytes del
+/// archivo, no con su nombre.
+fn read_attachments(
+    conversation: &conversations::Conversation,
+    names: &[String],
+) -> Result<Vec<axe::Image>, String> {
+    let uploads = media::dir(conversation);
+    names
+        .iter()
+        .map(|name| {
+            let name = media::safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
+            axe::image::attach(&uploads.join(name).display().to_string())
+        })
+        .collect()
 }
 
+/// Los bytes crudos del adjunto, con el nombre aparte en la query: el cuerpo es
+/// el archivo, no lo envuelve ningún JSON.
 fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
     let key = request.param("conversation").unwrap_or_default();
-    let org = web.workspace(request);
-    if org.writable(key).is_err() {
+    let Ok(conversation) = writable(web, key) else {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
-    }
+    };
     if request.body.is_empty() {
         return http::send_error(stream, 400, "el archivo está vacío");
     }
     if request.body.len() > MAX_UPLOAD {
         return http::send_error(stream, 400, "ese archivo es muy grande");
     }
-    let name = match org.write_attachment(
-        key,
+    let name = match media::store(
+        &media::dir(&conversation),
         request.param("name").unwrap_or_default(),
         &request.body,
     ) {
@@ -907,12 +746,12 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let org = web.workspace(request);
     let key = request.param("conversation").unwrap_or_default();
+    let conversation = conversations::get(&web.root, &web.workspace, key);
     let Some(name) = request.param("name").and_then(media::safe_name) else {
         return http::send_error(stream, 400, "ese nombre no sirve");
     };
-    let Ok(data) = org.read_attachment(key, name) else {
+    let Ok(data) = std::fs::read(media::dir(&conversation).join(name)) else {
         return http::send_error(stream, 404, "no está");
     };
     http::respond(stream, 200, media::content_type(name), &[], &data)
@@ -920,16 +759,26 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
 /// El directorio de un proyecto, o nada si ese nombre no puede ser uno. El
 /// proyecto `general` es el workspace entero: ahí se ve todo lo que hay.
+fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') || name.starts_with('.') {
+        return None;
+    }
+    let dir = conversations::project_dir(&web.workspace, name);
+    dir.is_dir().then_some(dir)
+}
+
 /// Una carpeta del proyecto, un nivel. Cada carpeta la pide el que mira cuando
 /// la abre.
 fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let org = web.workspace(request);
     let project = request.param("project").unwrap_or_default();
+    let Some(root) = project_dir(web, project) else {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    };
     let path = request.param("path").unwrap_or_default();
-    let Ok(entries) = org.tree(project, path) else {
+    let Some(entries) = files::list(&root, path) else {
         return http::send_error(stream, 404, "esa carpeta no está");
     };
     let entries: Vec<serde_json::Value> = entries
@@ -957,23 +806,34 @@ fn raw(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Re
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let org = web.workspace(request);
-    let project = request.param("project").unwrap_or_default();
-    let path = request.param("path").unwrap_or_default();
-    let name = path.rsplit('/').next().unwrap_or_default().to_string();
-    let image = media::is_image(&name);
-    let Ok((bytes, size)) = org.read_file(project, path, (!image).then_some(files::MAX_READ))
-    else {
+    let Some(root) = project_dir(web, request.param("project").unwrap_or_default()) else {
+        return http::send_error(stream, 400, "ese proyecto no existe");
+    };
+    let Some(path) = files::resolve(&root, request.param("path").unwrap_or_default()) else {
         return http::send_error(stream, 404, "ese archivo no está");
     };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return http::send_error(stream, 404, "ese archivo no está");
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return http::send_error(stream, 404, "ese archivo no está");
+    };
+    if !meta.is_file() {
+        return http::send_error(stream, 404, "eso no es un archivo");
+    }
+    let image = media::is_image(name);
+    let bytes = match files::read(&path, (!image).then_some(files::MAX_READ)) {
+        Ok(bytes) => bytes,
+        Err(error) => return http::send_error(stream, 500, &error),
+    };
     let content_type = if image {
-        media::content_type(&name)
+        media::content_type(name)
     } else if files::is_text(&bytes) {
         "text/plain; charset=utf-8"
     } else {
         "application/octet-stream"
     };
-    let cut: &[(&str, &str)] = if size > bytes.len() as u64 {
+    let cut: &[(&str, &str)] = if meta.len() > bytes.len() as u64 {
         &[("X-Truncated", "1")]
     } else {
         &[]
@@ -986,101 +846,43 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let key = request.field("conversation").unwrap_or_default();
-    let org = web.workspace(request);
-    if org.writable(&key).is_err() {
+    if writable(web, &key).is_err() {
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     web.bus.show(&key, &Event::Typing { user });
     http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
-/// Cuántas corridas de cada tarea se le muestran a la web: la base guarda
+/// Cuántas corridas de cada tarea se le muestran a la web: el archivo guarda
 /// muchas más, la vista muestra las últimas.
 const SHOWN: usize = 5;
 
-/// La agenda sale de la base y no del workspace: se mira sin despertar a nadie.
-fn agenda_tasks(web: &Web, org: &str) -> Result<Vec<serde_json::Value>, String> {
-    let store = web.auth.store();
-    let mut tasks = Vec::new();
-    for task in store.tasks_of(org)? {
-        let runs: Vec<serde_json::Value> = store
-            .runs_of(&task.id, SHOWN)?
-            .into_iter()
-            .map(|run| {
-                serde_json::json!({
-                    "ts": run.started_at,
-                    "ms": run.ms,
-                    "ok": run.ok,
-                    "text": run.text,
-                })
-            })
-            .collect();
-        tasks.push(serde_json::json!({
-            "name": task.name,
-            "when": task.when_at,
-            "at": task.at,
-            "every": task.every,
-            "target": task.target,
-            "silent": task.silent,
-            "paused": task.paused,
-            "unread": store.unread_runs(&task.id, task.last_read_at)?,
-            "runs": runs,
-        }));
-    }
-    Ok(tasks)
-}
-
-/// Una tarea nueva de la org activa. El horario se valida acá: una tarea con
-/// un horario que no se entiende nunca correría, y eso es peor que un error.
-fn agenda_create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if web.user(request).is_none() {
-        return http::send_error(stream, 401, "no estás adentro");
-    }
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    let puesto = |name: &str| request.field(name).filter(|value| !value.trim().is_empty());
-    let new = crate::store::NewTask {
-        name: request.field("name").unwrap_or_default(),
-        prompt: request.field("prompt").unwrap_or_default(),
-        when_at: puesto("when"),
-        at: puesto("at"),
-        every: puesto("every"),
-        target: puesto("target"),
-        silent: request.flag("silent"),
-        next_run_at: None,
-    };
-    match schedule::program(web.auth.store(), &org.id, new) {
-        Ok(task) => http::send_json(stream, 200, &serde_json::json!({ "name": task.name })),
-        Err(error) => http::send_error(stream, 400, &error),
-    }
-}
-
-fn agenda_delete(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if web.user(request).is_none() {
-        return http::send_error(stream, 401, "no estás adentro");
-    }
-    let name = request.field("name").unwrap_or_default();
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    match web.auth.store().delete_task(&org.id, &name) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
-        Err(error) => http::send_error(stream, 400, &error),
-    }
+fn agenda_dir(web: &Web) -> PathBuf {
+    web.workspace.join("state").join("schedule")
 }
 
 fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    match agenda_tasks(web, &org.id) {
-        Ok(tasks) => http::send_json(stream, 200, &serde_json::json!({ "tasks": tasks })),
-        Err(error) => http::send_error(stream, 500, &error),
-    }
+    let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web))
+        .into_iter()
+        .map(|entry| {
+            let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
+            serde_json::json!({
+                "name": entry.name,
+                "when": entry.task.when,
+                "at": entry.task.at,
+                "every": entry.task.every,
+                "target": entry.task.target,
+                "silent": entry.task.silent,
+                "paused": entry.task.paused,
+                "unread": entry.unread,
+                "runs": shown,
+            })
+        })
+        .collect();
+    http::send_json(stream, 200, &serde_json::json!({ "tasks": tasks }))
 }
 
 fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1088,13 +890,13 @@ fn agenda_run(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std:
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name").unwrap_or_default();
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    if let Err(error) = web.auth.store().run_now(&org.id, &name) {
-        return http::send_error(stream, 400, &error);
+    if !schedule::list(&agenda_dir(web))
+        .iter()
+        .any(|task| task.name == name)
+    {
+        return http::send_error(stream, 404, "esa tarea no existe");
     }
-    if web.agenda.send(()).is_err() {
+    if web.agenda.send(name).is_err() {
         return http::send_error(stream, 500, "el scheduler no está corriendo");
     }
     http::send_json(stream, 200, &serde_json::json!({ "queued": true }))
@@ -1106,10 +908,7 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     }
     let name = request.field("name").unwrap_or_default();
     let paused = request.flag("paused");
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    match web.auth.store().set_paused(&org.id, &name, paused) {
+    match schedule::set_paused(&agenda_dir(web), &name, paused) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "paused": paused })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -1121,10 +920,7 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
         return http::send_error(stream, 401, "no estás adentro");
     }
     let name = request.field("name");
-    let Some(org) = web.org(request) else {
-        return http::send_error(stream, 400, "no hay ninguna org activa");
-    };
-    match web.auth.store().mark_read(&org.id, name.as_deref()) {
+    match schedule::mark_read(&agenda_dir(web), name.as_deref()) {
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "read": true })),
         Err(e) => http::send_error(stream, 400, &e),
     }
@@ -1145,6 +941,14 @@ fn title_from(text: &str) -> String {
     title
 }
 
+fn writable(web: &Arc<Web>, key: &str) -> Result<conversations::Conversation, ()> {
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    if conversation.read_only || !conversation.dir.is_dir() {
+        return Err(());
+    }
+    Ok(conversation)
+}
+
 fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1152,14 +956,15 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     let Some(key) = request.param("conversation") else {
         return http::send_error(stream, 400, "falta conversation");
     };
-    let org = web.workspace(request);
-    let Ok(window) = org.window(key, usize::MAX) else {
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    if !conversation.dir.is_dir() {
         return http::send_error(stream, 404, "esa conversación no existe");
-    };
+    }
     let since = request
         .param("since")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
+    let window = Log::in_dir(&conversation.dir).window(usize::MAX);
     let (id, live) = web.bus.attach(key, &user);
     let result = follow(stream, &window, since, &live);
     web.bus.detach(key, id);
@@ -1175,14 +980,15 @@ fn history(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io
     let Some(key) = request.param("conversation") else {
         return http::send_error(stream, 400, "falta conversation");
     };
-    let org = web.workspace(request);
+    let conversation = conversations::get(&web.root, &web.workspace, key);
+    if !conversation.dir.is_dir() {
+        return http::send_error(stream, 404, "esa conversación no existe");
+    }
     let before = request
         .param("before")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let Ok(window) = org.window(key, before) else {
-        return http::send_error(stream, 404, "esa conversación no existe");
-    };
+    let window = Log::in_dir(&conversation.dir).window(before);
     http::send_json(
         stream,
         200,
@@ -1242,9 +1048,8 @@ mod tests {
         workspace: PathBuf,
         port: u16,
         bus: Arc<Bus>,
-        store: Arc<crate::store::Store>,
         previews: Arc<crate::preview::Previews>,
-        agenda: std::sync::mpsc::Receiver<()>,
+        agenda: std::sync::mpsc::Receiver<String>,
     }
 
     fn start(tag: &str) -> Server {
@@ -1252,14 +1057,6 @@ mod tests {
     }
 
     fn start_with(tag: &str, dev: bool) -> Server {
-        arrancar(tag, dev, None)
-    }
-
-    fn start_con_modelo(tag: &str, modelo: Arc<crate::modelo::Modelo>) -> Server {
-        arrancar(tag, true, Some(modelo))
-    }
-
-    fn arrancar(tag: &str, dev: bool, modelo: Option<Arc<crate::modelo::Modelo>>) -> Server {
         use std::os::unix::fs::PermissionsExt;
 
         let base = std::env::temp_dir().join(format!("jimmy-web-{}-{tag}", std::process::id()));
@@ -1303,25 +1100,8 @@ done
         );
         agent.use_worker_exe(script);
 
-        let bus = agent.bus();
-        let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
-        if let Some(modelo) = modelo {
-            modelo.set_store(store.clone());
-            agent.set_modelo(modelo);
-        }
-        agent.set_store(store.clone());
-        let key = crate::secrets::Key::from_hex(&"ab".repeat(32)).unwrap();
-        agent.set_secretos(std::sync::Arc::new(crate::secrets::Secretos::new(
-            key,
-            store.clone(),
-        )));
-        let auth = Auth::new(
-            store.clone(),
-            "bob@ejemplo.com, ana@ejemplo.com",
-            None,
-            dev,
-            "bob@ejemplo.com",
-        );
+        let bus = Bus::new();
+        let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
@@ -1341,128 +1121,9 @@ done
             workspace,
             port,
             bus,
-            store,
             previews,
             agenda: runner,
         }
-    }
-
-    /// Un proveedor de mentira: contesta un pedazo de SSE y guarda lo que le
-    /// pidieron, que es donde se ve qué clave viajó.
-    fn proveedor_de_mentira() -> (u16, Arc<std::sync::Mutex<String>>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let visto = Arc::new(std::sync::Mutex::new(String::new()));
-        let guardado = visto.clone();
-        std::thread::spawn(move || {
-            for entrada in listener.incoming() {
-                let Ok(mut stream) = entrada else { break };
-                let mut buffer = [0u8; 8192];
-                let leidos = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
-                *guardado.lock().unwrap() = String::from_utf8_lossy(&buffer[..leidos]).into_owned();
-                let cuerpo = "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":10}}\n\n";
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                     Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{cuerpo}\r\n0\r\n\r\n",
-                    cuerpo.len()
-                )
-                .unwrap();
-                stream.flush().unwrap();
-            }
-        });
-        (port, visto)
-    }
-
-    /// El plan y el consumo se ven en el estado. Mover el plan es de un
-    /// administrador de la instancia, no de cualquiera que entre.
-    #[test]
-    fn el_estado_muestra_el_plan_y_solo_un_admin_lo_mueve() {
-        let server = start("cuenta");
-        let bob = entrar(&server, "bob@ejemplo.com");
-        let estado = get(server.port, "/api/state", Some(&bob));
-        assert!(estado.contains("\"plan\":null"), "{estado}");
-        assert!(estado.contains("\"usage\""), "{estado}");
-        assert!(estado.contains("\"admin\":true"), "{estado}");
-
-        let ana = entrar(&server, "ana@ejemplo.com");
-        let estado = get(server.port, "/api/state", Some(&ana));
-        assert!(estado.contains("\"admin\":false"), "{estado}");
-        let ajena = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, Some(&ana));
-        assert!(ajena.starts_with("HTTP/1.1 403"), "{ajena}");
-
-        let sin_sesion = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, None);
-        assert!(sin_sesion.starts_with("HTTP/1.1 401"), "{sin_sesion}");
-
-        // Pagar el plan es lo que da de alta la máquina: sin proveedor no se
-        // puede, y el plan no queda a medias.
-        let propia = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, Some(&bob));
-        assert!(propia.starts_with("HTTP/1.1 500"), "{propia}");
-        let estado = get(server.port, "/api/state", Some(&bob));
-        assert!(
-            estado.contains("\"plan\":null"),
-            "el plan quedó a medias: {estado}"
-        );
-
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// El modelo pasa por el control plane: el sandbox lleva un pase y no la
-    /// clave, y lo que contesta el proveedor vuelve como vino.
-    #[test]
-    fn el_modelo_pasa_por_el_control_plane() {
-        let (proveedor, visto) = proveedor_de_mentira();
-        let modelo = Arc::new(crate::modelo::Modelo::new(
-            format!("http://127.0.0.1:{proveedor}"),
-            "la-clave-de-verdad".into(),
-            Some("http://127.0.0.1".into()),
-            None,
-        ));
-        let server = start_con_modelo("modelo", modelo.clone());
-        let (_, org) = server.store.register("quien@ejemplo.com").unwrap();
-
-        let sin_pase = post_with(server.port, "/modelo/chat/completions", "{}", None);
-        assert!(sin_pase.starts_with("HTTP/1.1 401"), "{sin_pase}");
-
-        let pase = modelo.pase(&org.id);
-        let mut stream = connect(server.port);
-        write!(
-            stream,
-            "POST /modelo/chat/completions HTTP/1.1\r\nHost: jimmy\r\n\
-             Authorization: Bearer {pase}\r\nContent-Type: application/json\r\n\
-             Content-Length: 38\r\n\r\n{{\"stream\":true,\"model\":\"deepseek-flash\"}}"
-        )
-        .unwrap();
-        let respuesta = whole(stream);
-        assert!(
-            respuesta.contains("data: "),
-            "no volvió el cuerpo: {respuesta}"
-        );
-        assert!(
-            respuesta
-                .to_lowercase()
-                .contains("transfer-encoding: chunked"),
-            "no vino en pedazos: {respuesta}"
-        );
-
-        let pedido = visto.lock().unwrap().clone();
-        assert!(
-            pedido.contains("Bearer la-clave-de-verdad"),
-            "el proveedor no vio su clave: {pedido}"
-        );
-        assert!(
-            !pedido.contains(&pase),
-            "el pase del sandbox llegó al proveedor: {pedido}"
-        );
-
-        // Y el consumo queda anotado: es lo que después se mira para saber
-        // cuánto gastó una org.
-        let uso = server.store.uso_de(&org.id, None).unwrap();
-        assert_eq!(uso.calls, 1, "no se anotó la llamada: {uso:?}");
-        assert_eq!(uso.prompt, 100);
-        assert_eq!(uso.completion, 20);
-        assert_eq!(uso.cached, 10);
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     fn connect(port: u16) -> TcpStream {
@@ -1549,41 +1210,17 @@ done
         json_in(&created)["key"].as_str().unwrap().to_string()
     }
 
-    /// Lo que ve el que está mirando la conversación: el log lo escribe el
-    /// worker, adentro de donde vive la conversación, así que desde acá se
-    /// observa el flujo, que son los mismos eventos en vivo.
-    fn watching(server: &Server, key: &str) -> std::sync::mpsc::Receiver<Event> {
-        server.bus.attach(key, "quien mira").1
-    }
-
-    /// Junta eventos del flujo hasta que aparezca `needle`, o hasta que se
-    /// acabe el tiempo.
-    fn until(rx: &std::sync::mpsc::Receiver<Event>, needle: &str) -> Vec<String> {
+    /// El log lo escribe el hilo del turno, así que hay que esperarlo.
+    fn wait_for(root: &Path, key: &str, needle: &str) -> String {
+        let path = root.join("chats").join(key).join("conversation.jsonl");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let mut seen = Vec::new();
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            let Ok(event) = rx.recv_timeout(left) else {
-                break;
-            };
-            let text = serde_json::to_string(&event).unwrap();
-            let listo = text.contains(needle);
-            seen.push(text);
-            if listo {
-                break;
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if text.contains(needle) || std::time::Instant::now() > deadline {
+                return text;
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        seen
-    }
-
-    /// Entrar y darle a la org una máquina de acá: en las pruebas el trabajo de
-    /// una org corre en el mismo lugar que la instancia, que es una máquina
-    /// `local`. Una org sin máquina no corre en ningún lado.
-    fn entrar(server: &Server, email: &str) -> String {
-        let cookie = login(server.port, email);
-        let org = server.store.org_of_email(email).unwrap().expect("la org");
-        server.store.set_machine(&org.id, "local", "", "").unwrap();
-        cookie
     }
 
     /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
@@ -1688,7 +1325,7 @@ done
             assert!(png.contains("image/png"), "{png}");
         }
 
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(
@@ -1794,7 +1431,7 @@ done
         assert!(without.starts_with("HTTP/1.1 303"), "{without}");
         assert!(without.contains("Location: /login"), "{without}");
 
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let out = get(server.port, "/preview/loquesea/", Some(&cookie));
         assert!(out.starts_with("HTTP/1.1 404"), "{out}");
         assert!(out.contains("loquesea no está corriendo"), "{out}");
@@ -1811,7 +1448,7 @@ done
             let previews = server.previews.clone();
             move || crate::preview::listen(previews)
         });
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let order = crate::preview::Order {
             op: "start".into(),
@@ -1879,7 +1516,7 @@ done
     #[test]
     fn the_state_brings_the_last_answer_of_the_project() {
         let server = start("last");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -1900,267 +1537,10 @@ done
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
-    /// Lo que hace que cambiar de org cambie el mundo: cada una ve sus
-    /// proyectos y no los de las otras, porque cada una tiene su directorio.
-    #[test]
-    fn cada_org_ve_sus_proyectos_y_no_los_de_la_otra() {
-        let server = start("orgs");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let state = get(server.port, "/api/state", Some(&cookie));
-        assert!(state.contains(r#""name":"ken""#), "{state}");
-
-        let created = post_with(
-            server.port,
-            "/api/orgs",
-            r#"{"name":"La Empresa"}"#,
-            Some(&cookie),
-        );
-        assert!(created.starts_with("HTTP/1.1 200"), "{created}");
-        let state = get(server.port, "/api/state", Some(&cookie));
-        assert!(
-            !state.contains(r#""name":"ken""#),
-            "la org nueva no ve lo de la personal: {state}"
-        );
-
-        let made = post_with(
-            server.port,
-            "/api/projects",
-            r#"{"name":"empresa-uno"}"#,
-            Some(&cookie),
-        );
-        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
-        let state = get(server.port, "/api/state", Some(&cookie));
-        assert!(state.contains(r#""name":"empresa-uno""#), "{state}");
-
-        let dirs: Vec<_> = std::fs::read_dir(server.root.join("orgs"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert_eq!(dirs.len(), 1, "una org nueva, un directorio: {dirs:?}");
-        assert!(dirs[0].join("workspace/projects/empresa-uno").is_dir());
-        assert!(!dirs[0].join("workspace/projects/ken").exists());
-        assert!(server.workspace.join("projects/ken").is_dir());
-
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Un turno corre donde vive su conversación: la segunda org tiene su
-    /// propia raíz y su propio workspace, y el worker tiene que ver esos.
-    #[test]
-    fn el_turno_de_una_org_corre_en_su_workspace() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let server = start("org-turn");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let created = post_with(
-            server.port,
-            "/api/orgs",
-            r#"{"name":"La Empresa"}"#,
-            Some(&cookie),
-        );
-        assert!(created.starts_with("HTTP/1.1 200"), "{created}");
-
-        let script = server.root.parent().unwrap().join("worker.sh");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-echo '{"event":"ready"}'
-while read -r line; do
-  case "$line" in *shutdown*) exit 0 ;; esac
-  echo "{\"event\":\"done\",\"text\":\"$JIMMY_ROOT|$JIMMY_WORKSPACE|$*\"}"
-done
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let made = post_with(
-            server.port,
-            "/api/conversations",
-            r#"{"project":"general","title":"charla"}"#,
-            Some(&cookie),
-        );
-        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
-        let key = json_in(&made)["key"].as_str().unwrap().to_string();
-
-        // La org nueva corre acá, como la de la instancia: es la misma máquina.
-        let org = std::fs::read_dir(server.root.join("orgs"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let id = org.file_name().unwrap().to_string_lossy().into_owned();
-        server.store.set_machine(&id, "local", "", "").unwrap();
-
-        let rx = watching(&server, &key);
-        let sent = post_with(
-            server.port,
-            "/api/send",
-            &format!(r#"{{"conversation":"{key}","text":"hola"}}"#),
-            Some(&cookie),
-        );
-        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
-
-        let workspace = org.join("workspace");
-        let log = until(&rx, "\"done\"").join("\n");
-        assert!(
-            log.contains(&format!(
-                "{}|{}|worker --chat {} --cwd {}",
-                org.display(),
-                workspace.display(),
-                key,
-                workspace.display()
-            )),
-            "el turno no corrió en el workspace de la org: {log}"
-        );
-
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Una org cuya máquina no sé despertar no arranca el turno: se avisa en la
-    /// conversación y no se trabaja acá, que no es el lugar de esa org.
-    #[test]
-    fn una_maquina_que_no_se_puede_despertar_frena_el_turno() {
-        let server = start("maquina-rota");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let (_, org) = server.store.register("bob@ejemplo.com").unwrap();
-        server
-            .store
-            .set_machine(&org.id, "otro", "caja", "fs")
-            .unwrap();
-
-        // La conversación existe donde la org trabaja: lo que esta máquina no
-        // puede es correr el turno.
-        let key = "web-prueba".to_string();
-        let chat = server.root.join("chats").join(&key);
-        std::fs::create_dir_all(&chat).unwrap();
-        std::fs::write(
-            chat.join("meta.json"),
-            r#"{"project":"general","title":null}"#,
-        )
-        .unwrap();
-        let rx = watching(&server, &key);
-        let sent = post_with(
-            server.port,
-            "/api/send",
-            &format!(r#"{{"conversation":"{key}","text":"hola"}}"#),
-            Some(&cookie),
-        );
-        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
-
-        let flujo = until(&rx, "proveedor").join("\n");
-        assert!(
-            flujo.contains("no sé hablar con el proveedor otro"),
-            "{flujo}"
-        );
-        assert!(!flujo.contains("eco"), "el turno corrió igual: {flujo}");
-        let log = std::fs::read_to_string(
-            server
-                .root
-                .join("chats")
-                .join(&key)
-                .join("conversation.jsonl"),
-        )
-        .unwrap_or_default();
-        assert!(
-            log.is_empty(),
-            "un turno que no arranca no deja rastro: {log}"
-        );
-
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Compactar es un atajo, no un mensaje: el worker recibe la orden de
-    /// compactar y no el texto `/compact`.
-    #[test]
-    fn compactar_desde_la_web_no_es_un_mensaje() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let server = start("compactar");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let script = server.root.parent().unwrap().join("worker.sh");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
-echo '{"event":"ready"}'
-while read -r line; do
-  case "$line" in *shutdown*) exit 0 ;; esac
-  case "$line" in *'"cmd":"compact"'*) echo '{"event":"done","text":"compactado"}'
-  ;; *) echo '{"event":"done","text":"mensaje"}' ;; esac
-done
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let key = conversation(server.port, &cookie);
-        let rx = watching(&server, &key);
-        let sent = post_with(
-            server.port,
-            "/api/send",
-            &format!(r#"{{"conversation":"{key}","text":"/compact"}}"#),
-            Some(&cookie),
-        );
-        assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
-
-        let flujo = until(&rx, "\"done\"").join("\n");
-        assert!(
-            flujo.contains("compactado"),
-            "la orden no llegó como compactar: {flujo}"
-        );
-        let estado = get(server.port, "/api/state", Some(&cookie));
-        assert!(
-            !estado.contains("/compact"),
-            "el atajo quedó como título de la conversación: {estado}"
-        );
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Los secretos de una org los ve esa org: la web los lista sin el valor, lo
-    /// da sólo cuando lo piden, y a otra org no le contesta nada.
-    #[test]
-    fn una_org_guarda_sus_secretos_y_son_suyos() {
-        let server = start("secretos");
-        let bob = entrar(&server, "bob@ejemplo.com");
-        let ana = entrar(&server, "ana@ejemplo.com");
-
-        let guardado = post_with(
-            server.port,
-            "/api/secret",
-            r#"{"name":"stripe_key","value":"sk-1"}"#,
-            Some(&bob),
-        );
-        assert!(guardado.starts_with("HTTP/1.1 200"), "{guardado}");
-        assert!(guardado.contains("\"STRIPE_KEY\""), "{guardado}");
-        assert!(
-            !guardado.contains("sk-1"),
-            "el valor volvió por la respuesta: {guardado}"
-        );
-
-        let pedido = get(server.port, "/api/secret?name=stripe_key", Some(&bob));
-        assert!(pedido.starts_with("HTTP/1.1 200"), "{pedido}");
-        assert!(pedido.contains("sk-1"), "{pedido}");
-
-        let ajena = get(server.port, "/api/secret?name=stripe_key", Some(&ana));
-        assert!(ajena.starts_with("HTTP/1.1 404"), "{ajena}");
-        assert!(!ajena.contains("sk-1"), "{ajena}");
-
-        let borrado = post_with(
-            server.port,
-            "/api/secret/delete",
-            r#"{"name":"stripe_key"}"#,
-            Some(&bob),
-        );
-        assert!(borrado.starts_with("HTTP/1.1 200"), "{borrado}");
-        assert!(!borrado.contains("STRIPE_KEY"), "{borrado}");
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
     #[test]
     fn a_project_is_renamed_with_the_conversations_inside() {
         let server = start("rename-project");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         post_with(
             server.port,
             "/api/conversations",
@@ -2195,7 +1575,7 @@ done
     #[test]
     fn a_project_is_duplicated_with_the_files_inside() {
         let server = start("duplicate-project");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         std::fs::write(
             server.workspace.join("projects/ken/nota.txt"),
             "los mismos archivos",
@@ -2274,7 +1654,7 @@ done
     #[test]
     fn the_state_lists_projects_and_conversations() {
         let server = start("state");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"general\""), "{state}");
@@ -2302,7 +1682,7 @@ done
     #[test]
     fn the_web_creates_and_writes_its_own_conversations() {
         let server = start("write");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -2327,7 +1707,6 @@ done
         );
         assert!(renamed.starts_with("HTTP/1.1 200"), "{renamed}");
 
-        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2336,7 +1715,19 @@ done
         );
         assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
 
-        let text = until(&rx, "\"done\"").join("\n");
+        let log = server
+            .root
+            .join("chats")
+            .join(&key)
+            .join("conversation.jsonl");
+        let mut text = String::new();
+        for _ in 0..200 {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("\"done\"") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
         assert!(
             text.contains("\"author\":\"bob\""),
@@ -2374,7 +1765,7 @@ done
     #[test]
     fn a_conversation_that_comes_from_a_transport_is_not_written_from_the_web() {
         let server = start("readonly");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2409,7 +1800,7 @@ done
     #[test]
     fn an_image_goes_up_as_a_name_and_comes_back_whole() {
         let server = start("upload");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let png = b"\x89PNG\r\n\x1a\nlos bytes que sean";
@@ -2432,7 +1823,6 @@ done
         assert!(served.contains("Content-Type: image/png"), "{served}");
         assert!(body_in(&served).ends_with("los bytes que sean"), "{served}");
 
-        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2444,10 +1834,10 @@ done
             "una foto sin texto es un mensaje: {sent}"
         );
 
-        let flujo = until(&rx, "\"done\"").join("\n");
+        let log = wait_for(&server.root, &key, "\"done\"");
         assert!(
-            flujo.contains(&format!("\"images\":[\"{name}\"]")),
-            "el mensaje lleva el nombre y no los bytes: {flujo}"
+            log.contains(&format!("\"images\":[\"{name}\"]")),
+            "el log guarda el nombre y no los bytes: {log}"
         );
         let state = get(server.port, "/api/state", Some(&cookie));
         assert!(
@@ -2460,7 +1850,7 @@ done
     #[test]
     fn an_upload_only_touches_its_own_conversation() {
         let server = start("traversal");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let uploaded = post_bytes(
@@ -2541,7 +1931,7 @@ done
     #[test]
     fn the_file_tree_lists_a_project_one_level_at_a_time() {
         let server = start("files-tree");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::create_dir_all(ken.join("src/transport")).unwrap();
         std::fs::create_dir_all(ken.join("target")).unwrap();
@@ -2631,7 +2021,7 @@ done
     #[test]
     fn the_file_tree_cannot_leave_the_project() {
         let server = start("files-outside");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::write(server.root.join("afuera.txt"), "mas secreto").unwrap();
         std::fs::write(server.workspace.join("notes.md"), "secreto").unwrap();
@@ -2661,48 +2051,9 @@ done
     }
 
     #[test]
-    fn a_conversation_cannot_leave_the_chats_directory() {
-        let server = start("chats-outside");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let afuera = server.root.parent().unwrap().join("afuera");
-        std::fs::create_dir_all(afuera.join("uploads")).unwrap();
-        std::fs::write(
-            afuera.join("conversation.jsonl"),
-            "{\"event\":\"presence\",\"users\":[\"afuera\"]}\n",
-        )
-        .unwrap();
-        std::fs::write(afuera.join("uploads/x.txt"), "afuera").unwrap();
-
-        let paths = [
-            "/api/history?conversation=..&before=5",
-            "/api/history?conversation=../../afuera&before=5",
-            "/api/file?conversation=../../afuera&name=x.txt",
-            "/api/history?conversation=..%2f..%2fafuera&before=5",
-        ];
-        for path in paths {
-            let response = get(server.port, path, Some(&cookie));
-            assert!(
-                response.starts_with("HTTP/1.1 400"),
-                "{path} devolvió {response}"
-            );
-            assert!(
-                !response.contains("afuera}"),
-                "{path} leyó afuera: {response}"
-            );
-        }
-        let legitima = get(
-            server.port,
-            "/api/history?conversation=123456789&before=5",
-            Some(&cookie),
-        );
-        assert!(legitima.starts_with("HTTP/1.1 200"), "{legitima}");
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    #[test]
     fn the_stream_says_who_is_watching() {
         let server = start("presence");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -2728,7 +2079,7 @@ done
     #[test]
     fn the_online_stream_knows_everyone_connected() {
         let server = start("online");
-        let bob = entrar(&server, "bob@ejemplo.com");
+        let bob = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -2739,7 +2090,7 @@ done
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
         assert!(next_data(&mut lines, "\"online\"").contains("bob"));
 
-        let ana = entrar(&server, "ana@ejemplo.com");
+        let ana = login(server.port, "ana@ejemplo.com");
         let mut second = connect(server.port);
         write!(
             second,
@@ -2754,7 +2105,7 @@ done
     #[test]
     fn typing_goes_live_but_is_not_written_down() {
         let server = start("typing");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -2820,7 +2171,7 @@ done
     #[test]
     fn the_stream_opens_at_a_turn_and_the_history_goes_back() {
         let server = start("history");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let mut log = String::new();
         for turn in 0..300 {
             log.push_str(&format!(
@@ -2885,7 +2236,7 @@ done
     #[test]
     fn cancel_only_goes_to_a_conversation_you_can_write() {
         let server = start("cancel");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let refused = post_with(
             server.port,
@@ -2911,6 +2262,18 @@ done
             Some(&cookie),
         );
         assert!(cancelled.starts_with("HTTP/1.1 200"), "{cancelled}");
+        let log = std::fs::read_to_string(
+            server
+                .root
+                .join("chats")
+                .join(&key)
+                .join("conversation.jsonl"),
+        )
+        .unwrap_or_default();
+        assert!(
+            log.contains("\"stopped\"") && log.contains("bob"),
+            "el log dice quién frenó: {log}"
+        );
 
         let unknown = post_with(
             server.port,
@@ -2940,7 +2303,7 @@ done
     #[test]
     fn search_looks_in_what_was_said() {
         let server = start("search");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let found = get(server.port, "/api/search?q=gato", Some(&cookie));
         assert!(found.contains("el gato duerme"), "{found}");
@@ -2959,7 +2322,7 @@ done
     #[test]
     fn delete_takes_the_conversation_with_it() {
         let server = start("delete");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -2995,7 +2358,7 @@ done
     #[test]
     fn a_project_is_deleted_only_when_it_has_nothing_to_lose() {
         let server = start("delete-project");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
         let projects = server.workspace.join("projects");
 
         std::fs::write(projects.join("ken/nota.txt"), "trabajo sin versionar").unwrap();
@@ -3084,7 +2447,7 @@ done
     #[test]
     fn the_stream_replays_the_backlog_and_then_follows() {
         let server = start("stream");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -3105,8 +2468,10 @@ done
         assert!(seen[1].contains("\"listo\""), "{seen:?}");
         assert!(seen[2].contains("synced"), "{seen:?}");
 
-        server.bus.show(
+        let log = Log::in_dir(&server.root.join("chats/123456789"));
+        server.bus.publish(
             "123456789",
+            &log,
             &Event::Assistant {
                 text: "en vivo".into(),
             },
@@ -3122,7 +2487,7 @@ done
     #[test]
     fn the_stream_skips_what_the_watcher_already_has() {
         let server = start("stream-since");
-        let cookie = entrar(&server, "bob@ejemplo.com");
+        let cookie = login(server.port, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -3240,64 +2605,35 @@ done
         }
     }
 
-    fn agenda_task(server: &Server, org: &str, name: &str, at: Option<&str>) -> crate::store::Task {
-        agenda_task_at(server, org, name, at, 1)
-    }
-
-    fn agenda_task_at(
-        server: &Server,
-        org: &str,
-        name: &str,
-        at: Option<&str>,
-        next_run_at: i64,
-    ) -> crate::store::Task {
-        server
-            .store
-            .create_task(
-                org,
-                crate::store::NewTask {
-                    name: name.into(),
-                    prompt: "p".into(),
-                    when_at: None,
-                    at: at.map(String::from),
-                    every: None,
-                    target: None,
-                    silent: false,
-                    next_run_at: Some(next_run_at),
-                },
-            )
-            .unwrap()
-    }
-
-    /// La org en la que está parado quien pide.
-    fn personal_org(server: &Server, cookie: &str) -> String {
-        json_in(&get(server.port, "/api/state", Some(cookie)))["org"]["id"]
-            .as_str()
-            .unwrap()
-            .to_string()
+    fn agenda_file(server: &Server, name: &str, body: &str) {
+        let dir = server.workspace.join("state/schedule");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.toml")), body).unwrap();
     }
 
     #[test]
     fn the_agenda_lists_tasks_with_their_last_runs() {
         let server = start("agenda");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let org = personal_org(&server, &cookie);
-        let memoria = agenda_task(&server, &org, "memoria", Some("05:00"));
-        agenda_task(&server, &org, "perezosa", None);
-        server.store.set_paused(&org, "perezosa", true).unwrap();
-        for corrida in 1..8 {
-            server
-                .store
-                .record_run(
-                    &memoria,
-                    corrida,
-                    Some(9_999),
-                    corrida * 10,
-                    true,
-                    &format!("corrida {corrida}"),
+        let cookie = login(server.port, "bob@ejemplo.com");
+        agenda_file(
+            &server,
+            "memoria",
+            "at = \"05:00\"\ntarget = \"123456789\"\nprompt = \"reportá\"\n",
+        );
+        agenda_file(
+            &server,
+            "perezosa",
+            "every = \"6h\"\nprompt = \"p\"\npaused = true\n",
+        );
+        let runs: String = (1..8)
+            .map(|i| {
+                format!(
+                    "{{\"ts\":{i},\"date\":\"2026-09-14\",\"ms\":{},\"ok\":true,\"text\":\"corrida {i}\"}}\n",
+                    i * 10
                 )
-                .unwrap();
-        }
+            })
+            .collect();
+        std::fs::write(server.workspace.join("state/schedule/memoria.jsonl"), runs).unwrap();
 
         let response = get(server.port, "/api/agenda", Some(&cookie));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -3306,10 +2642,10 @@ done
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0]["name"], "memoria");
         assert_eq!(tasks[0]["at"], "05:00");
+        assert_eq!(tasks[0]["target"], "123456789");
         let runs = tasks[0]["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 5, "sólo se muestran las últimas cinco");
         assert_eq!(runs[0]["text"], "corrida 7");
-        assert_eq!(runs[1]["text"], "corrida 6");
         assert_eq!(runs[4]["text"], "corrida 3");
         assert_eq!(tasks[1]["name"], "perezosa");
         assert_eq!(tasks[1]["paused"], true);
@@ -3326,134 +2662,22 @@ done
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["unread"], 0);
 
-        server
-            .store
-            .record_run(&memoria, 9_999_999_999, Some(9_999), 5, true, "otra")
-            .unwrap();
+        let path = server.workspace.join("state/schedule/memoria.jsonl");
+        let mut lines = std::fs::read_to_string(&path).unwrap();
+        lines.push_str(
+            "{\"ts\":99,\"date\":\"2026-09-15\",\"ms\":5,\"ok\":true,\"text\":\"otra\"}\n",
+        );
+        std::fs::write(&path, lines).unwrap();
         let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
         assert_eq!(body["tasks"][0]["unread"], 1, "la que llegó después cuenta");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
-    /// Cada org tiene su agenda: la pestaña de una no muestra las tareas de la
-    /// otra, aunque se llamen distinto y vivan en el mismo control plane.
     #[test]
-    fn la_agenda_de_una_org_no_ve_las_tareas_de_la_otra() {
-        let server = start("agenda-orgs");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let personal = personal_org(&server, &cookie);
-        agenda_task(&server, &personal, "de-bob", Some("05:00"));
-
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert_eq!(body["tasks"][0]["name"], "de-bob");
-
-        post_with(
-            server.port,
-            "/api/orgs",
-            r#"{"name":"La Empresa"}"#,
-            Some(&cookie),
-        );
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert!(
-            body["tasks"].as_array().unwrap().is_empty(),
-            "la org nueva arranca sin tareas: {body}"
-        );
-
-        let empresa = json_in(&get(server.port, "/api/state", Some(&cookie)))["orgs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|org| org["id"] != personal.as_str())
-            .unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        agenda_task(&server, &empresa, "de-la-empresa", Some("06:00"));
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert_eq!(body["tasks"][0]["name"], "de-la-empresa");
-
-        post_with(
-            server.port,
-            "/api/org",
-            &format!(r#"{{"id":"{personal}"}}"#),
-            Some(&cookie),
-        );
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert_eq!(body["tasks"][0]["name"], "de-bob");
-        assert_eq!(body["tasks"].as_array().unwrap().len(), 1);
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Una tarea se crea y se borra desde la web, y un horario que no se
-    /// entiende se rechaza: es mejor un error que una tarea que nunca corre.
-    #[test]
-    fn una_tarea_se_crea_y_se_borra_desde_la_web() {
-        let server = start("agenda-create");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-
-        let made = post_with(
-            server.port,
-            "/api/agenda",
-            r#"{"name":"memoria","at":"05:00","prompt":"reportá"}"#,
-            Some(&cookie),
-        );
-        assert!(made.starts_with("HTTP/1.1 200"), "{made}");
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert_eq!(body["tasks"][0]["name"], "memoria");
-        assert_eq!(body["tasks"][0]["at"], "05:00");
-
-        for (cuerpo, motivo) in [
-            (
-                r#"{"name":"memoria","at":"05:00","prompt":"p"}"#,
-                "repetida",
-            ),
-            (
-                r#"{"name":"tarde","at":"25:00","prompt":"p"}"#,
-                "hora que no existe",
-            ),
-            (
-                r#"{"name":"dos","at":"05:00","every":"1h","prompt":"p"}"#,
-                "dos horarios",
-            ),
-            (
-                r#"{"name":"vacia","every":"1h","prompt":"  "}"#,
-                "sin nada que hacer",
-            ),
-        ] {
-            let mala = post_with(server.port, "/api/agenda", cuerpo, Some(&cookie));
-            assert!(mala.starts_with("HTTP/1.1 400"), "{motivo}: {mala}");
-        }
-        assert_eq!(
-            json_in(&get(server.port, "/api/agenda", Some(&cookie)))["tasks"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1,
-            "nada de eso creó una tarea"
-        );
-
-        let borrada = post_with(
-            server.port,
-            "/api/agenda/delete",
-            r#"{"name":"memoria"}"#,
-            Some(&cookie),
-        );
-        assert!(borrada.starts_with("HTTP/1.1 200"), "{borrada}");
-        let body = json_in(&get(server.port, "/api/agenda", Some(&cookie)));
-        assert!(body["tasks"].as_array().unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-    }
-
-    /// Correr una tarea a mano es adelantarle el reloj: el mismo camino que el
-    /// horario, y el aviso al scheduler para no esperar al próximo minuto.
-    #[test]
-    fn running_a_task_from_the_web_advances_its_clock() {
+    fn running_a_task_hands_its_name_to_the_scheduler() {
         let server = start("agenda-run");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let org = personal_org(&server, &cookie);
-        let lejos = agenda_task_at(&server, &org, "memoria", Some("05:00"), 9_999_999_999)
-            .next_run_at
-            .unwrap();
+        let cookie = login(server.port, "bob@ejemplo.com");
+        agenda_file(&server, "memoria", "at = \"05:00\"\nprompt = \"p\"\n");
 
         let queued = post_with(
             server.port,
@@ -3462,18 +2686,10 @@ done
             Some(&cookie),
         );
         assert!(queued.starts_with("HTTP/1.1 200"), "{queued}");
-        assert!(
-            server.agenda.recv_timeout(Duration::from_secs(1)).is_ok(),
-            "el reloj se despierta"
+        assert_eq!(
+            server.agenda.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "memoria"
         );
-        let ahora = server
-            .store
-            .task_named(&org, "memoria")
-            .unwrap()
-            .unwrap()
-            .next_run_at
-            .unwrap();
-        assert!(ahora < lejos, "la adelantó: {ahora} < {lejos}");
 
         let missing = post_with(
             server.port,
@@ -3481,43 +2697,19 @@ done
             r#"{"name":"nada"}"#,
             Some(&cookie),
         );
-        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
-
-        server.store.set_paused(&org, "memoria", true).unwrap();
-        let pausada = post_with(
-            server.port,
-            "/api/agenda/run",
-            r#"{"name":"memoria"}"#,
-            Some(&cookie),
-        );
-        assert!(
-            pausada.starts_with("HTTP/1.1 400"),
-            "una pausada no corre ni a mano: {pausada}"
-        );
+        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
-    fn pausing_a_task_from_the_web_keeps_the_rest() {
+    fn pausing_a_task_from_the_web_keeps_the_rest_of_the_file() {
         let server = start("agenda-pause");
-        let cookie = entrar(&server, "bob@ejemplo.com");
-        let org = personal_org(&server, &cookie);
-        server
-            .store
-            .create_task(
-                &org,
-                crate::store::NewTask {
-                    name: "memoria".into(),
-                    prompt: "reportá".into(),
-                    when_at: None,
-                    at: Some("05:00".into()),
-                    every: None,
-                    target: Some("123".into()),
-                    silent: true,
-                    next_run_at: Some(1),
-                },
-            )
-            .unwrap();
+        let cookie = login(server.port, "bob@ejemplo.com");
+        agenda_file(
+            &server,
+            "memoria",
+            "at = \"05:00\"\ntarget = \"123\"\nprompt = \"reportá\"\nsilent = true\n",
+        );
 
         let paused = post_with(
             server.port,

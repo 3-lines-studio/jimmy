@@ -583,10 +583,7 @@ pub fn forward(stream: &mut TcpStream, head: &Head, name: &str, port: u16) -> st
     };
     let mut out = format!("{} {target} HTTP/1.1\r\n", head.method);
     for (name, value) in &head.headers {
-        if name.eq_ignore_ascii_case("host")
-            || name.eq_ignore_ascii_case("accept-encoding")
-            || name.eq_ignore_ascii_case("cookie")
-        {
+        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("accept-encoding") {
             continue;
         }
         if !upgrading && name.eq_ignore_ascii_case("connection") {
@@ -626,9 +623,6 @@ pub fn forward(stream: &mut TcpStream, head: &Head, name: &str, port: u16) -> st
             if status != 101 && name.eq_ignore_ascii_case("connection") {
                 continue;
             }
-            if session_cookie(name, value) {
-                continue;
-            }
             write!(stream, "{name}: {value}\r\n")?;
         }
         if status != 101 {
@@ -654,7 +648,7 @@ pub fn forward(stream: &mut TcpStream, head: &Head, name: &str, port: u16) -> st
     let body = rewrite(ctype, &body, &prefix);
     write!(stream, "HTTP/1.1 {status} {}\r\n", reason(status))?;
     for (name, value) in &headers {
-        if !networking_header(name) && !session_cookie(name, value) {
+        if !networking_header(name) {
             write!(stream, "{name}: {value}\r\n")?;
         }
     }
@@ -671,16 +665,6 @@ fn networking_header(name: &str) -> bool {
     ["content-length", "transfer-encoding", "connection"]
         .iter()
         .any(|skip| name.eq_ignore_ascii_case(skip))
-}
-
-/// El preview no puede tocar la cookie de sesión de jimmy: pisarla deja afuera
-/// al que mira. Las suyas pasan.
-fn session_cookie(name: &str, value: &str) -> bool {
-    name.eq_ignore_ascii_case("set-cookie")
-        && value
-            .split('=')
-            .next()
-            .is_some_and(|cookie| cookie.trim().eq_ignore_ascii_case(crate::auth::COOKIE))
 }
 fn rewritable(ctype: &str) -> bool {
     ["text/html", "text/css", "javascript"]
@@ -1197,13 +1181,7 @@ mod tests {
         });
 
         let (client, mut server_side) = pair();
-        let head = head_with(
-            "/preview/x/",
-            &[
-                ("Content-Length", "4"),
-                ("Cookie", "jimmy_session=la-de-jimmy"),
-            ],
-        );
+        let head = head_with("/preview/x/", &[("Content-Length", "4")]);
         let proxying =
             std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
 
@@ -1221,7 +1199,6 @@ mod tests {
         assert!(head.starts_with("GET / HTTP/1.1\r\n"), "{head}");
         assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
         assert!(head.contains("X-Forwarded-Host: jimmy.bob.sh"), "{head}");
-        assert!(!head.contains("jimmy_session"), "{head}");
         assert_eq!(body, "hola");
     }
 
@@ -1428,33 +1405,6 @@ mod tests {
         let client = std::thread::spawn(move || TcpStream::connect(("127.0.0.1", port)).unwrap());
         let (server_side, _) = listener.accept().unwrap();
         (client.join().unwrap(), server_side)
-    }
-
-    #[test]
-    fn el_preview_no_puede_pisar_la_cookie_de_jimmy() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = upstream.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut conn, _) = upstream.accept().unwrap();
-            let _ = read_until_blank(&mut conn);
-            conn.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                  Set-Cookie: jimmy_session=afuera; Path=/\r\n\
-                  Set-Cookie: propia=1\r\nContent-Length: 2\r\n\r\n{}",
-            )
-            .unwrap();
-        });
-
-        let (client, mut server_side) = pair();
-        let head = head_with("/preview/x/sesion", &[]);
-        std::thread::spawn(move || forward(&mut server_side, &head, "x", port).unwrap());
-
-        let mut client = client;
-        let mut answer = Vec::new();
-        client.read_to_end(&mut answer).unwrap();
-        let answer = String::from_utf8_lossy(&answer).to_string();
-        assert!(!answer.contains("jimmy_session"), "{answer}");
-        assert!(answer.contains("propia=1"), "{answer}");
     }
 
     #[test]

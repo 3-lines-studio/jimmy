@@ -1,4 +1,4 @@
-.PHONY: build run fmt lint test imagen-sandbox
+.PHONY: build run fmt lint test
 
 build:
 	docker build -t jimmy .
@@ -16,8 +16,3 @@ lint:
 test:
 	node --test web/
 	cargo test
-
-# El entorno del agente adentro del sandbox. Se corre cuando cambia el entorno,
-# no cuando cambia el código: el agente llega publicado desde el control plane.
-imagen-sandbox:
-	uv run --with tensorlake python deploy/imagen-sandbox.py

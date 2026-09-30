@@ -6,11 +6,12 @@
 
 use crate::mail::Mail;
 use crate::random;
+use crate::store::Db;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 pub const COOKIE: &str = "jimmy_session";
 pub const SESSION_TTL: u64 = 30 * 24 * 60 * 60;
@@ -39,17 +40,22 @@ pub struct Auth {
 }
 
 impl Auth {
-    /// `allowed` es la lista de mails autorizados, separados por coma.
-    pub fn new(allowed: &str, root: &Path, mail: Option<Mail>, dev: bool) -> Auth {
+    /// `allowed` es la lista de mails autorizados, separados por coma. Con una
+    /// base, las sesiones van ahí; sin ella, a `sessions.json`.
+    pub fn new(allowed: &str, root: &Path, db: Option<Db>, mail: Option<Mail>, dev: bool) -> Auth {
         let allowed = allowed
             .split(',')
             .map(|email| email.trim().to_lowercase())
             .filter(|email| !email.is_empty())
             .collect();
+        let sessions = match db {
+            Some(db) => Sessions::Postgres(db),
+            None => Sessions::File(FileSessions::load(root)),
+        };
         Auth {
             allowed,
             links: Mutex::new(HashMap::new()),
-            sessions: Sessions::load(root),
+            sessions,
             mail,
             dev,
         }
@@ -122,13 +128,13 @@ struct Session {
 #[derive(Serialize, Deserialize, Default)]
 struct Tokens(HashMap<String, Session>);
 
-struct Sessions {
+struct FileSessions {
     path: PathBuf,
     tokens: Mutex<HashMap<String, Session>>,
 }
 
-impl Sessions {
-    fn load(root: &Path) -> Sessions {
+impl FileSessions {
+    fn load(root: &Path) -> FileSessions {
         let path = root.join("sessions.json");
         let tokens = std::fs::read_to_string(&path)
             .ok()
@@ -136,7 +142,7 @@ impl Sessions {
             .map(|tokens| tokens.0)
             .unwrap_or_default();
         let tokens = live(tokens);
-        Sessions {
+        FileSessions {
             path,
             tokens: Mutex::new(tokens),
         }
@@ -173,6 +179,77 @@ impl Sessions {
     }
 }
 
+/// Las sesiones de la web: en la base cuando la hay, y en `sessions.json` si no.
+enum Sessions {
+    File(FileSessions),
+    Postgres(Db),
+}
+
+impl Sessions {
+    fn open(&self, email: &str) -> String {
+        match self {
+            Sessions::File(file) => file.open(email),
+            Sessions::Postgres(db) => {
+                let token = random::hex(32);
+                let expires = UNIX_EPOCH + Duration::from_secs(now() + SESSION_TTL);
+                let id = crate::ulid::new();
+                match db.get() {
+                    Ok(mut conn) => {
+                        if let Err(e) = conn.execute(
+                            "INSERT INTO sessions (id, token, email, expires_at)
+                             VALUES ($1, $2, $3, $4)",
+                            &[&id, &token, &email, &expires],
+                        ) {
+                            warn("guardar la sesión", e);
+                        }
+                    }
+                    Err(e) => warn("guardar la sesión", e),
+                }
+                token
+            }
+        }
+    }
+
+    fn close(&self, token: &str) {
+        match self {
+            Sessions::File(file) => file.close(token),
+            Sessions::Postgres(db) => {
+                let Ok(mut conn) = db.get() else {
+                    return;
+                };
+                if let Err(e) = conn.execute(
+                    "UPDATE sessions SET deleted_at = now(), updated_at = now()
+                     WHERE token = $1 AND deleted_at IS NULL",
+                    &[&token],
+                ) {
+                    warn("cerrar la sesión", e);
+                }
+            }
+        }
+    }
+
+    fn user(&self, token: &str) -> Option<String> {
+        match self {
+            Sessions::File(file) => file.user(token),
+            Sessions::Postgres(db) => {
+                let mut conn = db.get().ok()?;
+                let row = conn
+                    .query_opt(
+                        "SELECT email FROM sessions
+                         WHERE token = $1 AND deleted_at IS NULL AND expires_at > now()",
+                        &[&token],
+                    )
+                    .ok()??;
+                Some(row.get(0))
+            }
+        }
+    }
+}
+
+fn warn(what: &str, e: impl std::fmt::Display) {
+    eprintln!("jimmy: no pude {what}: {e}");
+}
+
 fn live(tokens: HashMap<String, Session>) -> HashMap<String, Session> {
     let now = now();
     tokens
@@ -198,7 +275,7 @@ fn a_session_that_expired_does_not_let_anyone_in() {
     )
     .unwrap();
 
-    let auth = Auth::new("bob@ejemplo.com", &root, None, false);
+    let auth = Auth::new("bob@ejemplo.com", &root, None, None, false);
     assert!(auth.user("vieja").is_none(), "la vieja ya venció");
     assert_eq!(auth.user("nueva").as_deref(), Some("bob@ejemplo.com"));
 
@@ -220,7 +297,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("jimmy-auth-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let auth = Auth::new(emails, &root, None, true);
+        let auth = Auth::new(emails, &root, None, None, true);
         (auth, root)
     }
 
@@ -248,7 +325,7 @@ mod tests {
 
         let session = auth.open_session("bob@ejemplo.com");
         assert_eq!(auth.user(&session).as_deref(), Some("bob@ejemplo.com"));
-        let reloaded = Sessions::load(&root);
+        let reloaded = FileSessions::load(&root);
         assert_eq!(reloaded.user(&session).as_deref(), Some("bob@ejemplo.com"));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -262,5 +339,31 @@ mod tests {
             "muy seguido"
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "necesita DATABASE_URL"]
+    fn una_sesion_en_la_base_sirve_y_se_cierra() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        crate::store::migrate(&url).expect("las migraciones");
+        let email = "sesiones@ejemplo.com";
+        let abrir = |tag: &str| {
+            let db = crate::store::pool(&url).expect("el pool");
+            Auth::new(email, Path::new(tag), Some(db), None, true)
+        };
+
+        let auth = abrir("/tmp");
+        let token = auth.open_session(email);
+        assert_eq!(auth.user(&token).as_deref(), Some(email));
+
+        let otra = abrir("/tmp/otro");
+        assert_eq!(
+            otra.user(&token).as_deref(),
+            Some(email),
+            "otra instancia la ve: está en la base y no en memoria"
+        );
+
+        auth.close_session(&token);
+        assert!(auth.user(&token).is_none(), "cerrada, ya no sirve");
     }
 }

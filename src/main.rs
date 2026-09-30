@@ -23,6 +23,7 @@ mod skill;
 mod store;
 mod tools;
 mod transport;
+mod ulid;
 mod vault;
 mod watch;
 mod web;
@@ -190,6 +191,13 @@ fn main() {
         }
     };
     axe::sentinel::seed(&config.api_key);
+    let db = match store::from_env() {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("jimmy: {e}");
+            std::process::exit(1);
+        }
+    };
     if transport_name() != "none" && config.allowed.is_empty() {
         eprintln!(
             "jimmy: atención: JIMMY_ALLOWED_USER_IDS está vacío, así que el bot no le contesta a nadie"
@@ -229,6 +237,7 @@ fn main() {
         agent.clone(),
         agenda,
         previews.clone(),
+        db,
     );
     let mut reaper = reap::Reaper::default();
     let mut watch = watch::Watch::default();
@@ -400,6 +409,7 @@ fn serve_web(
     agent: Agent,
     agenda: Sender<String>,
     previews: Arc<preview::Previews>,
+    db: Option<store::Db>,
 ) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
@@ -407,6 +417,7 @@ fn serve_web(
     let auth = auth::Auth::new(
         &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
         &config.root,
+        db,
         mail::Mail::from_env(),
         env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
     );

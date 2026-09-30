@@ -1287,7 +1287,7 @@ done
         agent.use_worker_exe(script);
 
         let bus = Bus::new();
-        let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, dev);
+        let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(

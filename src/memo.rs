@@ -293,6 +293,26 @@ pub fn add(workspace: &Path, key: &str, kind: &str, text: &str) -> Result<String
     ))
 }
 
+pub fn migrate(workspace: &Path) -> Result<String, String> {
+    let mut moved = 0;
+    for entry in read(&level1_path(workspace)).entries {
+        let path = match entry.key.split_once('/') {
+            Some((family, _)) => project_path(workspace, family),
+            None => facts_dir(workspace).join(format!("{}.md", entry.key)),
+        };
+        let mut entries = read(&path).entries;
+        if entries.iter().any(|present| present.key == entry.key) {
+            continue;
+        }
+        entries.insert(0, entry);
+        write_entries(&path, &entries)?;
+        moved += 1;
+    }
+    Ok(format!(
+        "migrate: {moved} hechos a notes/memory y notes/projects"
+    ))
+}
+
 fn valid_key(key: &str) -> bool {
     !key.is_empty()
         && key.chars().all(|c| {
@@ -838,6 +858,22 @@ mod tests {
         assert!(error.contains("¿picsel?"), "{error}");
         let error = add(&workspace, "jimmy/algo", "inventado", "x").unwrap_err();
         assert!(error.contains("tipo desconocido"), "{error}");
+    }
+
+    #[test]
+    fn migrate_splits_memory_md_into_facts_and_projects() {
+        let workspace = workspace("migrate");
+        let text = format!(
+            "{}{}",
+            entry("usuario", 1, "quién es"),
+            entry("jimmy/estado", 2, "cómo está")
+        );
+        write_level1(&workspace, &text);
+        let report = migrate(&workspace).unwrap();
+        assert!(report.contains("2 hechos"), "{report}");
+        assert!(facts_dir(&workspace).join("usuario.md").exists());
+        assert!(project_path(&workspace, "jimmy").exists());
+        assert!(render(&workspace, "jimmy").contains("quién es"));
     }
 
     #[test]

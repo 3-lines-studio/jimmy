@@ -8,7 +8,6 @@
 //! worker talks to the model.
 
 use crate::agent::Inflight;
-use crate::log::Log;
 use crate::protocol::{Command, Event};
 use crate::transport::{Msg, Session, Transport};
 use crate::Config;
@@ -16,18 +15,17 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
     let config = Config::from_env()?;
-    let mut agent = crate::build_agent(&config, None, None)?;
+    let mut agent = crate::build_agent(&config)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
     if let Some(cwd) = crate::flag(&args, "--cwd") {
         agent.set_cwd(&cwd);
     }
     let pipe = Pipe::new();
-    pipe.set_log(Log::in_dir(&agent.conversation(&session).dir));
     agent.set_pipe(pipe.clone());
 
     // El turno corre en este hilo, así que alguien tiene que seguir leyendo la
@@ -35,7 +33,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let cancel = Arc::new(AtomicBool::new(false));
     agent.set_cancel(cancel.clone());
     let (commands, incoming) = std::sync::mpsc::channel();
-    read_commands(commands, cancel.clone(), pipe.clone());
+    read_commands(commands, cancel.clone());
 
     crate::install_sigterm();
     pipe.emit(&Event::Ready)?;
@@ -46,7 +44,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         if matches!(command, Command::Shutdown) {
             break;
         }
-        if matches!(command, Command::Cancel { .. }) {
+        if matches!(command, Command::Cancel) {
             continue;
         }
         let dir = agent.conversation(&session).dir;
@@ -74,22 +72,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 text,
                 images,
                 author,
-            } => {
-                Log::in_dir(&dir).append(&Event::User {
-                    text: text.clone(),
-                    author: author.clone(),
-                    images: crate::agent::attachments(&dir, &images),
-                });
-                agent.local_prompt(pipe.as_ref(), &session, &text, images, &author)
-            }
+            } => agent.local_prompt(pipe.as_ref(), &session, &text, images, &author),
             Command::Resume => agent.local_resume(pipe.as_ref(), &session, &dir),
             Command::Compact => agent.local_compact(pipe.as_ref(), &session),
-            Command::Cancel { .. } | Command::Shutdown => continue,
+            Command::Cancel | Command::Shutdown => continue,
         };
         drop(turn);
-        for event in crate::media::drain(&agent.conversation(&session)) {
-            let _ = pipe.emit(&event);
-        }
         if let Err(error) = result {
             if !pipe.answered() {
                 pipe.fail(&session, None, &format!("⚠️ {error}"));
@@ -100,9 +88,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 /// Una cancelación se atiende acá mismo; el resto va para el hilo del turno.
-/// Quién la pidió queda escrito acá: el hilo del turno está adentro del turno y
-/// no va a leer nada hasta que termine.
-fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>, pipe: Arc<Pipe>) {
+fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else {
@@ -114,9 +100,8 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>, pipe: Arc<P
             let Ok(command) = serde_json::from_str::<Command>(&line) else {
                 continue;
             };
-            if let Command::Cancel { author } = command {
+            if matches!(command, Command::Cancel) {
                 cancel.store(true, Ordering::SeqCst);
-                let _ = pipe.emit(&Event::Stopped { author });
                 continue;
             }
             if commands.send(command).is_err() {
@@ -131,19 +116,11 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>, pipe: Arc<P
 #[derive(Default)]
 pub struct Pipe {
     answered: AtomicBool,
-    /// El log de la conversación: lo escribe el worker, que es el único que
-    /// está donde vive la conversación. Todo lo que sale de acá queda escrito,
-    /// así que el orden del log es el orden en que pasaron las cosas.
-    log: OnceLock<Log>,
 }
 
 impl Pipe {
     pub fn new() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self::default())
-    }
-
-    pub fn set_log(&self, log: Log) {
-        let _ = self.log.set(log);
     }
 
     fn begin_turn(&self) {
@@ -155,9 +132,6 @@ impl Pipe {
     }
 
     pub fn emit(&self, event: &Event) -> Result<(), String> {
-        if let Some(log) = self.log.get() {
-            log.append(event);
-        }
         let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
         line.push('\n');
         let stdout = std::io::stdout();

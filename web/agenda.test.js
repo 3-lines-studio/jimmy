@@ -23,10 +23,9 @@ test("la corrida dice qué día fue", () => {
   const now = new Date(2026, 8, 26, 18, 0, 0);
   const ts = Math.round(new Date(2026, 8, 26, 5, 0, 0).getTime() / 1000);
   const ayer = Math.round(new Date(2026, 8, 25, 22, 0, 0).getTime() / 1000);
-  const viejo = Math.round(new Date(2026, 8, 14, 5, 0, 0).getTime() / 1000);
-  assert.equal(agendaMoment({ ts }, now), "hoy 05:00");
-  assert.equal(agendaMoment({ ts: ayer }, now), "ayer 22:00");
-  assert.equal(agendaMoment({ ts: viejo }, now), "14/09 05:00");
+  assert.equal(agendaMoment({ date: "2026-09-26", ts }, now), "hoy 05:00");
+  assert.equal(agendaMoment({ date: "2026-09-25", ts: ayer }, now), "ayer 22:00");
+  assert.equal(agendaMoment({ date: "2026-09-14", ts }, now), "14/09 05:00");
 });
 
 test("hace cuánto corrió", () => {

@@ -168,9 +168,7 @@ impl Pool {
         for (name, value) in env {
             process.env(name, value);
         }
-        let mut child = process
-            .spawn()
-            .map_err(|e| format!("no pude lanzar el worker: {e}"))?;
+        let mut child = lanzar(&mut process)?;
         let stdin = child.stdin.take().ok_or("el worker no tiene stdin")?;
         let stdout = child.stdout.take().ok_or("el worker no tiene stdout")?;
         let pid = child.id() as i32;
@@ -347,6 +345,32 @@ impl Worker {
     }
 }
 
+/// Lanzar el worker, insistiendo si el archivo está ocupado.
+///
+/// `Text file busy` (ETXTBSY) quiere decir que alguien tiene el ejecutable
+/// abierto para escribir justo cuando se lo intenta correr: pasa cuando el
+/// binario se acaba de escribir —una prueba que arma su worker, o un despliegue
+/// que reescribe el mismo inode— y no dice nada del programa. Es transitorio por
+/// naturaleza, así que se espera y se prueba de nuevo; sin esto, un turno se
+/// caía por una carrera de milisegundos.
+fn lanzar(process: &mut Process) -> Result<std::process::Child, String> {
+    let mut ultimo = String::new();
+    for intento in 0..20 {
+        match process.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) => {
+                let error = error.to_string();
+                if !error.contains("Text file busy") {
+                    return Err(format!("no pude lanzar el worker: {error}"));
+                }
+                ultimo = error;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25 * (intento + 1).min(8)));
+    }
+    Err(format!("no pude lanzar el worker: {ultimo}"))
+}
+
 fn wait(worker: &Worker) {
     match &worker.destino {
         Destino::Local { child, .. } => {
@@ -437,6 +461,42 @@ mod tests {
     use super::*;
     use crate::protocol::Command;
     use std::path::Path;
+
+    /// Un ejecutable abierto para escribir no se puede correr —`Text file busy`—:
+    /// medido, es lo que hacía fallar un test distinto cada vez cuando la suite
+    /// entera corría junta. El que lanza espera y prueba de nuevo, así que un
+    /// archivo ocupado un rato no rompe el turno.
+    #[test]
+    fn un_ejecutable_ocupado_no_rompe_el_lanzamiento() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("jimmy-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("worker.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Alguien lo tiene abierto para escribir, así que no se puede lanzar.
+        let abierto = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
+        let suelta = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            drop(abierto);
+        });
+        // Sin esperar, no hay vuelta: el mismo lanzamiento falla.
+        assert!(
+            Process::new(&script).spawn().is_err(),
+            "el archivo ocupado se lanzó igual: esta prueba no estaría probando nada"
+        );
+
+        let mut process = Process::new(&script);
+        let child = lanzar(&mut process).expect("el archivo se libera y el worker arranca");
+        assert!(child.wait_with_output().unwrap().status.success());
+        suelta.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// El archivo lo escribe un proceso hijo: si lo escribiera éste, el fork de
     /// cualquier otro test heredaría su descriptor y el exec daría «Text file

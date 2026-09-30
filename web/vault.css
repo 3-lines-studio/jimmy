@@ -1,0 +1,229 @@
+/* El vault: entornos, claves, tokens y audit, en el mismo idioma que el resto. */
+
+.pane.vault {
+  overflow-y: auto;
+  padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s4) var(--s6);
+}
+
+.vault-inner {
+  max-width: var(--measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.vault-off {
+  padding: var(--s6) 0;
+  color: var(--err);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.vault-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.vault-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.vault-head h2 {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vault-envs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.vault-env {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--row);
+  padding: 0 var(--s3);
+  border-radius: var(--r-full);
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 0.78125rem;
+}
+
+.vault-env:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.vault-env.open {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.vault-env-count {
+  color: inherit;
+  opacity: 0.7;
+  font-size: 0.6875rem;
+}
+
+.vault-keys {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.vault-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: var(--row);
+  padding: var(--s1) var(--s2) var(--s1) var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+.vault-row:last-child {
+  border-bottom: none;
+}
+
+.vault-key {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.vault-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--code);
+}
+
+.vault-value.masked {
+  color: var(--faint);
+  letter-spacing: 0.1em;
+}
+
+.vault-value:hover {
+  color: var(--accent);
+}
+
+.vault-scope,
+.vault-when,
+.vault-audit {
+  flex: none;
+  font-size: 0.6875rem;
+  color: var(--faint);
+}
+
+.vault-audit {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.vault-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  flex: none;
+}
+
+.vault-note {
+  padding: var(--s3);
+  color: var(--faint);
+  font-size: 0.8125rem;
+}
+
+.vault-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.vault-form input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  height: var(--row);
+  padding: 0 var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.78125rem;
+}
+
+.vault-form input:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.vault-form button {
+  flex: none;
+  height: var(--row);
+  padding: 0 var(--s4);
+  border-radius: var(--r-full);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 0.78125rem;
+}
+
+.vault-form button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.vault-minted {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--raised);
+}
+
+.vault-minted code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.vault-minted .vault-note {
+  flex-basis: 100%;
+  padding: 0;
+}

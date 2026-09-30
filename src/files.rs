@@ -12,7 +12,7 @@ pub const MAX_READ: u64 = 512 * 1024;
 
 /// Salidas de build: no se listan ni se abren. Lo que empieza con punto queda
 /// afuera por su cuenta, y ahí van los metadatos y los `.env`.
-const HIDDEN: [&str; 4] = ["target", "node_modules", "dist", "__pycache__"];
+pub const HIDDEN: [&str; 4] = ["target", "node_modules", "dist", "__pycache__"];
 
 pub struct Entry {
     pub name: String,
@@ -34,18 +34,39 @@ pub fn list(root: &Path, sub: &str) -> Option<Vec<Entry>> {
         .flatten()
         .filter_map(entry)
         .collect();
-    entries.sort_by(|one, other| {
-        other
-            .dir
-            .cmp(&one.dir)
-            .then_with(|| one.name.to_lowercase().cmp(&other.name.to_lowercase()))
-    });
+    ordenar(&mut entries);
     Some(entries)
 }
 
 /// Los bytes de un archivo, cortados en el tope que le pidan. Las imágenes van
 /// enteras porque el navegador las muestra; el texto va cortado porque nadie
 /// lee medio megabyte en pantalla.
+/// Cómo se muestra una entrada, para que el mismo nombre diga lo mismo venga de
+/// donde venga.
+pub fn kind(name: &str, dir: bool) -> &'static str {
+    if dir {
+        return "dir";
+    }
+    if media::is_image(name) {
+        return "image";
+    }
+    match extension(name) == "md" {
+        true => "markdown",
+        false => "text",
+    }
+}
+
+/// Las carpetas primero y después por nombre, sin mayúsculas: el árbol de la
+/// web y el que llega del sandbox se ordenan igual.
+pub fn ordenar(entries: &mut [Entry]) {
+    entries.sort_by(|one, other| {
+        other
+            .dir
+            .cmp(&one.dir)
+            .then_with(|| one.name.to_lowercase().cmp(&other.name.to_lowercase()))
+    });
+}
+
 pub fn read(path: &Path, limit: Option<u64>) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
@@ -71,15 +92,7 @@ fn entry(entry: std::fs::DirEntry) -> Option<Entry> {
     }
     let metadata = entry.metadata().ok()?;
     let dir = metadata.is_dir();
-    let kind = if dir {
-        "dir"
-    } else if media::is_image(&name) {
-        "image"
-    } else if extension(&name) == "md" {
-        "markdown"
-    } else {
-        "text"
-    };
+    let kind = kind(&name, dir);
     Some(Entry {
         name,
         dir,
@@ -105,7 +118,7 @@ pub fn resolve(root: &Path, sub: &str) -> Option<PathBuf> {
     path.starts_with(&root).then_some(path)
 }
 
-fn visible(name: &str) -> bool {
+pub fn visible(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('.') && !HIDDEN.contains(&name)
 }
 

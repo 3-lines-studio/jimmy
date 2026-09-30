@@ -5,10 +5,13 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "99eb97065891f277584de2597be74fdbdd2bb597" }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "7edbd80d4287f411640757a4d82b1c44eb57bc30" }
+chacha20poly1305 = "0.10"
+getrandom = "0.2"
 libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-ureq = "2"
+ureq = { version = "2", features = ["json"] }

@@ -355,6 +355,85 @@ fn a_parallel_batch_lands_next_to_its_call() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// El log de la conversación lo escribe el worker, que es el único que está
+/// donde vive la conversación: la API de archivos no tiene append, así que hay
+/// un solo escritor por archivo.
+#[test]
+fn the_log_lives_with_the_conversation() {
+    let root = scratch("log");
+    let chat = root.join("chats/test");
+    let dibujo = root.join("workspace/dibujo.png");
+    std::fs::write(&dibujo, b"\x89PNG\r\n\x1a\n y lo que siga").unwrap();
+    std::fs::write(
+        chat.join("meta.json"),
+        r#"{"project":"general","title":"con adjuntos"}"#,
+    )
+    .unwrap();
+    let (base, _) = model_server(vec![
+        tool_chunk(&format!(
+            "{} send {} --target test --caption 'un dibujo'",
+            env!("CARGO_BIN_EXE_jimmy"),
+            dibujo.display()
+        )),
+        answer_chunk("listo"),
+    ]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola\",\"author\":\"ana\"}");
+    worker.until_done();
+    drop(worker);
+
+    let log = std::fs::read_to_string(chat.join("conversation.jsonl")).unwrap();
+    let first = log.lines().next().unwrap();
+    assert!(
+        first.contains("\"user\"") && first.contains("\"author\":\"ana\""),
+        "el turno arranca con lo que dijo quien lo pidió: {log}"
+    );
+    assert!(log.contains("\"done\""), "{log}");
+    assert!(
+        log.contains("\"event\":\"image\"") && log.contains("un dibujo"),
+        "lo que el asistente manda va al log: {log}"
+    );
+    assert!(
+        !chat.join("outbox.jsonl").exists(),
+        "la cola queda vacía: si no, se manda dos veces"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Quién frenó el turno lo dice el worker, que es el que lo sabe: el padre
+/// sólo pide la interrupción.
+#[test]
+fn a_cancel_says_who_stopped_the_turn() {
+    let root = scratch("cancel");
+    let chat = root.join("chats/test");
+    let (base, _) = model_server(vec![tool_chunk("sleep 2"), answer_chunk("tarde")]);
+
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"hola larga\"}");
+    let first = worker.next();
+    assert!(first.contains("tool_start"), "{first}");
+    worker.send("{\"cmd\":\"cancel\",\"author\":\"ana\"}");
+
+    let log = esperar(&chat, "\"stopped\"");
+    assert!(log.contains("\"stopped\""), "{log}");
+    assert!(log.contains("\"author\":\"ana\""), "{log}");
+    drop(worker);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+fn esperar(chat: &Path, needle: &str) -> String {
+    let path = chat.join("conversation.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(needle) || std::time::Instant::now() > deadline {
+            return text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn the_tools_run_in_the_project_the_conversation_belongs_to() {
     let root = scratch("cwd");

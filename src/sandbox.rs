@@ -52,7 +52,7 @@ pub trait Sandbox: Send + Sync {
     ) -> Result<Turn, String>;
 
     /// Interrumpe el turno de esa conversación, si hay uno corriendo.
-    fn cancel(&self, key: &str);
+    fn cancel(&self, key: &str, author: &str);
 
     /// Baja el turno a la fuerza, para que no siga escribiendo en una carpeta
     /// que estamos por borrar.

@@ -1151,11 +1151,9 @@ fn follow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::Log;
     use crate::protocol::Event;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
-    use std::path::Path;
 
     struct Server {
         root: PathBuf,
@@ -1223,7 +1221,7 @@ done
         );
         agent.use_worker_exe(script);
 
-        let bus = Bus::new();
+        let bus = agent.bus();
         let store = Arc::new(crate::store::Store::open(&root.join("jimmy.db")).unwrap());
         if let Some(modelo) = modelo {
             modelo.set_store(store.clone());
@@ -1457,17 +1455,31 @@ done
         json_in(&created)["key"].as_str().unwrap().to_string()
     }
 
-    /// El log lo escribe el hilo del turno, así que hay que esperarlo.
-    fn wait_for(root: &Path, key: &str, needle: &str) -> String {
-        let path = root.join("chats").join(key).join("conversation.jsonl");
+    /// Lo que ve el que está mirando la conversación: el log lo escribe el
+    /// worker, adentro de donde vive la conversación, así que desde acá se
+    /// observa el flujo, que son los mismos eventos en vivo.
+    fn watching(server: &Server, key: &str) -> std::sync::mpsc::Receiver<Event> {
+        server.bus.attach(key, "quien mira").1
+    }
+
+    /// Junta eventos del flujo hasta que aparezca `needle`, o hasta que se
+    /// acabe el tiempo.
+    fn until(rx: &std::sync::mpsc::Receiver<Event>, needle: &str) -> Vec<String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut seen = Vec::new();
         loop {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            if text.contains(needle) || std::time::Instant::now() > deadline {
-                return text;
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(event) = rx.recv_timeout(left) else {
+                break;
+            };
+            let text = serde_json::to_string(&event).unwrap();
+            let listo = text.contains(needle);
+            seen.push(text);
+            if listo {
+                break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        seen
     }
 
     /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
@@ -1866,6 +1878,7 @@ done
         );
         assert!(made.starts_with("HTTP/1.1 200"), "{made}");
         let key = json_in(&made)["key"].as_str().unwrap().to_string();
+        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -1881,7 +1894,7 @@ done
             .unwrap()
             .path();
         let workspace = org.join("workspace");
-        let log = wait_for(&org, &key, "\"done\"");
+        let log = until(&rx, "\"done\"").join("\n");
         assert!(
             log.contains(&format!(
                 "{}|{}|worker --chat {} --cwd {}",
@@ -1930,6 +1943,7 @@ done
                 }],
             )
             .unwrap();
+        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -1938,9 +1952,24 @@ done
         );
         assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
 
-        let log = wait_for(&server.root, &key, "proveedor");
-        assert!(log.contains("no sé hablar con el proveedor otro"), "{log}");
-        assert!(!log.contains("eco"), "el turno corrió igual: {log}");
+        let flujo = until(&rx, "proveedor").join("\n");
+        assert!(
+            flujo.contains("no sé hablar con el proveedor otro"),
+            "{flujo}"
+        );
+        assert!(!flujo.contains("eco"), "el turno corrió igual: {flujo}");
+        let log = std::fs::read_to_string(
+            server
+                .root
+                .join("chats")
+                .join(&key)
+                .join("conversation.jsonl"),
+        )
+        .unwrap_or_default();
+        assert!(
+            log.is_empty(),
+            "un turno que no arranca no deja rastro: {log}"
+        );
 
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
@@ -2115,6 +2144,7 @@ done
         );
         assert!(renamed.starts_with("HTTP/1.1 200"), "{renamed}");
 
+        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2123,19 +2153,7 @@ done
         );
         assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
 
-        let log = server
-            .root
-            .join("chats")
-            .join(&key)
-            .join("conversation.jsonl");
-        let mut text = String::new();
-        for _ in 0..200 {
-            text = std::fs::read_to_string(&log).unwrap_or_default();
-            if text.contains("\"done\"") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let text = until(&rx, "\"done\"").join("\n");
         assert!(text.contains("\"user\"") && text.contains("hola"), "{text}");
         assert!(
             text.contains("\"author\":\"bob\""),
@@ -2231,6 +2249,7 @@ done
         assert!(served.contains("Content-Type: image/png"), "{served}");
         assert!(body_in(&served).ends_with("los bytes que sean"), "{served}");
 
+        let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2242,10 +2261,10 @@ done
             "una foto sin texto es un mensaje: {sent}"
         );
 
-        let log = wait_for(&server.root, &key, "\"done\"");
+        let flujo = until(&rx, "\"done\"").join("\n");
         assert!(
-            log.contains(&format!("\"images\":[\"{name}\"]")),
-            "el log guarda el nombre y no los bytes: {log}"
+            flujo.contains(&format!("\"images\":[\"{name}\"]")),
+            "el mensaje lleva el nombre y no los bytes: {flujo}"
         );
         let state = get(server.port, "/api/state", Some(&cookie));
         assert!(
@@ -2709,18 +2728,6 @@ done
             Some(&cookie),
         );
         assert!(cancelled.starts_with("HTTP/1.1 200"), "{cancelled}");
-        let log = std::fs::read_to_string(
-            server
-                .root
-                .join("chats")
-                .join(&key)
-                .join("conversation.jsonl"),
-        )
-        .unwrap_or_default();
-        assert!(
-            log.contains("\"stopped\"") && log.contains("bob"),
-            "el log dice quién frenó: {log}"
-        );
 
         let unknown = post_with(
             server.port,
@@ -2915,10 +2922,8 @@ done
         assert!(seen[1].contains("\"listo\""), "{seen:?}");
         assert!(seen[2].contains("synced"), "{seen:?}");
 
-        let log = Log::in_dir(&server.root.join("chats/123456789"));
-        server.bus.publish(
+        server.bus.show(
             "123456789",
-            &log,
             &Event::Assistant {
                 text: "en vivo".into(),
             },

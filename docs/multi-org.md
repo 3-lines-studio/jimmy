@@ -183,8 +183,11 @@ a `remote::ensure` que lo despierte, publica el agente en su volumen —el
 binario, los prompts y las skills, con la huella del binario como versión— y
 lanza el worker ahí por la API de procesos. Los archivos que el agente lee y
 escribe son los de su volumen, sin viajes por HTTP, y los eventos vuelven por
-el mismo protocolo de siempre: el control plane sigue escribiendo el log que
-mira la web. El worker no abre la base, y no hay dos lugares: su raíz adentro
+el mismo protocolo de siempre: el control plane los reparte a quien esté
+mirando, y el log de la conversación lo escribe el worker, que es el único que
+está donde la conversación vive. El padre no lo toca: la API de archivos del
+volumen no tiene *append*, así que hay un solo escritor por archivo y ése es el
+de adentro. El worker no abre la base, y no hay dos lugares: su raíz adentro
 del sandbox es donde el volumen se monta (`/work`), así que `remote::al_sandbox`
 traduce el path que la org tiene acá por el de adentro. Si el sandbox no
 contesta, el turno se frena y lo dice: nunca se cae al disco local por las
@@ -349,12 +352,12 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    despertar a nadie— y los archivos y los adjuntos se le piden al sandbox en
    vivo, que para eso se despierta, como con el browser. Lo que la web escribe lo
    escriben las mismas funciones que corren adentro, por el CLI del agente, y la
-   copia del índice se refresca en el momento. El log de cada conversación lo
-   sigue escribiendo el control plane, que es donde se produce.
+   copia del índice se refresca en el momento. El log de cada conversación se lee
+   de ahí también, del mismo lugar de donde salen los archivos.
 8. **Hecho** — Los adjuntos de los dos lados: lo que sube la web llega al
    volumen, donde lo ve el agente, y lo que manda el asistente espera en la cola
-   del chat —que vive adentro, porque la escribe el CLI— y el control plane la
-   lee de ahí y la vacía. Probado de punta a punta con un archivo de verdad.
+   del chat —que vive adentro, porque la escribe el CLI— y el worker, que corre
+   adentro, la lee de ahí y la vacía. Probado de punta a punta con un archivo de verdad.
 9. **Hecho** — El alta de una org: con el plan en `paid` se crea su filesystem
    —lo hace el SDK de Tensorlake, por `uv run --with tensorlake python
    deploy/filesystems.py crear`, que es el único que sabe hablar con ese
@@ -364,13 +367,18 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`
     con las toolchains, Chromium con su venv y `ffmpeg`, en una imagen que se
     registra aparte del código. El agente sigue llegando publicado.
-11. **El proxy del modelo** en el control plane: la clave deja de viajar al
-    sandbox y ahí caen los medidores.
-12. heimdall por org y su UI.
-13. **A medias** — Cuotas, medidores y los dos planes: el consumo ya se ve en
+11. **Hecho** — El proxy del modelo en el control plane: los pedidos de adentro
+    salen con un pase de la org, la clave no sale de acá, y por ahí pasan todos
+    los medidores (el consumo de la org, por modelo y por día, se ve con `jimmy
+    orgs uso` y en la web).
+12. **Hecho** — El log vive con la conversación: lo escribe el worker adentro del
+    volumen, con el mensaje de quien lo pidió y quién lo frenó, y la web lo lee
+    de ahí. El control plane sólo reparte los eventos a quien esté mirando.
+13. heimdall por org y su UI.
+14. **A medias** — Cuotas, medidores y los dos planes: el consumo ya se ve en
    la web (el plan y los tokens de la org activa, al lado del workspace) y el
    plan lo mueve un administrador de la instancia (`JIMMY_ADMINS`), que es la
    acción que después va a hacer el pago. Falta la cuota: cortar cuando el plan
    se pasa.
-14. Los transports por org (Slack y Telegram con sus credenciales), los previews
+15. Los transports por org (Slack y Telegram con sus credenciales), los previews
     y los backups.

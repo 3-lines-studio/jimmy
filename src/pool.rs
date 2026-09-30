@@ -96,10 +96,12 @@ impl Pool {
 
     /// Interrumpe el turno de esa conversación, si hay uno corriendo. Va por el
     /// mismo pipe que todo lo demás, así que el worker decide cuándo mirarlo.
-    pub fn cancel(&self, key: &str) {
+    pub fn cancel(&self, key: &str, author: &str) {
         let worker = self.workers.lock().unwrap().get(key).cloned();
         if let Some(worker) = worker {
-            let _ = worker.send(&Command::Cancel);
+            let _ = worker.send(&Command::Cancel {
+                author: author.to_string(),
+            });
         }
     }
 
@@ -291,8 +293,8 @@ impl Sandbox for Pool {
         Pool::turn(self, session, conversation, env, command, on_event, sandbox)
     }
 
-    fn cancel(&self, key: &str) {
-        Pool::cancel(self, key);
+    fn cancel(&self, key: &str, author: &str) {
+        Pool::cancel(self, key, author);
     }
 
     fn kill(&self, key: &str) {
@@ -965,6 +967,26 @@ mod remoto {
             "el archivo en vivo: {bytes:?}"
         );
 
+        // El log de la conversación vive con ella: lo escribió el worker adentro
+        // y la web lo lee de ahí, del mismo lugar de donde saca los archivos.
+        let vista = espacio
+            .window("adentro-del-sandbox", usize::MAX)
+            .expect("la web no pudo leer el log del volumen");
+        let eventos: Vec<String> = vista
+            .events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap())
+            .collect();
+        assert!(
+            eventos.iter().any(|evento| evento.contains("hola.txt")),
+            "lo que pasó adentro no volvió por el log: {eventos:?}"
+        );
+        assert!(
+            !chat.join("conversation.jsonl").exists(),
+            "el log quedó de este lado: {}",
+            chat.display()
+        );
+
         // Y lo que la web escribe lo escriben las mismas funciones de adentro,
         // por el CLI: no hay un segundo layout.
         espacio.create_project("nuevo").unwrap();
@@ -999,7 +1021,6 @@ mod remoto {
         // Los adjuntos, de punta a punta: lo que sube la web llega al volumen
         // —donde lo ve el agente— y lo que manda el asistente vuelve por la cola
         // del chat, que vive adentro.
-        use crate::protocol::Event;
         let clave = espacio
             .create_conversation("general", "con adjuntos")
             .unwrap();
@@ -1043,26 +1064,21 @@ mod remoto {
             "el CLI no anotó lo que mandó: {mandado}"
         );
 
-        let cola = crate::conversations::chat_dir(&root, &clave);
-        let eventos = crate::remote::drenar(&cliente, "turno-adentro", &root, &cola).unwrap();
-        assert_eq!(
-            eventos.len(),
-            1,
-            "la cola no trajo lo que mandó: {eventos:?}"
+        let cola = format!(
+            "{}/{}/{}",
+            MOUNT,
+            crate::remote::al_sandbox(&root, &crate::conversations::chat_dir(&root, &clave))
+                .trim_start_matches(MOUNT)
+                .trim_start_matches('/'),
+            crate::media::OUTBOX
         );
-        let Event::Image { name, caption } = &eventos[0] else {
-            panic!("no vino una imagen: {eventos:?}");
-        };
-        assert_eq!(caption, "un dibujo");
+        let anotado = cliente
+            .read_file("turno-adentro", &cola)
+            .expect("el CLI no dejó la cola en el volumen");
         assert!(
-            espacio.read_attachment(&clave, name).is_ok(),
-            "la web no encuentra el adjunto que mandó el asistente"
-        );
-        assert!(
-            crate::remote::drenar(&cliente, "turno-adentro", &root, &cola)
-                .unwrap()
-                .is_empty(),
-            "la cola quedó con lo mismo: se mandaría dos veces"
+            String::from_utf8_lossy(&anotado).contains("un dibujo"),
+            "la cola no trajo lo que mandó: {}",
+            String::from_utf8_lossy(&anotado)
         );
         espacio.delete_conversation(&clave).unwrap();
 

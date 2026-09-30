@@ -1,6 +1,5 @@
 use crate::bus::Bus;
 use crate::conversations;
-use crate::log::Log;
 use crate::media;
 use crate::pool::Pool;
 use crate::protocol::{self, Event};
@@ -95,17 +94,10 @@ impl Agent {
         self.cancel = cancel;
     }
 
-    /// Interrumpe el turno que esté corriendo, y deja dicho quién lo frenó.
+    /// Interrumpe el turno que esté corriendo. Quién lo frenó se lo dice al
+    /// worker, que es el que escribe el log: acá sólo se lo interrumpe.
     pub fn cancel(&self, session: &Session, author: &str) {
-        if !author.is_empty() {
-            self.say(
-                session,
-                &Event::Stopped {
-                    author: author.to_string(),
-                },
-            );
-        }
-        self.pool.cancel(&session.key());
+        self.pool.cancel(&session.key(), author);
     }
 
     /// Suelta la conversación: corta el worker, si hay alguno. Lo que quedó en
@@ -356,47 +348,10 @@ impl Agent {
         );
     }
 
+    /// Avisarle a los que están mirando. El log no lo escribe el padre: lo
+    /// escribe el worker, que es el único que está donde vive la conversación.
     fn say(&self, session: &Session, event: &Event) {
-        let conversation = self.conversation(session);
-        let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
-        self.bus.publish(&conversation.key, &log, event);
-    }
-
-    /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
-    /// CLI es otro proceso y no puede escribir el log, así que las deja en la
-    /// cola de la conversación y esto las publica.
-    fn flush_media(&self, session: &Session, listo: Option<&SandboxInfo>) {
-        let conversation = self.conversation(session);
-        for event in self.media(&conversation, listo) {
-            self.say(session, &event);
-        }
-    }
-
-    /// Lo que el asistente mandó durante el turno. Si el turno corrió adentro
-    /// del sandbox, el CLI dejó la cola en el volumen y se lee de ahí; si no,
-    /// está al lado del chat, acá.
-    fn media(
-        &self,
-        conversation: &conversations::Conversation,
-        listo: Option<&SandboxInfo>,
-    ) -> Vec<Event> {
-        let Some(listo) = listo else {
-            return media::drain(conversation);
-        };
-        let Some(cliente) = Tensorlake::from_env() else {
-            return Vec::new();
-        };
-        match crate::remote::drenar(&cliente, &listo.name, &self.root, &conversation.dir) {
-            Ok(eventos) => eventos,
-            Err(error) => {
-                eprintln!(
-                    "jimmy: no pude leer la cola de {}: {error}",
-                    conversation.key
-                );
-                Vec::new()
-            }
-        }
+        self.bus.show(&session.key(), event);
     }
 
     /// Un turno por conversación: el que llega segundo espera.
@@ -419,14 +374,12 @@ impl Agent {
         let mut live = Live::new(transport, session, status);
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
         let sandbox = match self.wake() {
             Ok(listo) => listo,
             Err(error) => {
                 let message = format!("⚠️ {error}");
                 transport.fail(session, live.take(), &message);
-                self.bus
-                    .publish(&conversation.key, &log, &Event::Error { message });
+                self.bus.show(&conversation.key, &Event::Error { message });
                 return Err(error);
             }
         };
@@ -439,14 +392,13 @@ impl Agent {
             command,
             &mut |event| {
                 live.on(event);
-                self.bus.publish(&conversation.key, &log, event)
+                self.bus.show(&conversation.key, event)
             },
             sandbox.as_ref(),
         );
         if let Some(listo) = &sandbox {
             self.sincronizar(listo);
         }
-        self.flush_media(session, sandbox.as_ref());
         match turn {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, live.take(), &text);
@@ -566,7 +518,6 @@ impl Agent {
         let _guard = turn.lock().unwrap();
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
         let sandbox = self.wake()?;
         let env = self.worker_env(sandbox.is_some());
         let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
@@ -588,7 +539,7 @@ impl Agent {
             command,
             &mut |event| {
                 live.on(event);
-                self.bus.publish(&conversation.key, &log, event)
+                self.bus.show(&conversation.key, event)
             },
             sandbox.as_ref(),
         )?;
@@ -937,6 +888,17 @@ struct EventSink {
     pipe: Option<Arc<Pipe>>,
 }
 
+impl EventSink {
+    /// Un evento del turno: sale por el pipe, que es por donde el worker le
+    /// cuenta al padre y donde queda escrito el log.
+    fn emit(&mut self, event: Event) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&event);
+    }
+}
+
 pub(crate) struct Inflight {
     path: PathBuf,
     _file: std::fs::File,
@@ -977,29 +939,20 @@ impl Sink for EventSink {
     }
 
     fn assistant_delta(&mut self, text: &str) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::Delta {
+        self.emit(Event::Delta {
             text: text.to_string(),
         });
     }
 
     fn tool_delta(&mut self, call: &ToolCall, text: &str) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolDelta {
+        self.emit(Event::ToolDelta {
             id: call.id.clone(),
             text: text.to_string(),
         });
     }
 
     fn tool_start(&mut self, call: &ToolCall) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolStart {
+        self.emit(Event::ToolStart {
             id: call.id.clone(),
             name: call.name.clone(),
             args: call.arguments.clone(),
@@ -1021,10 +974,7 @@ impl Sink for EventSink {
                 }),
             );
         }
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolResult {
+        self.emit(Event::ToolResult {
             id: call.id.clone(),
             text: output.text.clone(),
             ms: elapsed.as_millis() as u64,
@@ -1037,10 +987,7 @@ impl Sink for EventSink {
         if message.content.is_empty() {
             return;
         }
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::Assistant {
+        self.emit(Event::Assistant {
             text: message.content.clone(),
         });
     }
@@ -1159,7 +1106,7 @@ fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
 /// `uploads/` de la conversación, que es lo que la web puede servir después. Un
 /// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
 /// mostrar y se queda afuera.
-fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
+pub(crate) fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
     let uploads = dir.join(media::UPLOADS);
     images
         .iter()
@@ -1581,6 +1528,25 @@ mod tests {
 
     /// Cada llamada escribe un archivo nuevo: reescribir uno que otro proceso
     /// todavía está ejecutando da «Text file busy».
+    /// Lo que ve el que está mirando la conversación: el log lo escribe el
+    /// worker, así que desde acá se observa el flujo, que son los mismos
+    /// eventos en vivo.
+    fn watching(agent: &Agent, key: &str) -> std::sync::mpsc::Receiver<Event> {
+        agent.bus.attach(key, "quien mira").1
+    }
+
+    /// El próximo evento que no sea de presencia: quién está mirando no es
+    /// parte de la conversación.
+    fn siguiente(flujo: &std::sync::mpsc::Receiver<Event>) -> Option<String> {
+        while let Ok(event) = flujo.recv_timeout(Duration::from_millis(200)) {
+            let text = serde_json::to_string(&event).unwrap();
+            if !text.contains("\"presence\"") && !text.contains("\"online\"") {
+                return Some(text);
+            }
+        }
+        None
+    }
+
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = resume_dir(name);
@@ -1638,66 +1604,26 @@ done
 ",
         ));
         let fake = Fake::default();
+        let flujo = watching(&agent, "x");
         agent
             .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "bob")
             .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
 
-        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
-        let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(lines.len(), 5, "{log}");
+        let mut lines = Vec::new();
+        while let Some(event) = siguiente(&flujo) {
+            lines.push(event);
+        }
+        assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(
             lines[0].contains("\"user\"") && lines[0].contains("hola"),
-            "{log}"
+            "{lines:?}"
         );
-        assert!(lines[1].contains("\"assistant\""), "{log}");
-        assert!(lines[2].contains("\"tool_start\""), "{log}");
-        assert!(lines[3].contains("\"tool_result\""), "{log}");
-        assert!(lines[4].contains("\"done\""), "{log}");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn what_jimmy_send_leaves_in_the_queue_ends_up_in_the_log() {
-        let root = resume_dir("media");
-        let mut agent = agent_in(&root);
-        agent.use_worker_exe(worker_script(
-            "media.sh",
-            "echo '{\"event\":\"ready\"}'
-while read -r line; do
-  case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"done\",\"text\":\"listo\"}'
-done
-",
-        ));
-        let conversation = conversations::get(&root, Path::new("/tmp"), "x");
-        media::queue(
-            &conversation,
-            &Event::Image {
-                name: "17-foto.png".into(),
-                caption: "mirá".into(),
-            },
-        )
-        .unwrap();
-
-        agent
-            .respond(
-                &Fake::default(),
-                &Session::channel("x"),
-                "hola",
-                Vec::new(),
-                "bob",
-            )
-            .unwrap();
-
-        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
-        assert!(log.contains("\"event\":\"image\""), "{log}");
-        assert!(log.contains("\"name\":\"17-foto.png\""), "{log}");
-        assert!(
-            !conversation.dir.join("outbox.jsonl").exists(),
-            "la cola queda vacía"
-        );
+        assert!(lines[1].contains("\"assistant\""), "{lines:?}");
+        assert!(lines[2].contains("\"tool_start\""), "{lines:?}");
+        assert!(lines[3].contains("\"tool_result\""), "{lines:?}");
+        assert!(lines[4].contains("\"done\""), "{lines:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1719,7 +1645,7 @@ done
                 go.display()
             ),
         ));
-        let log = root.join("chats/x/conversation.jsonl");
+        let flujo = watching(&agent, "x");
         let running = agent.clone();
         let handle = std::thread::spawn(move || {
             running
@@ -1732,21 +1658,17 @@ done
                 )
                 .unwrap();
         });
-        let mut text = String::new();
-        for _ in 0..400 {
-            text = std::fs::read_to_string(&log).unwrap_or_default();
-            if text.contains("\"user\"") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(text.contains("\"author\":\"ana\""), "{text}");
-        assert!(!text.contains("\"done\""), "el turno sigue: {text}");
+        let primero = siguiente(&flujo).expect("el mensaje no llegó");
+        assert!(primero.contains("\"author\":\"ana\""), "{primero}");
+        assert!(
+            siguiente(&flujo).is_none(),
+            "el turno sigue y ya hay otro evento"
+        );
 
         std::fs::write(&go, "anda").unwrap();
         handle.join().unwrap();
-        let text = std::fs::read_to_string(&log).unwrap();
-        assert!(text.contains("\"done\""), "{text}");
+        let ultimo = siguiente(&flujo).expect("el turno no terminó");
+        assert!(ultimo.contains("\"done\""), "{ultimo}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

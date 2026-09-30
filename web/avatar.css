@@ -39,14 +39,51 @@
 
 .bot .eye i {
   display: block;
-  width: calc(var(--s) * 0.145);
-  height: calc(var(--s) * 0.26);
-  border-radius: var(--r-full);
   background: #fff;
   box-shadow: 0 0 calc(var(--s) * 0.1) rgba(255, 255, 255, 0.25);
   animation:
     blink var(--blink, 4.2s) infinite var(--delay, 0s),
     gaze 11s ease-in-out infinite var(--gaze, 0s);
+}
+
+.bot.body-round {
+  border-radius: 50%;
+}
+
+.bot.body-squircle {
+  border-radius: 34%;
+}
+
+.bot.body-square {
+  border-radius: 24%;
+}
+
+.bot.body-egg {
+  border-radius: 50% 50% 46% 46% / 62% 62% 42% 42%;
+}
+
+.bot.eyes-bar .eye i {
+  width: calc(var(--s) * 0.145);
+  height: calc(var(--s) * 0.26);
+  border-radius: var(--r-full);
+}
+
+.bot.eyes-dot .eye i {
+  width: calc(var(--s) * 0.17);
+  height: calc(var(--s) * 0.17);
+  border-radius: 50%;
+}
+
+.bot.eyes-square .eye i {
+  width: calc(var(--s) * 0.18);
+  height: calc(var(--s) * 0.18);
+  border-radius: 30%;
+}
+
+.bot.eyes-slit .eye i {
+  width: calc(var(--s) * 0.245);
+  height: calc(var(--s) * 0.09);
+  border-radius: var(--r-full);
 }
 
 @keyframes blink {
@@ -154,7 +191,8 @@
 
 .bot.error .eye i {
   animation: none;
-  height: calc(var(--s) * 0.1);
+  width: calc(var(--s) * 0.17);
+  height: calc(var(--s) * 0.075);
   opacity: 0.92;
 }
 
@@ -181,7 +219,8 @@
 
 .bot.sleeping .eye i {
   animation: none;
-  height: calc(var(--s) * 0.08);
+  width: calc(var(--s) * 0.17);
+  height: calc(var(--s) * 0.06);
   opacity: 0.85;
 }
 

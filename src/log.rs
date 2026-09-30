@@ -2,9 +2,8 @@
 //! directory, next to the transcript.
 //!
 //! The transcript is what the model gets back on the next turn; this is what a
-//! human reads. Escribirlo es de quien corre el turno —el worker, que es el
-//! único que está adentro del volumen— y hay un solo escritor por archivo,
-//! porque la API de archivos no tiene append.
+//! human reads. Both describe the same turn, and the parent is the only writer:
+//! it logs the events the worker sends it, plus the message the user sent.
 
 use crate::protocol::Event;
 use std::io::Write;
@@ -40,20 +39,22 @@ impl Log {
     /// Si el tramo no abarca ni un turno, el corte se corre hacia atrás hasta el
     /// último, que es lo que lo deja entero.
     pub fn window(&self, end: usize) -> Window {
-        ventana(self.read(), end)
-    }
-
-    /// Lo mismo, sobre lo que ya se leyó de otro lado: la web lee el log de una
-    /// org que vive en su sandbox.
-    pub fn window_of(bytes: &[u8], end: usize) -> Window {
-        let texto = String::from_utf8_lossy(bytes);
-        ventana(leer(&texto), end)
+        let all = self.read();
+        let end = end.min(all.len());
+        let mut first = end.saturating_sub(REPLAY);
+        if let Some(offset) = all[first..end].iter().position(is_turn_start) {
+            first += offset;
+        } else if let Some(offset) = all[..first].iter().rposition(is_turn_start) {
+            first = offset;
+        }
+        Window {
+            first,
+            total: all.len(),
+            events: all[first..end].to_vec(),
+        }
     }
 
     pub fn append(&self, event: &Event) {
-        if !se_guarda(event) {
-            return;
-        }
         let Ok(mut line) = serde_json::to_string(event) else {
             return;
         };
@@ -72,43 +73,9 @@ impl Log {
         let Ok(text) = std::fs::read_to_string(&self.path) else {
             return Vec::new();
         };
-        leer(&text)
-    }
-}
-
-/// Lo que no se guarda: lo que se ve mientras pasa. El que escribe no tiene que
-/// acordarse de filtrarlo, así que la regla vive acá.
-pub fn se_guarda(event: &Event) -> bool {
-    !matches!(
-        event,
-        Event::Delta { .. }
-            | Event::ToolDelta { .. }
-            | Event::Presence { .. }
-            | Event::Online { .. }
-            | Event::Typing { .. }
-            | Event::Ready
-    )
-}
-
-fn leer(text: &str) -> Vec<Event> {
-    text.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-/// El tramo que termina en `end`, de hasta [`REPLAY`] eventos.
-fn ventana(all: Vec<Event>, end: usize) -> Window {
-    let end = end.min(all.len());
-    let mut first = end.saturating_sub(REPLAY);
-    if let Some(offset) = all[first..end].iter().position(is_turn_start) {
-        first += offset;
-    } else if let Some(offset) = all[..first].iter().rposition(is_turn_start) {
-        first = offset;
-    }
-    Window {
-        first,
-        total: all.len(),
-        events: all[first..end].to_vec(),
+        text.lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
     }
 }
 

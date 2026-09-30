@@ -26,7 +26,6 @@ struct Meta {
     title: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
 pub struct Conversation {
     pub key: String,
     pub dir: PathBuf,

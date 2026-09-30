@@ -5,6 +5,7 @@
 //! same lock, so somebody who attaches in the middle never misses one nor sees
 //! it twice.
 
+use crate::log::Log;
 use crate::protocol::Event;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -78,8 +79,22 @@ impl Bus {
         tell_who_is_online(&mut connections);
     }
 
-    /// Un evento, sin más: lo ven los que están mirando ahora. El log lo
-    /// escribe el worker, y el que avisa no lo guarda.
+    pub fn publish(&self, key: &str, log: &Log, event: &Event) {
+        let mut connections = self.connections.lock().unwrap();
+        if !matches!(
+            event,
+            Event::Delta { .. }
+                | Event::ToolDelta { .. }
+                | Event::Presence { .. }
+                | Event::Online { .. }
+                | Event::Typing { .. }
+        ) {
+            log.append(event);
+        }
+        send(&mut connections, key, event);
+    }
+
+    /// Un evento que no queda guardado: lo ven los que están mirando ahora.
     pub fn show(&self, key: &str, event: &Event) {
         let mut connections = self.connections.lock().unwrap();
         send(&mut connections, key, event);

@@ -366,7 +366,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    deploy/filesystems.py crear`, que es el único que sabe hablar con ese
    servicio— y queda su fila en `machines`. El filesystem lleva el nombre de la
    fila: es el volumen que el sandbox monta y nada más. Idempotente, y el plan
-   no se mueve si el alta no salió. Falta la pasarela: hoy el plan se marca a
+   no se mueve si el alta no salió. Lo que la org ya tenía en el lugar de antes
+   viaja con ella: se arma un tar, se manda en pedazos —la API de archivos no
+   tiene rangos— y se desarma adentro. Es una copia, así que lo de acá queda
+   como estaba; una org nueva no tiene nada que mudar y no despierta a nadie. Falta la pasarela: hoy el plan se marca a
    mano (`jimmy orgs plan <mail> paid`) o desde la web, un administrador de la
    instancia.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`

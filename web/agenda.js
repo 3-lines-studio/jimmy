@@ -6,6 +6,8 @@ const AGENDA = "agenda";
 let agendaTasks = [];
 const agendaOpen = new Set();
 const agendaPending = new Map();
+let agendaCreating = false;
+const agendaDraft = { name: "", prompt: "", cuando: "every", valor: "", target: "" };
 
 function isAgenda(id) {
   return id === AGENDA;
@@ -44,10 +46,11 @@ function agendaDate(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function agendaDay(day, now) {
+function agendaDay(ts, now) {
+  const day = agendaDate(new Date(ts * 1000));
   if (day === agendaDate(now)) return "hoy";
   if (day === agendaDate(new Date(now.getTime() - 86_400_000))) return "ayer";
-  const [, month, date] = String(day).split("-");
+  const [, month, date] = day.split("-");
   return `${date}/${month}`;
 }
 
@@ -58,7 +61,7 @@ function agendaClock(ts) {
 }
 
 function agendaMoment(run, now) {
-  return `${agendaDay(run.date, now)} ${agendaClock(run.ts)}`;
+  return `${agendaDay(run.ts, now)} ${agendaClock(run.ts)}`;
 }
 
 function agendaAgo(ts, now) {
@@ -143,27 +146,120 @@ function renderAgendaPane() {
   if (!tab) return;
   const now = new Date();
   tab.inner.replaceChildren();
-  if (!agendaTasks.length) {
+  if (agendaCreating) tab.inner.append(agendaFormEl());
+  if (!agendaTasks.length && !agendaCreating) {
     const empty = document.createElement("div");
     empty.className = "agenda-empty";
     empty.textContent = "No hay tareas agendadas.";
     tab.inner.append(empty);
-    return;
   }
   for (const task of agendaTasks) tab.inner.append(agendaTaskEl(task, now));
-  if (agendaUnread(agendaTasks) > 0) tab.inner.append(agendaFootEl());
+  tab.inner.append(agendaFootEl());
 }
 
 function agendaFootEl() {
   const foot = document.createElement("div");
   foot.className = "agenda-foot";
-  const button = document.createElement("button");
-  button.textContent = "Marcar todo leído";
-  button.onclick = async () => {
-    if (await api("/api/agenda/read", {})) await loadAgenda();
+  const nueva = document.createElement("button");
+  nueva.textContent = agendaCreating ? "Cancelar" : "Nueva tarea";
+  nueva.onclick = () => {
+    agendaCreating = !agendaCreating;
+    renderAgendaPane();
   };
-  foot.append(button);
+  foot.append(nueva);
+  if (agendaUnread(agendaTasks) > 0) {
+    const leidas = document.createElement("button");
+    leidas.textContent = "Marcar todo leído";
+    leidas.onclick = async () => {
+      if (await api("/api/agenda/read", {})) await loadAgenda();
+    };
+    foot.append(leidas);
+  }
   return foot;
+}
+
+function agendaField(name, label, options, hint) {
+  const field = document.createElement("label");
+  field.className = "task-field";
+  const span = document.createElement("span");
+  span.textContent = label;
+  let input;
+  if (options) {
+    input = document.createElement("select");
+    for (const [value, text] of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      input.append(option);
+    }
+    input.onchange = () => {
+      agendaDraft[name] = input.value;
+      renderAgendaPane();
+    };
+  } else {
+    input = document.createElement("input");
+    input.placeholder = hint || "";
+    input.oninput = () => {
+      agendaDraft[name] = input.value;
+    };
+  }
+  input.name = name;
+  input.value = agendaDraft[name];
+  field.append(span, input);
+  return field;
+}
+
+function agendaValorHint(cuando) {
+  if (cuando === "at") return "05:00";
+  if (cuando === "when") return "2026-09-14T15:00";
+  return "30m, 6h o 1d";
+}
+
+function agendaFormEl() {
+  const form = document.createElement("form");
+  form.className = "task task-new";
+  form.append(
+    agendaField("name", "Nombre", null, "resumen diario"),
+    agendaField("prompt", "Qué tiene que hacer", null, "Contame qué pasó en los proyectos."),
+  );
+  const cuando = document.createElement("div");
+  cuando.className = "task-when-row";
+  cuando.append(
+    agendaField("cuando", "Cuándo", [
+      ["every", "cada"],
+      ["at", "todos los días a las"],
+      ["when", "una vez, el"],
+      ["", "nunca sola"],
+    ]),
+    agendaField("valor", "Cada cuánto", null, agendaValorHint(agendaDraft.cuando)),
+  );
+  form.append(cuando, agendaField("target", "A qué chat (opcional)", null, "123456789"));
+
+  const guardar = document.createElement("button");
+  guardar.type = "submit";
+  guardar.textContent = "Guardar";
+  guardar.className = "task-save";
+  form.append(guardar);
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const body = { name: agendaDraft.name, prompt: agendaDraft.prompt };
+    const valor = agendaDraft.valor.trim();
+    if (agendaDraft.cuando && valor) body[agendaDraft.cuando] = valor;
+    if (agendaDraft.target.trim()) body.target = agendaDraft.target.trim();
+    if (!(await api("/api/agenda", body))) return;
+    for (const key of Object.keys(agendaDraft)) agendaDraft[key] = key === "cuando" ? "every" : "";
+    agendaCreating = false;
+    await loadAgenda();
+  };
+  return form;
+}
+
+async function deleteAgendaTask(task) {
+  if (!confirm(`¿Borro la tarea "${task.name}"?`)) return;
+  if (!(await api("/api/agenda/delete", { name: task.name }))) return;
+  agendaTasks = agendaTasks.filter((candidate) => candidate.name !== task.name);
+  renderAgenda();
 }
 
 function agendaTaskEl(task, now) {
@@ -210,6 +306,7 @@ function agendaTaskEl(task, now) {
     iconButton(task.paused ? "play" : "pause", task.paused ? "Reanudar" : "Pausar", () =>
       pauseAgendaTask(task),
     ),
+    iconButton("close", "Borrar", () => deleteAgendaTask(task), "danger"),
   );
 
   head.append(title, meta);

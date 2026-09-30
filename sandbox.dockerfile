@@ -1,14 +1,16 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.98-bookworm AS builder
-RUN rustup toolchain install nightly --profile minimal && rustup default nightly
-WORKDIR /build
-
-COPY Cargo.toml Cargo.lock /build/jimmy/
-COPY src /build/jimmy/src
-COPY web /build/jimmy/web
-WORKDIR /build/jimmy
-RUN cargo build --release --locked
-
+#
+# El entorno del agente adentro del sandbox.
+#
+# Es el mismo que el del control plane (la etapa final de `Dockerfile`), sin el
+# agente: el binario, los prompts, las skills y los CLIs llegan al sandbox
+# publicados desde el control plane, en la versión que corresponde, y se
+# instalan en estos mismos paths. Acá vive lo que no cambia con el código: el
+# sistema, las toolchains que el agente usa para trabajar en los proyectos, y
+# lo que necesitan sus herramientas (Chromium con su venv para `browse`).
+#
+# Se registra una vez por versión del entorno; el agente se actualiza sin
+# reconstruirla.
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
@@ -36,7 +38,7 @@ ENV CARGO_TARGET_DIR=/tmp/cargo-target
 ENV MISE_DATA_DIR=/root/.local/share/mise
 ENV MISE_CONFIG_DIR=/root/.config/mise
 ENV MISE_YES=1
-ENV PATH=/root/.local/share/mise/shims:/root/.cargo/bin:/root/.local/bin:$PATH
+ENV PATH=/root/.local/share/mise/shims:/root/.cargo/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl -fsSL https://mise.run | sh
 COPY mise.toml /root/.config/mise/config.toml
 RUN mise install
@@ -59,16 +61,5 @@ RUN git config --system user.name "Jimmy" \
     && git config --system advice.detachedHead false
 ENV GIT_TERMINAL_PROMPT=0
 
-COPY --from=builder /build/jimmy/target/release/jimmy /usr/local/bin/jimmy
-
 ENV XDG_CONFIG_HOME=/root/.config
-COPY deploy /usr/local/share/jimmy/deploy
-COPY prompts /usr/local/share/jimmy/prompts
-COPY skills /usr/local/share/jimmy/skills
-COPY --chmod=0755 bin/recall /usr/local/bin/recall
-COPY --chmod=0755 bin/browse /usr/local/bin/browse
-COPY --chmod=0755 bin/stats /usr/local/bin/stats
-COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
-WORKDIR /data
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["jimmy"]
+WORKDIR /work

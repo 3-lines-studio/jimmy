@@ -8,8 +8,10 @@ license = "MIT"
 axe = { git = "https://github.com/3-lines-studio/axe", rev = "fe67edec43da62263d1949519babe95c126961ab", default-features = false }
 heimdall = { git = "https://github.com/3-lines-studio/heimdall", rev = "d7d2b201aa091f022f94f6fd1653c19655738a71" }
 libc = "0.2"
+postgres = "0.19.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11.0"
 toml = "1.1.6"
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ureq = "2"

@@ -20,6 +20,7 @@ mod random;
 mod reap;
 mod schedule;
 mod skill;
+mod store;
 mod tools;
 mod transport;
 mod vault;
@@ -124,9 +125,10 @@ fn workspace_from_env() -> PathBuf {
 }
 
 /// Los nombres que jimmy atiende como orden y no como arranque del bot.
-const SUBCOMMANDS: [&str; 6] = [
+const SUBCOMMANDS: [&str; 7] = [
     "memo",
     "send",
+    "migrate",
     "conversations",
     "skill",
     "preview",
@@ -152,6 +154,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("migrate") {
+        std::process::exit(migrate_command());
     }
     if args.first().map(String::as_str) == Some("conversations") {
         std::process::exit(conversations_command(&args[1..]));
@@ -502,6 +507,31 @@ fn slack_bot_token() -> Result<String, String> {
 
 fn slack_app_token() -> Result<String, String> {
     env("SLACK_APP_TOKEN").ok_or("SLACK_APP_TOKEN no está configurado".into())
+}
+
+/// Aplica las migraciones que falten. Va a mano y no en el arranque: aplicar
+/// migraciones en el arranque es aplicarlas en producción.
+fn migrate_command() -> i32 {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        eprintln!("jimmy migrate: falta DATABASE_URL");
+        return 1;
+    };
+    match store::migrate(&url) {
+        Ok(applied) if applied.is_empty() => {
+            println!("jimmy: el esquema ya está al día");
+            0
+        }
+        Ok(applied) => {
+            for name in applied {
+                println!("jimmy: apliqué {name}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("jimmy migrate: {e}");
+            1
+        }
+    }
 }
 
 fn send_command(args: &[String]) -> i32 {

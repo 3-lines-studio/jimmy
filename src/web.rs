@@ -17,6 +17,8 @@ use crate::preview::{self, Previews};
 use crate::protocol::Event;
 use crate::schedule;
 use crate::transport::Null;
+use crate::vault;
+use heimdall::store::{self, NewToken, Store};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,6 +45,8 @@ const MARKDOWN: &str = include_str!("../web/markdown.js");
 const MACHINE: &str = include_str!("../web/machine.js");
 const TOOL: &str = include_str!("../web/tool.js");
 const AVATAR: &str = include_str!("../web/avatar.js");
+const VAULT_JS: &str = include_str!("../web/vault.js");
+const VAULT_CSS: &str = include_str!("../web/vault.css");
 const AVATAR_STYLE: &str = include_str!("../web/avatar.css");
 const ICON: &str = include_str!("../web/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
@@ -83,6 +87,11 @@ impl Web {
     /// El nombre para mostrar: la parte del mail antes del arroba.
     fn user(&self, request: &Request) -> Option<String> {
         Some(user_name(self.auth.user(&request.cookie(auth::COOKIE)?)?))
+    }
+
+    /// El mail del que entró, que es el actor del audit del vault.
+    fn actor(&self, request: &Request) -> Option<String> {
+        self.auth.user(&request.cookie(auth::COOKIE)?)
     }
 
     fn user_head(&self, head: &preview::Head) -> Option<String> {
@@ -172,6 +181,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/machine.js") => asset(stream, JS, MACHINE.as_bytes()),
         ("GET", "/tool.js") => asset(stream, JS, TOOL.as_bytes()),
         ("GET", "/avatar.js") => asset(stream, JS, AVATAR.as_bytes()),
+        ("GET", "/vault.js") => asset(stream, JS, VAULT_JS.as_bytes()),
+        ("GET", "/vault.css") => asset(stream, CSS, VAULT_CSS.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
         ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
@@ -202,6 +213,12 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/agenda/run") => agenda_run(web, &request, stream),
         ("POST", "/api/agenda/pause") => agenda_pause(web, &request, stream),
         ("POST", "/api/agenda/read") => agenda_read(web, &request, stream),
+        ("GET", "/api/vault") => vault_panel(web, &request, stream),
+        ("GET", "/api/vault/secrets") => vault_secrets(web, &request, stream),
+        ("POST", "/api/vault/set") => vault_set(web, &request, stream),
+        ("POST", "/api/vault/unset") => vault_unset(web, &request, stream),
+        ("POST", "/api/vault/environment") => vault_environment(web, &request, stream),
+        ("POST", "/api/vault/token") => vault_token(web, &request, stream),
         ("POST", "/api/rename-project") => rename_project(web, &request, stream),
         ("POST", "/api/duplicate-project") => duplicate_project(web, &request, stream),
         ("POST", "/api/delete-conversation") => delete_conversation(web, &request, stream),
@@ -298,9 +315,11 @@ fn versioned(page: &str) -> String {
         .replace("/markdown.js", &format!("/markdown.js?v={version}"))
         .replace("/tool.js", &format!("/tool.js?v={version}"))
         .replace("/avatar.js", &format!("/avatar.js?v={version}"))
+        .replace("/vault.js", &format!("/vault.js?v={version}"))
         .replace("/theme.css", &format!("/theme.css?v={version}"))
         .replace("/style.css", &format!("/style.css?v={version}"))
         .replace("/avatar.css", &format!("/avatar.css?v={version}"))
+        .replace("/vault.css", &format!("/vault.css?v={version}"))
         .replace("/icon.svg", &format!("/icon.svg?v={version}"))
         .replace("/icon-192.png", &format!("/icon-192.png?v={version}"))
         .replace(
@@ -952,6 +971,145 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
         Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "read": true })),
         Err(e) => http::send_error(stream, 400, &e),
     }
+}
+
+/// El vault no tiene login propio: entra el mismo mail que ya entró a jimmy, y
+/// ese mail es el actor del audit. Lo que el store rechaza es un 400, porque lo
+/// pidió mal el pedido.
+const AUDIT: usize = 200;
+
+fn vault_call<F>(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+    run: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(&Store, &str) -> store::Result<serde_json::Value>,
+{
+    let Some(actor) = web.actor(request) else {
+        return http::send_error(stream, 401, "no estás adentro");
+    };
+    let Some(server) = vault::server() else {
+        return http::send_error(stream, 503, vault::message());
+    };
+    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    match run(&store, &actor) {
+        Ok(body) => http::send_json(stream, 200, &body),
+        Err(e) => http::send_error(stream, 400, &vault::text(e)),
+    }
+}
+
+/// Con el vault caído el tab no tiene a dónde entrar, y el motivo es lo que hay
+/// que mostrar: por eso esta ruta contesta 200 y no un error.
+fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.actor(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(server) = vault::server() else {
+        let body = serde_json::json!({ "enabled": false, "error": vault::message() });
+        return http::send_json(stream, 200, &body);
+    };
+    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    match panel(&store) {
+        Ok(body) => http::send_json(stream, 200, &body),
+        Err(e) => http::send_error(stream, 400, &vault::text(e)),
+    }
+}
+
+fn panel(store: &Store) -> store::Result<serde_json::Value> {
+    let mut environments = Vec::new();
+    for name in store.names()? {
+        let Some((project, env)) = name.split_once('/') else {
+            continue;
+        };
+        environments.push(serde_json::json!({
+            "project": project,
+            "env": env,
+            "keys": store.secrets(project, env)?.len(),
+        }));
+    }
+    Ok(serde_json::json!({
+        "enabled": true,
+        "error": null,
+        "environments": environments,
+        "tokens": store.tokens()?,
+        "audit": store.audit_log(AUDIT)?,
+    }))
+}
+
+fn vault_secrets(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    vault_call(web, request, stream, |store, actor| {
+        let project = request.param("project").unwrap_or_default();
+        let env = request.param("env").unwrap_or_default();
+        let secrets = store.secrets(project, env)?;
+        store.audit(actor, "get-secrets", project, env, None)?;
+        Ok(serde_json::json!({ "secrets": secrets }))
+    })
+}
+
+fn vault_set(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    vault_call(web, request, stream, |store, actor| {
+        let project = request.field("project").unwrap_or_default();
+        let env = request.field("env").unwrap_or_default();
+        let name = request.field("name").unwrap_or_default();
+        let value = request.field("value").unwrap_or_default();
+        store.set(&project, &env, &name, &value, actor)?;
+        Ok(serde_json::json!({ "saved": name }))
+    })
+}
+
+fn vault_unset(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    vault_call(web, request, stream, |store, actor| {
+        let project = request.field("project").unwrap_or_default();
+        let env = request.field("env").unwrap_or_default();
+        let name = request.field("name").unwrap_or_default();
+        store.unset(&project, &env, &name, actor)?;
+        Ok(serde_json::json!({ "removed": name }))
+    })
+}
+
+fn vault_environment(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    vault_call(web, request, stream, |store, actor| {
+        let project = request.field("project").unwrap_or_default();
+        let env = request.field("env").unwrap_or_default();
+        match request.field("op").unwrap_or_default().as_str() {
+            "create" => store.create_environment(&project, &env, actor)?,
+            "drop" => store.drop_environment(&project, &env, actor)?,
+            other => return Err(store::Error::Bad(format!("no conozco la orden {other}"))),
+        }
+        Ok(serde_json::json!({ "project": project, "env": env }))
+    })
+}
+
+fn vault_token(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    vault_call(web, request, stream, |store, actor| {
+        match request.field("op").unwrap_or_default().as_str() {
+            "create" => {
+                let keys = request.list("keys");
+                let new = NewToken {
+                    name: request.field("name").unwrap_or_default(),
+                    project: request.field("project").unwrap_or_default(),
+                    env: request.field("env").unwrap_or_default(),
+                    keys: (!keys.is_empty()).then_some(keys),
+                    admin: request.flag("admin"),
+                    ttl: None,
+                };
+                let (token, plain) = store.create_token(new, actor)?;
+                Ok(serde_json::json!({ "token": token, "plain": plain }))
+            }
+            "revoke" => {
+                let id = request.field("id").unwrap_or_default();
+                store.revoke(&id, actor)?;
+                Ok(serde_json::json!({ "revoked": id }))
+            }
+            other => Err(store::Error::Bad(format!("no conozco la orden {other}"))),
+        }
+    })
 }
 
 /// Una conversación sin nombre se llama como su primer mensaje, que es lo que

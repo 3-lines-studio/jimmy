@@ -158,7 +158,7 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | first directory with Agent Skills; the builtin one comes after (see below) |
-| `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means the bot answers nobody |
+| `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means anyone |
 | `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
 | `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
 | `RESEND_API_KEY` | empty | Resend key that sends the link; without it, and without `JIMMY_WEB_DEV`, nobody gets in |
@@ -174,9 +174,8 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
 | `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
 
-Jimmy only answers the ids in `JIMMY_ALLOWED_USER_IDS`, and with the list empty
-it answers nobody. That is the wall between a stranger who finds the bot and a
-shell on the machine, so it is worth getting right. To find your own id, put any
+Set `JIMMY_ALLOWED_USER_IDS` before exposing the bot. Empty means any user who
+finds the bot gets shell access to the machine. To find your own id, put any
 placeholder in the list, send the bot a message and read the
 `jimmy: ignoré un mensaje de <id>` line it logs.
 

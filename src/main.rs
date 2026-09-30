@@ -12,29 +12,19 @@ mod markdown;
 mod media;
 mod memlog;
 mod memo;
-mod modelo;
 mod pool;
 mod preview;
 mod prompt;
 mod protocol;
 mod random;
 mod reap;
-#[allow(dead_code)]
-mod remote;
-mod sandbox;
 mod schedule;
-mod secrets;
 mod skill;
-mod store;
-#[allow(dead_code)]
-mod tensorlake;
 mod tools;
 mod transport;
-mod ulid;
 mod watch;
 mod web;
 mod worker;
-mod workspace;
 
 use agent::Agent;
 use std::path::{Path, PathBuf};
@@ -111,12 +101,10 @@ fn workspace_from_env() -> PathBuf {
 }
 
 /// Los nombres que jimmy atiende como orden y no como arranque del bot.
-const SUBCOMMANDS: [&str; 8] = [
+const SUBCOMMANDS: [&str; 6] = [
     "memo",
     "send",
     "conversations",
-    "projects",
-    "orgs",
     "skill",
     "preview",
     "worker",
@@ -141,12 +129,6 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("conversations") {
         std::process::exit(conversations_command(&args[1..]));
-    }
-    if args.first().map(String::as_str) == Some("projects") {
-        std::process::exit(projects_command(&args[1..]));
-    }
-    if args.first().map(String::as_str) == Some("orgs") {
-        std::process::exit(orgs_command(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("skill") {
         std::process::exit(skill_command(&args[1..]));
@@ -179,26 +161,13 @@ fn main() {
     axe::sentinel::seed(&config.api_key);
     if transport_name() != "none" && config.allowed.is_empty() {
         eprintln!(
-            "jimmy: atención: JIMMY_ALLOWED_USER_IDS está vacío, así que el bot no le contesta a nadie"
+            "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
         );
     }
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
         std::fs::create_dir_all(Path::new(&config.workspace).join(dir)).ok();
     }
-    let store = match store::Store::open(&config.root.join("jimmy.db")) {
-        Ok(store) => Arc::new(store),
-        Err(error) => {
-            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
-            std::process::exit(1);
-        }
-    };
-    if let Err(error) = store.marcar_la_org_de_la_instancia() {
-        eprintln!("jimmy: no pude marcar la máquina de la instancia: {error}");
-    }
-    // El modelo del otro lado: por acá pasan todos los pedidos, y acá queda
-    // anotado el consumo de cada org.
-    let modelo = modelo_from_env(Some(store.clone()));
-    let agent = match build_agent(&config, Some(store.clone()), modelo.clone()) {
+    let agent = match build_agent(&config) {
         Ok(agent) => agent,
         Err(e) => {
             eprintln!("jimmy: {e}");
@@ -221,13 +190,7 @@ fn main() {
     };
     let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
-    let agenda = schedule::spawn(
-        transport.clone(),
-        agent.clone(),
-        store,
-        config.root.clone(),
-        workspace.clone(),
-    );
+    let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
     serve_web(
         &config,
         agent.bus(),
@@ -276,7 +239,7 @@ fn main() {
             if event.is_bot {
                 continue;
             }
-            if !config.allowed.contains(&event.sender) {
+            if !config.allowed.is_empty() && !config.allowed.contains(&event.sender) {
                 eprintln!("jimmy: ignoré un mensaje de {}", event.sender);
                 continue;
             }
@@ -347,227 +310,10 @@ fn main() {
     }
 }
 
-/// Lo que hay en el volumen, en JSON: proyectos, conversaciones y lo que la
-/// lista necesita saber de cada uno. Es lo que el control plane copia a su base
-/// para poder mostrar la lista sin abrir el sandbox, y lo lee el mismo código
-/// que arma la lista de acá, así no hay dos layouts.
-fn index_json(root: &Path, workspace: &Path) -> Result<String, String> {
-    let proyectos: Vec<serde_json::Value> = conversations::projects(root, workspace)
-        .into_iter()
-        .map(|proyecto| {
-            let general = proyecto.name == conversations::GENERAL;
-            let conversaciones: Vec<serde_json::Value> = proyecto
-                .conversations
-                .iter()
-                .map(|conversacion| {
-                    serde_json::json!({
-                        "key": conversacion.key,
-                        "project": conversacion.project,
-                        "title": conversacion.title,
-                        "read_only": conversacion.read_only,
-                        "last": conversations::last_message(&conversacion.dir),
-                        "touched_at": conversacion
-                            .updated()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|desde| desde.as_secs())
-                            .unwrap_or(0),
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "name": proyecto.name,
-                "size": if general { 0 } else { conversations::size(&proyecto.path) },
-                "unversioned": crate::workspace::unversioned(&proyecto.path),
-                "conversations": conversaciones,
-            })
-        })
-        .collect();
-    serde_json::to_string(&serde_json::json!({ "projects": proyectos })).map_err(|e| e.to_string())
-}
-
-/// El plan de una org y su alta: el sandbox llega con el pago, y marcar el plan
-/// es lo que lo dispara. Para probarlo alcanza con este comando.
-fn orgs_command(args: &[String]) -> i32 {
-    let store = std::sync::Arc::new(
-        match store::Store::open(&root_from_env().join("jimmy.db")) {
-            Ok(store) => store,
-            Err(error) => {
-                eprintln!("jimmy orgs: no pude abrir la base: {error}");
-                return 1;
-            }
-        },
-    );
-    let (email, plan) = match (args.first(), args.get(1), args.get(2)) {
-        (Some(accion), Some(email), plan) if accion == "plan" => {
-            (email.clone(), plan.cloned().unwrap_or_default())
-        }
-        (Some(accion), Some(email), _) if accion == "alta" => (email.clone(), "paid".to_string()),
-        (Some(accion), Some(email), _) if accion == "uso" => (email.clone(), String::new()),
-        _ => return orgs_usage(),
-    };
-    let org = match store.org_of_email(&email) {
-        Ok(Some(org)) => org,
-        Ok(None) => {
-            eprintln!("jimmy orgs: no conozco a {email}");
-            return 2;
-        }
-        Err(error) => {
-            eprintln!("jimmy orgs: {error}");
-            return 1;
-        }
-    };
-    if let Some(accion) = args.first().map(String::as_str) {
-        if accion == "secret" || accion == "secrets" || accion == "unset" {
-            return orgs_secret(&store, &org, accion, args);
-        }
-    }
-    if args.first().map(String::as_str) == Some("uso") {
-        return match store.uso_de(&org.id, None) {
-            Ok(uso) => {
-                println!(
-                    "{} · {} llamadas · {} tokens ({} de ida, {} de vuelta, {} en caché)",
-                    org.name,
-                    uso.calls,
-                    uso.total(),
-                    uso.prompt,
-                    uso.completion,
-                    uso.cached
-                );
-                0
-            }
-            Err(error) => {
-                eprintln!("jimmy orgs: {error}");
-                1
-            }
-        };
-    }
-    let result = match args.first().map(String::as_str) {
-        Some("alta") => crate::remote::alta(&org.id, &store),
-        _ => {
-            let plan = (!plan.is_empty()).then_some(plan.as_str());
-            let alta = match plan {
-                Some(_) => crate::remote::alta(&org.id, &store),
-                None => Ok(()),
-            };
-            alta.and_then(|_| store.set_plan(&org.id, plan))
-        }
-    };
-    match result {
-        Ok(()) => {
-            println!("{} · plan {plan}", org.name);
-            0
-        }
-        Err(error) => {
-            eprintln!("jimmy orgs: {error}");
-            1
-        }
-    }
-}
-
-fn orgs_usage() -> i32 {
-    eprintln!(
-        "uso: jimmy orgs [plan <mail> <plan> | alta <mail> | uso <mail> | \
-         secrets <mail> | secret <mail> NOMBRE=VALOR | unset <mail> NOMBRE]"
-    );
-    2
-}
-
-/// Los secretos de una org: el control plane los guarda sellados y se los pasa
-/// a sus turnos. El valor no se imprime nunca.
-fn orgs_secret(
-    store: &std::sync::Arc<store::Store>,
-    org: &store::Org,
-    accion: &str,
-    args: &[String],
-) -> i32 {
-    let Some(secretos) = secrets::Secretos::from_env(store.clone()) else {
-        eprintln!("jimmy orgs: falta JIMMY_SECRETS_KEY, no puedo guardar secretos");
-        return 1;
-    };
-    let result = match accion {
-        "secrets" => match secretos.nombres(&org.id) {
-            Ok(nombres) => {
-                for nombre in nombres {
-                    println!("{nombre}");
-                }
-                return 0;
-            }
-            Err(error) => Err(error),
-        },
-        "unset" => match args.get(2) {
-            Some(nombre) => secretos.borrar(&org.id, nombre),
-            None => {
-                eprintln!("uso: jimmy orgs unset <mail> NOMBRE");
-                return 2;
-            }
-        },
-        _ => match args.get(2).and_then(|par| par.split_once('=')) {
-            Some((nombre, valor)) => secretos.set(&org.id, nombre, valor),
-            None => {
-                eprintln!("uso: jimmy orgs secret <mail> NOMBRE=VALOR");
-                return 2;
-            }
-        },
-    };
-    match result {
-        Ok(()) => {
-            println!("{} · listo", org.name);
-            0
-        }
-        Err(error) => {
-            eprintln!("jimmy orgs: {error}");
-            1
-        }
-    }
-}
-
-/// Los proyectos, para el que está adentro del sandbox: el control plane manda
-/// esto por el CLI en vez de armar los caminos y el layout por su cuenta, así lo
-/// que se crea, se renombra o se borra sale del mismo código de los dos lados.
-fn projects_command(args: &[String]) -> i32 {
-    use crate::workspace::Workspace;
-    let espacio = workspace::Local::new(root_from_env(), workspace_from_env());
-    let result = match args.first().map(String::as_str) {
-        Some("new") => match args.get(1) {
-            Some(name) => espacio.create_project(name),
-            None => return projects_usage(),
-        },
-        Some("rename") => match (args.get(1), args.get(2)) {
-            (Some(from), Some(to)) => espacio.rename_project(from, to),
-            _ => return projects_usage(),
-        },
-        Some("duplicate") => match (args.get(1), args.get(2)) {
-            (Some(from), Some(to)) => espacio.duplicate_project(from, to),
-            _ => return projects_usage(),
-        },
-        Some("delete") => match args.get(1) {
-            Some(name) => espacio.delete_project(name, args.iter().any(|arg| arg == "--force")),
-            None => return projects_usage(),
-        },
-        _ => return projects_usage(),
-    };
-    match result {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("jimmy projects: {e}");
-            2
-        }
-    }
-}
-
-fn projects_usage() -> i32 {
-    eprintln!(
-        "uso: jimmy projects [new <nombre> | rename <viejo> <nuevo> | duplicate <viejo> <nuevo> \
-         | delete <nombre> [--force]]"
-    );
-    2
-}
-
 fn conversations_command(args: &[String]) -> i32 {
     let root = root_from_env();
     let workspace = workspace_from_env();
     let result = match args.first().map(String::as_str) {
-        Some("--json") => index_json(&root, &workspace).map(|texto| println!("{texto}")),
         Some("new") => match args.get(1) {
             Some(project) => {
                 let title = args
@@ -610,25 +356,8 @@ fn conversations_command(args: &[String]) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!(
-        "uso: jimmy conversations [--json | new <proyecto> [título] | rename <clave> <título>]"
-    );
+    eprintln!("uso: jimmy conversations [new <proyecto> [título] | rename <clave> <título>]");
     2
-}
-
-/// El modelo del otro lado: el control plane les pone la clave a los sandboxes,
-/// así no viaja hasta allá. Sin URL pública —el sandbox tiene que poder llegar—
-/// o sin clave no hay proxy, y el que corre adentro usa la clave como antes.
-fn modelo_from_env(store: Option<Arc<store::Store>>) -> Option<Arc<modelo::Modelo>> {
-    let base = env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into());
-    let key = env("OPENAI_API_KEY")?;
-    let publico = env("JIMMY_WEB_URL");
-    let local = env("JIMMY_WEB_PORT").map(|port| format!("http://127.0.0.1:{port}/modelo"));
-    let modelo = modelo::Modelo::new(base, key, publico, local);
-    if let Some(store) = store {
-        modelo.set_store(store);
-    }
-    Some(Arc::new(modelo))
 }
 
 /// The web frontend is opt-in: without a port to listen on, jimmy is what it
@@ -637,25 +366,17 @@ fn serve_web(
     config: &Config,
     bus: Arc<bus::Bus>,
     agent: Agent,
-    agenda: Sender<()>,
+    agenda: Sender<String>,
     previews: Arc<preview::Previews>,
 ) {
     let Some(port) = env("JIMMY_WEB_PORT").and_then(|port| port.parse::<u16>().ok()) else {
         return;
     };
-    let store = match store::Store::open(&config.root.join("jimmy.db")) {
-        Ok(store) => Arc::new(store),
-        Err(error) => {
-            eprintln!("jimmy: no pude abrir la base del control plane: {error}");
-            return;
-        }
-    };
     let auth = auth::Auth::new(
-        store,
         &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
+        &config.root,
         mail::Mail::from_env(),
         env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
-        &env("JIMMY_ADMINS").unwrap_or_default(),
     );
     if auth.allowed().is_empty() {
         eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");
@@ -664,9 +385,6 @@ fn serve_web(
             "jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM nadie puede entrar; \
              JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
         );
-    }
-    if auth.dev {
-        eprintln!("jimmy: JIMMY_WEB_DEV=1: el link de entrada sale en la respuesta");
     }
     let web = web::Web::new(
         config.root.clone(),
@@ -689,15 +407,11 @@ fn serve_web(
     std::thread::spawn(move || preview::listen(previews));
 }
 
-fn build_agent(
-    config: &Config,
-    store: Option<Arc<store::Store>>,
-    modelo: Option<Arc<modelo::Modelo>>,
-) -> Result<Agent, String> {
+fn build_agent(config: &Config) -> Result<Agent, String> {
     let mut vars = prompt::parse_vars(&config.vars);
     vars.push(("skills".into(), skill::index(&skills_dirs())));
     let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
-    let mut agent = Agent::new(
+    Ok(Agent::new(
         config.base.clone(),
         config.model.clone(),
         config.api_key.clone(),
@@ -705,17 +419,7 @@ fn build_agent(
         config.root.clone(),
         config.workspace.clone(),
         fragments,
-    );
-    if let Some(store) = &store {
-        agent.set_store(store.clone());
-        if let Some(secretos) = secrets::Secretos::from_env(store.clone()) {
-            agent.set_secretos(std::sync::Arc::new(secretos));
-        }
-    }
-    if let Some(modelo) = modelo {
-        agent.set_modelo(modelo);
-    }
-    Ok(agent)
+    ))
 }
 
 pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
@@ -910,6 +614,7 @@ fn memo_command(args: &[String]) -> i32 {
     let workspace = workspace_from_env();
     let result = match args.first().map(String::as_str) {
         Some("sync") => memo::sync(&workspace),
+        Some("migrate") => memo::migrate(&workspace),
         Some("list") => Ok(memo::list(&workspace)),
         Some("render") => Ok(memo::render(
             &workspace,
@@ -930,7 +635,7 @@ fn memo_command(args: &[String]) -> i32 {
             key => memo::show(&workspace, key),
         },
         _ => Err(
-            "uso: jimmy memo <sync|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
+            "uso: jimmy memo <sync|migrate|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
                 .into(),
         ),
     };
@@ -1141,45 +846,6 @@ fn clamp(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// El índice que lee el control plane desde el sandbox sale con lo que la
-    /// lista necesita, y lo arma el mismo código que la arma acá.
-    #[test]
-    fn el_indice_de_la_org_sale_con_lo_que_la_lista_necesita() {
-        let base = std::env::temp_dir().join(format!("jimmy-indice-{}", crate::random::hex(4)));
-        let root = base.join("root");
-        let workspace = base.join("workspace");
-        std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
-        std::fs::write(workspace.join("projects/ken/nota.md"), "hola").unwrap();
-        std::fs::create_dir_all(root.join("chats/web-1")).unwrap();
-        std::fs::write(
-            root.join("chats/web-1/meta.json"),
-            r#"{"project":"ken","title":"una charla"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("chats/web-1/transcript.jsonl"),
-            "{\"type\":\"message\",\"message\":{\"Role\":\"assistant\",\"Content\":\"listo\"}}\n",
-        )
-        .unwrap();
-
-        let json: serde_json::Value =
-            serde_json::from_str(&index_json(&root, &workspace).unwrap()).unwrap();
-        let proyectos = json["projects"].as_array().unwrap();
-        assert_eq!(proyectos.len(), 2, "general y ken: {proyectos:?}");
-        assert_eq!(proyectos[0]["name"], "general");
-        let ken = proyectos.iter().find(|p| p["name"] == "ken").unwrap();
-        assert_eq!(ken["unversioned"], true);
-        assert!(ken["size"].as_u64().unwrap() > 0);
-        let charla = &ken["conversations"][0];
-        assert_eq!(charla["key"], "web-1");
-        assert_eq!(charla["project"], "ken");
-        assert_eq!(charla["title"], "una charla");
-        assert_eq!(charla["read_only"], false);
-        assert_eq!(charla["last"], "listo");
-        assert!(charla["touched_at"].as_u64().unwrap() > 0);
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
     #[test]
     fn an_unknown_command_never_starts_the_bot() {

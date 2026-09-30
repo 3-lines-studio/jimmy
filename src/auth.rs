@@ -1,15 +1,15 @@
 //! Quién puede entrar: una lista de mails en el entorno, y un link que se manda
 //! una sola vez.
 //!
-//! No hay contraseñas: el mail autorizado es la identidad. Los usuarios y las
-//! sesiones viven en la base del control plane, así un redeploy no echa a nadie
-//! y una sesión vale en cualquier instancia.
+//! No hay contraseñas: el mail autorizado es la identidad. La sesión sí queda
+//! en disco, así un redeploy no echa a nadie.
 
 use crate::mail::Mail;
 use crate::random;
-use crate::store::Store;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const COOKIE: &str = "jimmy_session";
@@ -32,57 +32,27 @@ struct Link {
 
 pub struct Auth {
     allowed: Vec<String>,
-    /// Quiénes pueden tocar el plan de una org. Es de la instancia, no de la
-    /// org: mover el plan es lo que después va a hacer el pago, y hasta que
-    /// exista lo hace el dueño de la casa.
-    admins: Vec<String>,
     links: Mutex<HashMap<String, Link>>,
-    store: Arc<Store>,
+    sessions: Sessions,
     pub mail: Option<Mail>,
     pub dev: bool,
 }
 
 impl Auth {
-    /// `allowed` es la lista de mails autorizados, separados por coma. La base
-    /// del control plane la abre quien arma todo esto, que es el que sabe dónde
-    /// vive.
-    pub fn new(
-        store: Arc<Store>,
-        allowed: &str,
-        mail: Option<Mail>,
-        dev: bool,
-        admins: &str,
-    ) -> Auth {
-        let mails = |lista: &str| -> Vec<String> {
-            lista
-                .split(',')
-                .map(|email| email.trim().to_lowercase())
-                .filter(|email| !email.is_empty())
-                .collect()
-        };
+    /// `allowed` es la lista de mails autorizados, separados por coma.
+    pub fn new(allowed: &str, root: &Path, mail: Option<Mail>, dev: bool) -> Auth {
+        let allowed = allowed
+            .split(',')
+            .map(|email| email.trim().to_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect();
         Auth {
-            allowed: mails(allowed),
-            admins: mails(admins),
+            allowed,
             links: Mutex::new(HashMap::new()),
-            store,
+            sessions: Sessions::load(root),
             mail,
             dev,
         }
-    }
-
-    /// Si este mail puede tocar el plan de una org.
-    pub fn is_admin(&self, email: &str) -> bool {
-        self.admins.contains(&email.trim().to_lowercase())
-    }
-
-    /// Quién es el dueño de la sesión, con su id, si sigue viva.
-    pub fn session_user(&self, token: &str) -> Option<crate::store::User> {
-        self.store.session_user(token).ok().flatten()
-    }
-
-    /// El control plane, para lo que no es entrar: orgs, conversaciones, agenda.
-    pub fn store(&self) -> &Arc<Store> {
-        &self.store
     }
 
     pub fn allowed(&self) -> &[String] {
@@ -130,55 +100,115 @@ impl Auth {
         (link.expires > Instant::now()).then_some(link.email)
     }
 
-    /// La sesión del que entra: la primera vez de ese mail también le crea el
-    /// usuario y su org personal.
-    pub fn open_session(&self, email: &str) -> Option<String> {
-        let (user, _) = self.store.register(email).ok()?;
-        let token = random::hex(32);
-        let expires = (now() + SESSION_TTL) as i64;
-        self.store.open_session(&token, &user.id, expires).ok()?;
-        Some(token)
+    pub fn open_session(&self, email: &str) -> String {
+        self.sessions.open(email)
     }
 
     pub fn user(&self, token: &str) -> Option<String> {
-        self.store
-            .session_user(token)
-            .ok()
-            .flatten()
-            .map(|user| user.email)
+        self.sessions.user(token)
     }
 
     pub fn close_session(&self, token: &str) {
-        let _ = self.store.close_session(token);
-        let _ = self.store.forget_expired_sessions();
+        self.sessions.close(token);
     }
 }
 
-/// Un auth sobre una base temporal, que es de lo único que depende.
-#[cfg(test)]
-fn test_auth(root: &std::path::Path, emails: &str) -> Auth {
-    Auth::new(
-        Arc::new(Store::open(&root.join("jimmy.db")).unwrap()),
-        emails,
-        None,
-        true,
-        "",
-    )
+#[derive(Clone, Serialize, Deserialize)]
+struct Session {
+    email: String,
+    expires: u64,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct Tokens(HashMap<String, Session>);
+
+struct Sessions {
+    path: PathBuf,
+    tokens: Mutex<HashMap<String, Session>>,
+}
+
+impl Sessions {
+    fn load(root: &Path) -> Sessions {
+        let path = root.join("sessions.json");
+        let tokens = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Tokens>(&text).ok())
+            .map(|tokens| tokens.0)
+            .unwrap_or_default();
+        let tokens = live(tokens);
+        Sessions {
+            path,
+            tokens: Mutex::new(tokens),
+        }
+    }
+
+    fn open(&self, email: &str) -> String {
+        let token = random::hex(32);
+        let session = Session {
+            email: email.to_string(),
+            expires: now() + SESSION_TTL,
+        };
+        let mut tokens = self.tokens.lock().unwrap();
+        *tokens = live(std::mem::take(&mut *tokens));
+        tokens.insert(token.clone(), session);
+        self.save(&tokens);
+        token
+    }
+
+    fn close(&self, token: &str) {
+        let mut tokens = self.tokens.lock().unwrap();
+        tokens.remove(token);
+        self.save(&tokens);
+    }
+
+    fn user(&self, token: &str) -> Option<String> {
+        let tokens = self.tokens.lock().unwrap();
+        let session = tokens.get(token)?;
+        (session.expires > now()).then(|| session.email.clone())
+    }
+
+    fn save(&self, tokens: &HashMap<String, Session>) {
+        let text = serde_json::to_string_pretty(&Tokens(tokens.clone())).unwrap_or_default();
+        let _ = axe::atomic_write(&self.path, text.as_bytes());
+    }
+}
+
+fn live(tokens: HashMap<String, Session>) -> HashMap<String, Session> {
+    let now = now();
+    tokens
+        .into_iter()
+        .filter(|(_, session)| session.expires > now)
+        .collect()
 }
 
 #[test]
-fn una_sesion_vencida_no_deja_entrar_a_nadie() {
+fn a_session_that_expired_does_not_let_anyone_in() {
     let root = std::env::temp_dir().join(format!("jimmy-auth-{}-expired", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let auth = test_auth(&root, "bob@ejemplo.com");
-    let (user, _) = auth.store().register("bob@ejemplo.com").unwrap();
-    auth.store()
-        .open_session("vieja", &user.id, (now() - 1) as i64)
-        .unwrap();
-    assert!(auth.user("vieja").is_none(), "la vieja ya venció");
+    std::fs::create_dir_all(&root).unwrap();
+    let expires = now();
+    let old = expires.saturating_sub(1);
+    let fresh = expires + 60;
+    std::fs::write(
+        root.join("sessions.json"),
+        format!(
+            r#"{{"vieja":{{"email":"bob@ejemplo.com","expires":{old}}},
+                 "nueva":{{"email":"bob@ejemplo.com","expires":{fresh}}}}}"#
+        ),
+    )
+    .unwrap();
 
-    let nueva = auth.open_session("bob@ejemplo.com").unwrap();
-    assert_eq!(auth.user(&nueva).as_deref(), Some("bob@ejemplo.com"));
+    let auth = Auth::new("bob@ejemplo.com", &root, None, false);
+    assert!(auth.user("vieja").is_none(), "la vieja ya venció");
+    assert_eq!(auth.user("nueva").as_deref(), Some("bob@ejemplo.com"));
+
+    let opened = auth.open_session("bob@ejemplo.com");
+    assert!(auth.user(&opened).is_some());
+    let saved = std::fs::read_to_string(root.join("sessions.json")).unwrap();
+    assert!(
+        !saved.contains("vieja"),
+        "al abrir una sesión se limpian las vencidas"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -186,10 +216,11 @@ fn una_sesion_vencida_no_deja_entrar_a_nadie() {
 mod tests {
     use super::*;
 
-    fn auth(tag: &str, emails: &str) -> (Auth, std::path::PathBuf) {
+    fn auth(tag: &str, emails: &str) -> (Auth, PathBuf) {
         let root = std::env::temp_dir().join(format!("jimmy-auth-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let auth = test_auth(&root, emails);
+        std::fs::create_dir_all(&root).unwrap();
+        let auth = Auth::new(emails, &root, None, true);
         (auth, root)
     }
 
@@ -215,14 +246,10 @@ mod tests {
         );
         assert_eq!(auth.consume_link(&token), None, "no sirve dos veces");
 
-        let session = auth.open_session("bob@ejemplo.com").unwrap();
+        let session = auth.open_session("bob@ejemplo.com");
         assert_eq!(auth.user(&session).as_deref(), Some("bob@ejemplo.com"));
-        let reopened = test_auth(&root, "bob@ejemplo.com");
-        assert_eq!(
-            reopened.user(&session).as_deref(),
-            Some("bob@ejemplo.com"),
-            "la sesión vive en la base, no en memoria"
-        );
+        let reloaded = Sessions::load(&root);
+        assert_eq!(reloaded.user(&session).as_deref(), Some("bob@ejemplo.com"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -234,16 +261,6 @@ mod tests {
             auth.request_link("bob@ejemplo.com").is_none(),
             "muy seguido"
         );
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn cerrar_la_sesion_la_deja_afuera() {
-        let (auth, root) = auth("close", "bob@ejemplo.com");
-        let session = auth.open_session("bob@ejemplo.com").unwrap();
-        assert!(auth.user(&session).is_some());
-        auth.close_session(&session);
-        assert!(auth.user(&session).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -4,9 +4,15 @@ use std::io::Read;
 
 pub fn bytes(count: usize) -> Vec<u8> {
     let mut buf = vec![0u8; count];
-    let mut file = std::fs::File::open("/dev/urandom").expect("no pude abrir /dev/urandom");
-    file.read_exact(&mut buf)
-        .expect("no pude leer /dev/urandom");
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut buf))
+        .is_err()
+    {
+        let seed = std::process::id().to_le_bytes();
+        for (index, byte) in buf.iter_mut().enumerate() {
+            *byte = seed[index % seed.len()];
+        }
+    }
     buf
 }
 

@@ -183,7 +183,7 @@ pub fn sse_ping(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.flush()
 }
 
-pub fn reason(status: u16) -> &'static str {
+fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         303 => "See Other",

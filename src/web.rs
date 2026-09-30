@@ -1330,7 +1330,7 @@ done
         let modelo = Arc::new(crate::modelo::Modelo::new(
             format!("http://127.0.0.1:{proveedor}"),
             "la-clave-de-verdad".into(),
-            "http://127.0.0.1".into(),
+            Some("http://127.0.0.1".into()),
             None,
         ));
         let server = start_con_modelo("modelo", modelo.clone());

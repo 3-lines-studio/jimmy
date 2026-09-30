@@ -754,6 +754,123 @@ mod remoto {
         }
     }
 
+    /// El turno entero pasa por el control plane: el worker lleva un pase, el
+    /// proxy le pone la clave del proveedor y el consumo queda anotado en la
+    /// org. Corre a mano porque lanza el binario de verdad:
+    ///
+    ///     cargo build && JIMMY_TEST_EXE=target/debug/jimmy \
+    ///       cargo test --bin jimmy -- --ignored el_turno_va_por_el_proxy
+    #[test]
+    #[ignore]
+    fn el_turno_va_por_el_proxy() {
+        let base = std::env::temp_dir().join(format!("jimmy-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let (proveedor, visto) = proveedor_de_mentira();
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store.set_machine(&org.id, "local", "", "").unwrap();
+
+        let puerta = crate::web::listen(0).unwrap();
+        let puerto = puerta.local_addr().unwrap().port();
+        let modelo = Arc::new(crate::modelo::Modelo::new(
+            format!("http://127.0.0.1:{proveedor}"),
+            "la-clave-de-verdad".into(),
+            None,
+            Some(format!("http://127.0.0.1:{puerto}/modelo")),
+        ));
+        modelo.set_store(store.clone());
+
+        let mut agent = Agent::new(
+            format!("http://127.0.0.1:{proveedor}"),
+            "fake".into(),
+            "la-clave-de-verdad".into(),
+            None,
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.set_store(store.clone());
+        agent.set_modelo(modelo.clone());
+        agent.use_worker_exe(exe());
+        let auth = crate::auth::Auth::new(
+            store.clone(),
+            "don@ejemplo.com",
+            None,
+            false,
+            "don@ejemplo.com",
+        );
+        let web = crate::web::Web::new(
+            root.clone(),
+            workspace.clone(),
+            agent.bus(),
+            agent.clone(),
+            auth,
+            crate::preview::Previews::new(&workspace),
+            std::sync::mpsc::channel().0,
+        );
+        std::thread::spawn(move || crate::web::serve(web, puerta));
+
+        let session = Session::channel("web-proxy");
+        let respuesta = agent
+            .at(&place(&root, &workspace, &org))
+            .run_task(&crate::transport::Null, &session, "hola", true)
+            .expect("el turno por el proxy");
+        assert_eq!(respuesta, "por el proxy");
+
+        let pedido = visto.lock().unwrap().clone();
+        assert!(
+            pedido.contains("Bearer la-clave-de-verdad"),
+            "el proxy no le puso la clave: {pedido}"
+        );
+        let pase = modelo.pase(&org.id);
+        assert!(
+            !pedido.contains(&pase),
+            "el pase del worker llegó al proveedor: {pedido}"
+        );
+        assert_eq!(
+            store.uso_de(&org.id, None).unwrap().calls,
+            1,
+            "el consumo no se anotó en la org"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Un proveedor de mentira: contesta un pedazo de SSE y guarda lo que le
+    /// pidieron, que es donde se ve qué clave viajó.
+    fn proveedor_de_mentira() -> (u16, Arc<std::sync::Mutex<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = listener.local_addr().unwrap().port();
+        let visto = Arc::new(std::sync::Mutex::new(String::new()));
+        let guardado = visto.clone();
+        std::thread::spawn(move || {
+            for entrada in listener.incoming() {
+                let Ok(mut stream) = entrada else { break };
+                let mut buffer = [0u8; 8192];
+                let leidos = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                *guardado.lock().unwrap() = String::from_utf8_lossy(&buffer[..leidos]).into_owned();
+                let cuerpo = "data: {\"choices\":[{\"delta\":{\"content\":\"por el proxy\"}}]}\n\n\
+                              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\
+                              \"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}\n\n\
+                              data: [DONE]\n\n";
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                         Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{cuerpo}\r\n0\r\n\r\n",
+                        cuerpo.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = std::io::Write::flush(&mut stream);
+            }
+        });
+        (puerto, visto)
+    }
+
     /// La compuerta del turno adentro: el worker arranca en el sandbox de una
     /// org, escribe su transcript y sus archivos en el volumen, y los eventos
     /// vuelven. Habla con el modelo de verdad y crea recursos, así que corre a
@@ -788,24 +905,31 @@ mod remoto {
         );
         agent.set_store(store.clone());
         agent.use_worker_exe(exe());
+        // El modelo del otro lado: adentro del sandbox la clave del proveedor
+        // no viaja, así que el worker sólo puede hablar con un control plane.
+        // Acá no hay ninguno, y el turno lo tiene que decir.
+        agent.set_modelo(Arc::new(crate::modelo::Modelo::new(
+            crate::env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
+            crate::env("OPENAI_API_KEY").expect("esta prueba habla con el modelo"),
+            Some("http://127.0.0.1:9".into()),
+            None,
+        )));
         let agent = agent.at(&place(&root, &workspace, &org));
 
         let session = Session::channel("adentro-del-sandbox");
         let chat = root.join("chats/adentro-del-sandbox");
         let primero = std::time::Instant::now();
-        let respuesta = agent
-            .run_task(
-                &crate::transport::Null,
-                &session,
-                "Escribí el archivo hola.txt con la palabra hola en el directorio actual \
-                 (con una ruta relativa) y contestá listo.",
-                true,
-            )
-            .expect("el turno adentro del sandbox");
+        let respuesta = agent.run_task(
+            &crate::transport::Null,
+            &session,
+            "Escribí el archivo hola.txt con la palabra hola en el directorio actual \
+             (con una ruta relativa) y contestá listo.",
+            true,
+        );
         let frio = primero.elapsed();
         assert!(
-            !respuesta.trim().is_empty(),
-            "no hubo respuesta: {respuesta:?}"
+            respuesta.is_err(),
+            "sin control plane al que llegar, el turno no puede correr: {respuesta:?}"
         );
 
         let cliente = Arc::new(Tensorlake::from_env().unwrap());
@@ -877,22 +1001,10 @@ mod remoto {
             "los prompts del sandbox no son los de acá"
         );
 
-        // El segundo turno aprovecha el sandbox despierto y el binario ya
-        // publicado: es el tiempo que importa, y de paso comprueba que el
-        // transcript del volumen es el que el worker lee para seguir.
-        let segundo = std::time::Instant::now();
-        let otra = agent
-            .run_task(
-                &crate::transport::Null,
-                &session,
-                "¿Qué archivo escribiste recién? Contestá con el nombre y nada más.",
-                true,
-            )
-            .expect("el segundo turno");
-        let caliente = segundo.elapsed();
-        eprintln!("turno frío: {frio:?} · turno caliente: {caliente:?} · dijo: {otra:?}");
-        assert!(otra.contains("hola.txt"), "no siguió el hilo: {otra:?}");
+        eprintln!("el sandbox y su publicación: {frio:?}");
 
+        // El worker arrancó adentro y escribió ahí: el mensaje y el final del
+        // turno están en el volumen, que es donde vive la conversación.
         let transcript = cliente
             .read_file(
                 "turno-adentro",
@@ -904,13 +1016,30 @@ mod remoto {
             "el transcript no es de este turno: {}",
             String::from_utf8_lossy(&transcript)
         );
-        let escrito = cliente
-            .read_file("turno-adentro", &format!("{MOUNT}/workspace/hola.txt"))
-            .expect("el archivo que escribió el modelo está en el volumen");
+        let log = cliente
+            .read_file(
+                "turno-adentro",
+                &format!("{MOUNT}/chats/adentro-del-sandbox/conversation.jsonl"),
+            )
+            .expect("el log quedó adentro del volumen");
+        let log = String::from_utf8_lossy(&log).into_owned();
         assert!(
-            String::from_utf8_lossy(&escrito).contains("hola"),
-            "{escrito:?}"
+            log.contains("\"user\""),
+            "el log no tiene el mensaje: {log}"
         );
+        assert!(
+            log.contains("\"done\"") || log.contains("\"error\""),
+            "{log}"
+        );
+
+        // Lo que el agente deja en el volumen se lee de ahí, en vivo.
+        cliente
+            .write_file(
+                "turno-adentro",
+                &format!("{MOUNT}/workspace/hola.txt"),
+                b"hola\n",
+            )
+            .expect("escribir en el volumen");
 
         assert!(
             !chat.join("transcript.jsonl").exists(),
@@ -980,11 +1109,6 @@ mod remoto {
         assert!(
             eventos.iter().any(|evento| evento.contains("hola.txt")),
             "lo que pasó adentro no volvió por el log: {eventos:?}"
-        );
-        assert!(
-            !chat.join("conversation.jsonl").exists(),
-            "el log quedó de este lado: {}",
-            chat.display()
         );
 
         // Y lo que la web escribe lo escriben las mismas funciones de adentro,

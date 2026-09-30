@@ -256,45 +256,51 @@ impl Agent {
     /// Con qué se reconstruye el worker: la config del agente más el lugar
     /// donde le toca correr. Si el turno va a un sandbox, ese lugar es su
     /// volumen, y los paths son los de adentro.
-    fn worker_env(&self, en_sandbox: bool) -> Vec<(String, String)> {
-        let mut env = match en_sandbox {
-            true => worker_env(
-                &self.base,
-                &self.model,
-                &self.api_key,
-                self.context_window,
-                Path::new(MOUNT),
-                &format!("{MOUNT}/workspace"),
-            ),
-            false => worker_env(
-                &self.base,
-                &self.model,
-                &self.api_key,
-                self.context_window,
-                &self.root,
-                &self.workspace,
-            ),
+    /// El entorno del turno. La clave del proveedor no sale del control plane:
+    /// adentro del sandbox no hay proxy que valga si no, así que sin proxy el
+    /// turno no corre. Acá, en el mismo proceso, también pasa por el proxy
+    /// cuando hay uno, para que el consumo se anote en un solo lugar.
+    fn worker_env(&self, en_sandbox: bool) -> Result<Vec<(String, String)>, String> {
+        let (root, workspace) = match en_sandbox {
+            true => (PathBuf::from(MOUNT), format!("{MOUNT}/workspace")),
+            false => (self.root.clone(), self.workspace.clone()),
         };
+        let mut env = worker_env(
+            &self.base,
+            &self.model,
+            &self.api_key,
+            self.context_window,
+            &root,
+            &workspace,
+        );
         let Some(modelo) = &self.modelo else {
-            return env;
+            if en_sandbox {
+                return Err(
+                    "no hay proxy del modelo: adentro del sandbox la clave no viaja".into(),
+                );
+            }
+            return Ok(env);
         };
         let destino = match en_sandbox {
-            true => Some(modelo.url()),
-            false => modelo.url_local(),
+            true => modelo
+                .url()
+                .ok_or("falta JIMMY_WEB_URL: el sandbox no tiene cómo llegar al control plane")?,
+            false => match modelo.url_local() {
+                Some(destino) => destino,
+                None => return Ok(env),
+            },
         };
-        let (Some(destino), Some(org)) = (destino, &self.org) else {
-            return env;
+        let Some(org) = &self.org else {
+            return Err("ese turno no sabe de qué org es, y el modelo es de la org".into());
         };
-        // El modelo es el control plane: adentro del sandbox porque la clave no
-        // viaja, y acá adentro para que todo el consumo pase por un solo lugar.
-        // El pase sólo sirve para pedirle turnos a esa org.
+        // El pase sólo sirve para pedirle turnos al modelo de esa org.
         for (nombre, valor) in [("AXE_BASE", destino), ("OPENAI_API_KEY", modelo.pase(org))] {
             match env.iter_mut().find(|(otro, _)| *otro == nombre) {
                 Some(par) => par.1 = valor,
                 None => env.push((nombre.to_string(), valor)),
             }
         }
-        env
+        Ok(env)
     }
 
     /// Hand the turn to this conversation's worker and relay what it answers.
@@ -383,7 +389,15 @@ impl Agent {
                 return Err(error);
             }
         };
-        let env = self.worker_env(sandbox.is_some());
+        let env = match self.worker_env(sandbox.is_some()) {
+            Ok(env) => env,
+            Err(error) => {
+                let message = format!("⚠️ {error}");
+                transport.fail(session, live.take(), &message);
+                self.bus.show(&conversation.key, &Event::Error { message });
+                return Err(error);
+            }
+        };
         let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
         let turn = self.pool.turn(
             session,
@@ -519,7 +533,7 @@ impl Agent {
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
         let sandbox = self.wake()?;
-        let env = self.worker_env(sandbox.is_some());
+        let env = self.worker_env(sandbox.is_some())?;
         let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
         let status = if silent {
             None
@@ -1261,7 +1275,7 @@ mod tests {
         let modelo = Arc::new(crate::modelo::Modelo::new(
             "https://api.deepseek.com".into(),
             "la-clave".into(),
-            "https://jimmy.ejemplo".into(),
+            Some("https://jimmy.ejemplo".into()),
             Some("http://127.0.0.1:9/modelo".into()),
         ));
         let mut agent = agente(Some("org-1"));
@@ -1269,12 +1283,12 @@ mod tests {
         let pase = modelo.pase("org-1");
 
         let adentro: std::collections::HashMap<String, String> =
-            agent.worker_env(true).into_iter().collect();
+            agent.worker_env(true).unwrap().into_iter().collect();
         assert_eq!(adentro["AXE_BASE"], "https://jimmy.ejemplo/modelo");
         assert_eq!(adentro["OPENAI_API_KEY"], pase);
 
         let aca: std::collections::HashMap<String, String> =
-            agent.worker_env(false).into_iter().collect();
+            agent.worker_env(false).unwrap().into_iter().collect();
         assert_eq!(aca["AXE_BASE"], "http://127.0.0.1:9/modelo");
         assert_eq!(aca["OPENAI_API_KEY"], pase);
         for entorno in [&adentro, &aca] {
@@ -1284,13 +1298,22 @@ mod tests {
             );
         }
 
-        // Sin org no hay a quién anotarle el consumo: se va derecho al proveedor.
+        // Sin org no hay a quién anotarle el consumo, y el modelo es de una
+        // org: ese turno no corre.
         let mut sin_org = agente(None);
         sin_org.set_modelo(modelo.clone());
-        let suelto: std::collections::HashMap<String, String> =
-            sin_org.worker_env(false).into_iter().collect();
-        assert_eq!(suelto["AXE_BASE"], "https://api.deepseek.com");
-        assert_eq!(suelto["OPENAI_API_KEY"], "la-clave");
+        assert!(sin_org.worker_env(false).is_err());
+
+        // Y sin proxy no hay turno adentro del sandbox: la clave no viaja.
+        let sin_proxy = agente(Some("org-1"));
+        let error = sin_proxy.worker_env(true).unwrap_err();
+        assert!(error.contains("no hay proxy"), "{error}");
+        let aca = sin_proxy.worker_env(false).unwrap();
+        let aca: std::collections::HashMap<String, String> = aca.into_iter().collect();
+        assert_eq!(
+            aca["OPENAI_API_KEY"], "la-clave",
+            "acá no salió del proceso"
+        );
     }
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {

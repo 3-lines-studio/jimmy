@@ -17,8 +17,9 @@ pub struct Modelo {
     /// La clave del proveedor: no sale de acá.
     key: String,
     /// Cómo se llega a este control plane desde afuera: es lo que el sandbox
-    /// llama.
-    publico: String,
+    /// llama. Sin esto ningún sandbox puede hablar con el modelo, porque la
+    /// clave del proveedor no viaja.
+    publico: Option<String>,
     /// El puerto del control plane acá adentro, para los turnos que corren en
     /// este mismo proceso: le piden el modelo a la misma puerta, así todo el
     /// consumo pasa por un solo lugar.
@@ -29,11 +30,16 @@ pub struct Modelo {
 }
 
 impl Modelo {
-    pub fn new(base: String, key: String, publico: String, local: Option<String>) -> Modelo {
+    pub fn new(
+        base: String,
+        key: String,
+        publico: Option<String>,
+        local: Option<String>,
+    ) -> Modelo {
         Modelo {
             base,
             key,
-            publico: publico.trim_end_matches('/').to_string(),
+            publico: publico.map(|publico| publico.trim_end_matches('/').to_string()),
             local,
             pases: Mutex::new(HashMap::new()),
             store: OnceLock::new(),
@@ -47,8 +53,10 @@ impl Modelo {
     }
 
     /// La base que se le da al que corre adentro: pasa por acá.
-    pub fn url(&self) -> String {
-        format!("{}/modelo", self.publico)
+    pub fn url(&self) -> Option<String> {
+        self.publico
+            .as_ref()
+            .map(|publico| format!("{publico}/modelo"))
     }
 
     /// Lo mismo, para un turno que corre en este mismo proceso: la vuelta es
@@ -192,10 +200,18 @@ mod tests {
         let modelo = Modelo::new(
             "https://api.ejemplo/v1/".into(),
             "la-clave".into(),
-            "https://jimmy.ejemplo/".into(),
+            Some("https://jimmy.ejemplo/".into()),
             Some("http://127.0.0.1:8080/modelo".into()),
         );
-        assert_eq!(modelo.url(), "https://jimmy.ejemplo/modelo");
+        assert_eq!(
+            modelo.url().as_deref(),
+            Some("https://jimmy.ejemplo/modelo")
+        );
+        let sin_publico = Modelo::new("https://api.ejemplo/v1/".into(), "k".into(), None, None);
+        assert!(
+            sin_publico.url().is_none(),
+            "sin URL no hay sandbox que llegue"
+        );
         assert_eq!(
             modelo.url_local().as_deref(),
             Some("http://127.0.0.1:8080/modelo")

@@ -562,7 +562,7 @@ fn usage() -> i32 {
 fn modelo_from_env(store: Option<Arc<store::Store>>) -> Option<Arc<modelo::Modelo>> {
     let base = env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into());
     let key = env("OPENAI_API_KEY")?;
-    let publico = env("JIMMY_WEB_URL")?;
+    let publico = env("JIMMY_WEB_URL");
     let local = env("JIMMY_WEB_PORT").map(|port| format!("http://127.0.0.1:{port}/modelo"));
     let modelo = modelo::Modelo::new(base, key, publico, local);
     if let Some(store) = store {

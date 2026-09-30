@@ -280,9 +280,9 @@ sandbox, y el sandbox nunca ve las credenciales del control plane.
   sesiones. No salen de ahí.
 - **Del sandbox**: las del turno (`AXE_BASE`, `AXE_MODEL`, las `AXE_*`), su
   `JIMMY_ROOT` apuntando al FS de la org, su `HOME` y los secretos del
-  proyecto. Nada más. Hoy la clave del modelo viaja con ellas, porque el worker
-  adentro llama al modelo directo: el proxy del control plane es el paso que lo
-  saca de ahí y el lugar donde caen los medidores.
+  proyecto. Nada más. La clave del modelo no está en esa lista: `AXE_BASE`
+  apunta al control plane y lo que lleva es un pase de la org, que sólo sirve
+  para pedirle turnos a su modelo. Por ahí pasan también los medidores.
 - **De heimdall al sandbox**: sólo `HEIMDALL_URL` y un token efímero de su org.
   El token de administración no entra.
 
@@ -373,10 +373,14 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`
     con las toolchains, Chromium con su venv y `ffmpeg`, en una imagen que se
     registra aparte del código. El agente sigue llegando publicado.
-11. **Hecho** — El proxy del modelo en el control plane: los pedidos de adentro
-    salen con un pase de la org, la clave no sale de acá, y por ahí pasan todos
-    los medidores (el consumo de la org, por modelo y por día, se ve con `jimmy
-    orgs uso` y en la web).
+11. **Hecho** — El proxy del modelo en el control plane, y el único camino:
+    adentro de un sandbox la clave no está y no hay a dónde llamar sin pasar
+    por acá, así que un turno sin proxy no corre en vez de salir derecho al
+    proveedor. Los pedidos llevan un pase de la org, la clave no sale de este
+    proceso, y por ahí pasan todos los medidores (el consumo de la org, por
+    modelo y por día, se ve con `jimmy orgs uso` y en la web). Los turnos que
+    corren acá —la instancia y las pruebas— pasan por la misma puerta cuando
+    hay una, para que el consumo se anote en un solo lugar.
 12. **Hecho** — El log vive con la conversación: lo escribe el worker adentro del
     volumen, con el mensaje de quien lo pidió y quién lo frenó, y la web lo lee
     de ahí. El control plane sólo reparte los eventos a quien esté mirando.

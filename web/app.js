@@ -89,13 +89,8 @@ const expanded = new Set();
 const VISIBLE = 10;
 
 const projectsEl = document.getElementById("projects");
-const orgEl = document.getElementById("org");
-const newOrgEl = document.getElementById("new-org");
-const newOrgForm = document.getElementById("new-org-form");
-const orgNameEl = document.getElementById("org-name");
 const previewsEl = document.getElementById("previews");
 const machineEl = document.getElementById("machine");
-const cuentaEl = document.getElementById("cuenta");
 const tabsEl = document.getElementById("tabs");
 const panesEl = document.getElementById("panes");
 const placeholderEl = document.getElementById("placeholder");
@@ -255,10 +250,8 @@ async function refresh() {
     if (!live.has(id) && !isFiles(id) && !isAgenda(id)) closeTab(id);
   }
   renderSidebar();
-  renderOrgs();
   renderPreviews();
   renderMachine();
-  renderCuenta();
   renderTabs();
   renderActions();
   updateTitle();
@@ -267,46 +260,6 @@ async function refresh() {
 /* Sidebar */
 
 const groupEls = new Map();
-
-/* Orgs
-
-   La org activa manda: es la que se ve arriba de todo y de la que van a
-   colgar los proyectos. Cambiar de org es un POST y el estado vuelve entero. */
-
-function renderOrgs() {
-  const orgs = state.orgs || [];
-  const active = state.org ? state.org.id : null;
-  orgEl.replaceChildren(
-    ...orgs.map((org) => {
-      const option = document.createElement("option");
-      option.value = org.id;
-      option.textContent = org.name;
-      option.selected = org.id === active;
-      return option;
-    }),
-  );
-}
-
-orgEl.onchange = async () => {
-  await api("/api/org", { id: orgEl.value });
-  await refresh();
-};
-
-newOrgEl.onclick = () => {
-  newOrgForm.hidden = !newOrgForm.hidden;
-  if (!newOrgForm.hidden) orgNameEl.focus();
-};
-
-newOrgForm.onsubmit = async (event) => {
-  event.preventDefault();
-  const name = orgNameEl.value.trim();
-  if (!name) return;
-  const created = await api("/api/orgs", { name });
-  if (!created) return;
-  orgNameEl.value = "";
-  newOrgForm.hidden = true;
-  await refresh();
-};
 
 async function stopPreview(name) {
   await api("/api/preview/stop", { name });
@@ -339,99 +292,6 @@ function renderPreviews() {
   const previews = state.previews || [];
   previewsEl.hidden = previews.length === 0;
   previewsEl.replaceChildren(...previews.map(previewEl));
-}
-
-/* La cuenta de la org: el plan y lo que gastó en el modelo. En modo dev,
-   además, la forma de moverlo sin pasarela — que es lo que hace falta para
-   probar el sistema entero. */
-
-function tokens(cantidad) {
-  return (cantidad || 0).toLocaleString("es-AR") + " tokens";
-}
-
-/* Los secretos de la org: los nombres, y el valor sólo cuando lo piden. El
-   valor viaja una vez, para el que está mirando, y no vuelve a salir de acá. */
-function secretsEl() {
-  const caja = document.createElement("div");
-  caja.className = "secrets";
-  const titulo = document.createElement("span");
-  titulo.className = "label";
-  titulo.textContent = "Secretos";
-  caja.append(titulo);
-
-  for (const nombre of state.secrets) {
-    const fila = document.createElement("div");
-    fila.className = "secret";
-    const valor = document.createElement("span");
-    valor.className = "value";
-    valor.textContent = nombre;
-    const ver = document.createElement("button");
-    ver.className = "link";
-    ver.textContent = "ver";
-    ver.onclick = async () => {
-      const data = await api("/api/secret?name=" + encodeURIComponent(nombre));
-      if (!data) return;
-      valor.textContent = data.value;
-      valor.classList.add("revealed");
-    };
-    const borrar = document.createElement("button");
-    borrar.className = "link";
-    borrar.textContent = "borrar";
-    borrar.onclick = async () => {
-      if (!(await api("/api/secret/delete", { name: nombre }))) return;
-      await refresh();
-    };
-    fila.append(valor, ver, borrar);
-    caja.append(fila);
-  }
-
-  const alta = document.createElement("div");
-  alta.className = "secret";
-  const nombre = document.createElement("input");
-  nombre.placeholder = "NOMBRE";
-  const valor = document.createElement("input");
-  valor.placeholder = "valor";
-  valor.type = "password";
-  const guardar = document.createElement("button");
-  guardar.className = "link";
-  guardar.textContent = "guardar";
-  guardar.onclick = async () => {
-    if (!(await api("/api/secret", { name: nombre.value, value: valor.value }))) return;
-    await refresh();
-  };
-  alta.append(nombre, valor, guardar);
-  caja.append(alta);
-  return caja;
-}
-
-function renderCuenta() {
-  const org = state.org;
-  cuentaEl.replaceChildren();
-  if (!org) return;
-
-  const plan = document.createElement("span");
-  plan.className = "value";
-  plan.title = "Cómo está el plan de esta organización";
-  plan.textContent = org.plan || "sin plan";
-
-  const uso = document.createElement("span");
-  uso.className = "value";
-  uso.title = "Los tokens que consumió el modelo en esta organización";
-  uso.textContent = tokens(state.usage ? state.usage.total : 0);
-
-  cuentaEl.append(plan, uso);
-  if (state.secrets) cuentaEl.append(secretsEl());
-
-  if (!state.admin) return;
-  const boton = document.createElement("button");
-  boton.className = "link";
-  boton.textContent = org.plan ? "dejar sin plan" : "pasar a pago";
-  boton.onclick = async () => {
-    const plan = org.plan ? "" : "paid";
-    if (!(await api("/api/plan", { plan }))) return;
-    await refresh();
-  };
-  cuentaEl.append(boton);
 }
 
 function machineStat(name, value, title) {
@@ -679,6 +539,7 @@ function renderSidebar() {
     const size = project.size ? projectSize(project.size) : "";
     setText(group.size, size);
     group.size.hidden = !size;
+    group.name.title = project.path;
     const collapsed = !opened.has(project.name);
     group.el.classList.toggle("collapsed", collapsed);
     group.el.classList.toggle(

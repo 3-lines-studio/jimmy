@@ -17,12 +17,8 @@ pub enum Command {
     Resume,
     /// Compacta el contexto ahora, sin esperar al umbral.
     Compact,
-    /// Interrumpe el turno que esté corriendo, si hay alguno. Lleva quién lo
-    /// frenó: el worker lo escribe en el log de la conversación, que es de él.
-    Cancel {
-        #[serde(default)]
-        author: String,
-    },
+    /// Interrumpe el turno que esté corriendo, si hay alguno.
+    Cancel,
     Shutdown,
 }
 

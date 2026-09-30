@@ -234,6 +234,10 @@ impl Agent {
         self.secretos = Some(secretos);
     }
 
+    pub(crate) fn secretos(&self) -> Option<Arc<crate::secrets::Secretos>> {
+        self.secretos.clone()
+    }
+
     /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {

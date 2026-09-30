@@ -203,6 +203,9 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/api/raw") => raw(web, &request, stream),
         ("POST", "/api/typing") => typing(web, &request, stream),
         ("POST", "/api/cancel") => cancel(web, &request, stream),
+        ("GET", "/api/secret") => secret_get(web, &request, stream),
+        ("POST", "/api/secret") => secret_set(web, &request, stream),
+        ("POST", "/api/secret/delete") => secret_delete(web, &request, stream),
         ("GET", "/api/agenda") => agenda(web, &request, stream),
         ("POST", "/api/agenda") => agenda_create(web, &request, stream),
         ("POST", "/api/agenda/delete") => agenda_delete(web, &request, stream),
@@ -425,6 +428,65 @@ impl Web {
     }
 }
 
+/// Los secretos de la org activa: quién los escribe y quién los lee. Sin clave
+/// en el despliegue no hay secretos, y se dice.
+#[allow(clippy::type_complexity)]
+fn org_y_secretos(
+    web: &Arc<Web>,
+    request: &Request,
+) -> Result<(crate::store::Org, Arc<crate::secrets::Secretos>), (u16, String)> {
+    let Some(user) = current_user(web, request) else {
+        return Err((401, "no estás adentro".into()));
+    };
+    let Some(org) = web.auth.store().active_org(&user.id).ok().flatten() else {
+        return Err((400, "no hay org activa".into()));
+    };
+    let Some(secretos) = web.agent.secretos() else {
+        return Err((400, "este despliegue no tiene secretos".into()));
+    };
+    Ok((org, secretos))
+}
+
+/// El valor de un secreto, cuando lo piden: es de la org y de quien la mira.
+fn secret_get(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let (org, secretos) = match org_y_secretos(web, request) {
+        Ok(par) => par,
+        Err((code, error)) => return http::send_error(stream, code, &error),
+    };
+    let name = request.param("name").unwrap_or_default();
+    match secretos.get(&org.id, name) {
+        Ok(Some(valor)) => http::send_json(stream, 200, &serde_json::json!({ "value": valor })),
+        Ok(None) => http::send_error(stream, 404, "ese secreto no está"),
+        Err(error) => http::send_error(stream, 400, &error),
+    }
+}
+
+/// Guardar un secreto devuelve el estado: el valor no vuelve nunca por acá.
+fn secret_set(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let (org, secretos) = match org_y_secretos(web, request) {
+        Ok(par) => par,
+        Err((code, error)) => return http::send_error(stream, code, &error),
+    };
+    let name = request.field("name").unwrap_or_default();
+    let valor = request.field("value").unwrap_or_default();
+    if let Err(error) = secretos.set(&org.id, &name, &valor) {
+        return http::send_error(stream, 400, &error);
+    }
+    state(web, request, stream)
+}
+
+fn secret_delete(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let (org, secretos) = match org_y_secretos(web, request) {
+        Ok(par) => par,
+        Err((code, error)) => return http::send_error(stream, code, &error),
+    };
+    let name = request.field("name").unwrap_or_default();
+    if let Err(error) = secretos.borrar(&org.id, &name) {
+        return http::send_error(stream, 400, &error);
+    }
+    state(web, request, stream)
+}
+
 fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(user) = current_user(web, request) else {
         return http::send_error(stream, 401, "no estás adentro");
@@ -488,6 +550,10 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             })
         })
         .collect();
+    let secretos = match (&activa, web.agent.secretos()) {
+        (Some(org), Some(secretos)) => Some(secretos.nombres(&org.id).unwrap_or_default()),
+        _ => None,
+    };
     let admin = web.auth.is_admin(&user.email);
     http::send_json(
         stream,
@@ -504,6 +570,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "total": uso.total(),
             },
             "admin": admin,
+            "secrets": secretos,
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
@@ -1230,6 +1297,11 @@ done
             agent.set_modelo(modelo);
         }
         agent.set_store(store.clone());
+        let key = crate::secrets::Key::from_hex(&"ab".repeat(32)).unwrap();
+        agent.set_secretos(std::sync::Arc::new(crate::secrets::Secretos::new(
+            key,
+            store.clone(),
+        )));
         let auth = Auth::new(
             store.clone(),
             "bob@ejemplo.com, ana@ejemplo.com",
@@ -1983,6 +2055,46 @@ done
             "un turno que no arranca no deja rastro: {log}"
         );
 
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    /// Los secretos de una org los ve esa org: la web los lista sin el valor, lo
+    /// da sólo cuando lo piden, y a otra org no le contesta nada.
+    #[test]
+    fn una_org_guarda_sus_secretos_y_son_suyos() {
+        let server = start("secretos");
+        let bob = entrar(&server, "bob@ejemplo.com");
+        let ana = entrar(&server, "ana@ejemplo.com");
+
+        let guardado = post_with(
+            server.port,
+            "/api/secret",
+            r#"{"name":"stripe_key","value":"sk-1"}"#,
+            Some(&bob),
+        );
+        assert!(guardado.starts_with("HTTP/1.1 200"), "{guardado}");
+        assert!(guardado.contains("\"STRIPE_KEY\""), "{guardado}");
+        assert!(
+            !guardado.contains("sk-1"),
+            "el valor volvió por la respuesta: {guardado}"
+        );
+
+        let pedido = get(server.port, "/api/secret?name=stripe_key", Some(&bob));
+        assert!(pedido.starts_with("HTTP/1.1 200"), "{pedido}");
+        assert!(pedido.contains("sk-1"), "{pedido}");
+
+        let ajena = get(server.port, "/api/secret?name=stripe_key", Some(&ana));
+        assert!(ajena.starts_with("HTTP/1.1 404"), "{ajena}");
+        assert!(!ajena.contains("sk-1"), "{ajena}");
+
+        let borrado = post_with(
+            server.port,
+            "/api/secret/delete",
+            r#"{"name":"stripe_key"}"#,
+            Some(&bob),
+        );
+        assert!(borrado.starts_with("HTTP/1.1 200"), "{borrado}");
+        assert!(!borrado.contains("STRIPE_KEY"), "{borrado}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

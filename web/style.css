@@ -229,6 +229,27 @@ textarea:focus {
   font-size: 12px;
 }
 
+#cuenta .secrets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+#cuenta .secret {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#cuenta .secret .value.revealed {
+  font-family: monospace;
+  color: var(--text);
+}
+
+#cuenta .secret input {
+  width: 8rem;
+}
+
 #cuenta .value {
   color: var(--text);
   white-space: nowrap;

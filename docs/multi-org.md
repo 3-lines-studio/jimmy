@@ -393,9 +393,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
     del despliegue y atados a la org y al nombre, así que mover una fila no
     devuelve el secreto), y el turno de esa org los recibe como variables de
     entorno. Sin `JIMMY_SECRETS_KEY` no hay secretos: es una función que se
-    prende cuando el despliegue la configura. Hoy se cargan con `jimmy orgs
-    secret <mail> NOMBRE=VALOR`. Falta la UI para verlos y escribirlos desde la
-    web, y los consumidores: las credenciales de los transports por org.
+    prende cuando el despliegue la configura. Se cargan con `jimmy orgs secret
+    <mail> NOMBRE=VALOR` o desde la web, que lista los nombres, da el valor sólo
+    cuando se lo piden y nunca lo devuelve al guardarlo. Falta el consumidor: las
+    credenciales de los transports por org.
 14. **Hecho** — Los medidores: el consumo de cada org se ve en la web (el plan
     y los tokens de la org activa, al lado del workspace) y con `jimmy orgs uso`.
     El plan lo mueve un administrador de la instancia (`JIMMY_ADMINS`), que es la

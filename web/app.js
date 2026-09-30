@@ -349,6 +349,61 @@ function tokens(cantidad) {
   return (cantidad || 0).toLocaleString("es-AR") + " tokens";
 }
 
+/* Los secretos de la org: los nombres, y el valor sólo cuando lo piden. El
+   valor viaja una vez, para el que está mirando, y no vuelve a salir de acá. */
+function secretsEl() {
+  const caja = document.createElement("div");
+  caja.className = "secrets";
+  const titulo = document.createElement("span");
+  titulo.className = "label";
+  titulo.textContent = "Secretos";
+  caja.append(titulo);
+
+  for (const nombre of state.secrets) {
+    const fila = document.createElement("div");
+    fila.className = "secret";
+    const valor = document.createElement("span");
+    valor.className = "value";
+    valor.textContent = nombre;
+    const ver = document.createElement("button");
+    ver.className = "link";
+    ver.textContent = "ver";
+    ver.onclick = async () => {
+      const data = await api("/api/secret?name=" + encodeURIComponent(nombre));
+      if (!data) return;
+      valor.textContent = data.value;
+      valor.classList.add("revealed");
+    };
+    const borrar = document.createElement("button");
+    borrar.className = "link";
+    borrar.textContent = "borrar";
+    borrar.onclick = async () => {
+      if (!(await api("/api/secret/delete", { name: nombre }))) return;
+      await refresh();
+    };
+    fila.append(valor, ver, borrar);
+    caja.append(fila);
+  }
+
+  const alta = document.createElement("div");
+  alta.className = "secret";
+  const nombre = document.createElement("input");
+  nombre.placeholder = "NOMBRE";
+  const valor = document.createElement("input");
+  valor.placeholder = "valor";
+  valor.type = "password";
+  const guardar = document.createElement("button");
+  guardar.className = "link";
+  guardar.textContent = "guardar";
+  guardar.onclick = async () => {
+    if (!(await api("/api/secret", { name: nombre.value, value: valor.value }))) return;
+    await refresh();
+  };
+  alta.append(nombre, valor, guardar);
+  caja.append(alta);
+  return caja;
+}
+
 function renderCuenta() {
   const org = state.org;
   cuentaEl.replaceChildren();
@@ -365,6 +420,7 @@ function renderCuenta() {
   uso.textContent = tokens(state.usage ? state.usage.total : 0);
 
   cuentaEl.append(plan, uso);
+  if (state.secrets) cuentaEl.append(secretsEl());
 
   if (!state.admin) return;
   const boton = document.createElement("button");

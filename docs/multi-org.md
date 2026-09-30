@@ -279,12 +279,16 @@ sandbox, y el sandbox nunca ve las credenciales del control plane.
   administración, la API del proveedor de sandboxes, el mail y la clave de
   sesiones. No salen de ahí.
 - **Del sandbox**: las del turno (`AXE_BASE`, `AXE_MODEL`, las `AXE_*`), su
-  `JIMMY_ROOT` apuntando al FS de la org, su `HOME` y los secretos del
-  proyecto. Nada más. La clave del modelo no está en esa lista: `AXE_BASE`
-  apunta al control plane y lo que lleva es un pase de la org, que sólo sirve
-  para pedirle turnos a su modelo. Por ahí pasan también los medidores.
-- **De heimdall al sandbox**: sólo `HEIMDALL_URL` y un token efímero de su org.
-  El token de administración no entra.
+  `JIMMY_ROOT` apuntando al FS de la org, su `HOME` y los secretos de su org,
+  que son lo único que el control plane le manda de ella. Nada más. La clave del
+  modelo no está en esa lista: `AXE_BASE` apunta al control plane y lo que lleva
+  es un pase de la org, que sólo sirve para pedirle turnos a su modelo. Por ahí
+  pasan también los medidores.
+- **Heimdall no entra al sandbox**: queda para los secretos del despliegue. Los
+  de cada org los guarda el control plane sellados con una clave propia
+  (`JIMMY_SECRETS_KEY`), atados a la org y al nombre, y viajan con el turno de
+  esa org y de ninguna otra. Los nombres del turno (`AXE_*`, `PATH`,
+  `OPENAI_API_KEY`) no se pueden pisar con un secreto.
 
 Hoy el worker hereda el entorno del proceso padre: `worker_env` en `agent.rs`
 agrega lo del turno y deja el resto. Con multi-org eso cambia a un spawn con el
@@ -384,7 +388,14 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
 12. **Hecho** — El log vive con la conversación: lo escribe el worker adentro del
     volumen, con el mensaje de quien lo pidió y quién lo frenó, y la web lo lee
     de ahí. El control plane sólo reparte los eventos a quien esté mirando.
-13. heimdall por org y su UI.
+13. **A medias** — Los secretos de una org: el control plane los guarda sellados
+    en su base (el mismo esquema de heimdall: XChaCha20-Poly1305, con la clave
+    del despliegue y atados a la org y al nombre, así que mover una fila no
+    devuelve el secreto), y el turno de esa org los recibe como variables de
+    entorno. Sin `JIMMY_SECRETS_KEY` no hay secretos: es una función que se
+    prende cuando el despliegue la configura. Hoy se cargan con `jimmy orgs
+    secret <mail> NOMBRE=VALOR`. Falta la UI para verlos y escribirlos desde la
+    web, y los consumidores: las credenciales de los transports por org.
 14. **Hecho** — Los medidores: el consumo de cada org se ve en la web (el plan
     y los tokens de la org activa, al lado del workspace) y con `jimmy orgs uso`.
     El plan lo mueve un administrador de la instancia (`JIMMY_ADMINS`), que es la

@@ -23,6 +23,7 @@ mod reap;
 mod remote;
 mod sandbox;
 mod schedule;
+mod secrets;
 mod skill;
 mod store;
 #[allow(dead_code)]
@@ -387,13 +388,15 @@ fn index_json(root: &Path, workspace: &Path) -> Result<String, String> {
 /// El plan de una org y su alta: el sandbox llega con el pago, y marcar el plan
 /// es lo que lo dispara. Para probarlo alcanza con este comando.
 fn orgs_command(args: &[String]) -> i32 {
-    let store = match store::Store::open(&root_from_env().join("jimmy.db")) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("jimmy orgs: no pude abrir la base: {error}");
-            return 1;
-        }
-    };
+    let store = std::sync::Arc::new(
+        match store::Store::open(&root_from_env().join("jimmy.db")) {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("jimmy orgs: no pude abrir la base: {error}");
+                return 1;
+            }
+        },
+    );
     let (email, plan) = match (args.first(), args.get(1), args.get(2)) {
         (Some(accion), Some(email), plan) if accion == "plan" => {
             (email.clone(), plan.cloned().unwrap_or_default())
@@ -413,6 +416,11 @@ fn orgs_command(args: &[String]) -> i32 {
             return 1;
         }
     };
+    if let Some(accion) = args.first().map(String::as_str) {
+        if accion == "secret" || accion == "secrets" || accion == "unset" {
+            return orgs_secret(&store, &org, accion, args);
+        }
+    }
     if args.first().map(String::as_str) == Some("uso") {
         return match store.uso_de(&org.id, None) {
             Ok(uso) => {
@@ -457,8 +465,60 @@ fn orgs_command(args: &[String]) -> i32 {
 }
 
 fn orgs_usage() -> i32 {
-    eprintln!("uso: jimmy orgs [plan <mail> <plan> | alta <mail> | uso <mail>]");
+    eprintln!(
+        "uso: jimmy orgs [plan <mail> <plan> | alta <mail> | uso <mail> | \
+         secrets <mail> | secret <mail> NOMBRE=VALOR | unset <mail> NOMBRE]"
+    );
     2
+}
+
+/// Los secretos de una org: el control plane los guarda sellados y se los pasa
+/// a sus turnos. El valor no se imprime nunca.
+fn orgs_secret(
+    store: &std::sync::Arc<store::Store>,
+    org: &store::Org,
+    accion: &str,
+    args: &[String],
+) -> i32 {
+    let Some(secretos) = secrets::Secretos::from_env(store.clone()) else {
+        eprintln!("jimmy orgs: falta JIMMY_SECRETS_KEY, no puedo guardar secretos");
+        return 1;
+    };
+    let result = match accion {
+        "secrets" => match secretos.nombres(&org.id) {
+            Ok(nombres) => {
+                for nombre in nombres {
+                    println!("{nombre}");
+                }
+                return 0;
+            }
+            Err(error) => Err(error),
+        },
+        "unset" => match args.get(2) {
+            Some(nombre) => secretos.borrar(&org.id, nombre),
+            None => {
+                eprintln!("uso: jimmy orgs unset <mail> NOMBRE");
+                return 2;
+            }
+        },
+        _ => match args.get(2).and_then(|par| par.split_once('=')) {
+            Some((nombre, valor)) => secretos.set(&org.id, nombre, valor),
+            None => {
+                eprintln!("uso: jimmy orgs secret <mail> NOMBRE=VALOR");
+                return 2;
+            }
+        },
+    };
+    match result {
+        Ok(()) => {
+            println!("{} · listo", org.name);
+            0
+        }
+        Err(error) => {
+            eprintln!("jimmy orgs: {error}");
+            1
+        }
+    }
 }
 
 /// Los proyectos, para el que está adentro del sandbox: el control plane manda
@@ -646,8 +706,11 @@ fn build_agent(
         config.workspace.clone(),
         fragments,
     );
-    if let Some(store) = store {
-        agent.set_store(store);
+    if let Some(store) = &store {
+        agent.set_store(store.clone());
+        if let Some(secretos) = secrets::Secretos::from_env(store.clone()) {
+            agent.set_secretos(std::sync::Arc::new(secretos));
+        }
     }
     if let Some(modelo) = modelo {
         agent.set_modelo(modelo);

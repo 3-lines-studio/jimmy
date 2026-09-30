@@ -44,6 +44,7 @@ pub struct Agent {
     /// El modelo del otro lado: lo que corre adentro del sandbox le pide el
     /// modelo a este control plane, así la clave del proveedor no viaja.
     modelo: Option<Arc<crate::modelo::Modelo>>,
+    secretos: Option<Arc<crate::secrets::Secretos>>,
     fragments: String,
     context: String,
     pool: Arc<dyn Sandbox>,
@@ -78,6 +79,7 @@ impl Agent {
             org: None,
             store: None,
             modelo: None,
+            secretos: None,
             fragments,
             context,
             pool,
@@ -228,6 +230,10 @@ impl Agent {
         self.pipe = Some(pipe);
     }
 
+    pub(crate) fn set_secretos(&mut self, secretos: Arc<crate::secrets::Secretos>) {
+        self.secretos = Some(secretos);
+    }
+
     /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
@@ -265,6 +271,16 @@ impl Agent {
             true => (PathBuf::from(MOUNT), format!("{MOUNT}/workspace")),
             false => (self.root.clone(), self.workspace.clone()),
         };
+        // Los secretos de la org viajan con el turno: adentro del sandbox no hay
+        // de dónde más sacarlos. Van antes que lo del turno, así lo del turno
+        // manda si alguna vez se cruzan.
+        let suyos = match en_sandbox {
+            true => match (&self.secretos, &self.org) {
+                (Some(secretos), Some(org)) => secretos.entorno(org),
+                _ => Vec::new(),
+            },
+            false => Vec::new(),
+        };
         let mut env = worker_env(
             &self.base,
             &self.model,
@@ -273,6 +289,9 @@ impl Agent {
             &root,
             &workspace,
         );
+        for par in suyos {
+            env.push(par);
+        }
         let Some(modelo) = &self.modelo else {
             if en_sandbox {
                 return Err(
@@ -1314,6 +1333,50 @@ mod tests {
             aca["OPENAI_API_KEY"], "la-clave",
             "acá no salió del proceso"
         );
+    }
+
+    /// Los secretos de la org van con el turno y a ningún otro lado: adentro
+    /// del sandbox no hay de dónde más sacarlos, y acá se quedan donde están,
+    /// que es donde ya los tiene el que corre.
+    #[test]
+    fn los_secretos_de_la_org_van_con_su_turno() {
+        let dir = resume_dir("secretos");
+        let store = Arc::new(crate::store::Store::open(&dir.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        let (_, ajena) = store.register("otra@ejemplo.com").unwrap();
+        let key = crate::secrets::Key::from_hex(&"ab".repeat(32)).unwrap();
+        let secretos = Arc::new(crate::secrets::Secretos::new(key, store));
+        secretos.set(&org.id, "STRIPE_KEY", "sk-1").unwrap();
+        secretos.set(&ajena.id, "DE_OTRA", "no-va").unwrap();
+        secretos.set(&org.id, "PATH", "/no").unwrap();
+
+        let mut agent = agente(Some(&org.id));
+        agent.set_secretos(secretos.clone());
+        agent.set_modelo(Arc::new(crate::modelo::Modelo::new(
+            "https://api.deepseek.com".into(),
+            "la-clave".into(),
+            Some("https://jimmy.ejemplo".into()),
+            None,
+        )));
+        let adentro: std::collections::HashMap<String, String> =
+            agent.worker_env(true).unwrap().into_iter().collect();
+        assert_eq!(adentro["STRIPE_KEY"], "sk-1");
+        assert!(
+            !adentro.contains_key("DE_OTRA"),
+            "los de otra org no viajan"
+        );
+        assert!(
+            !adentro.contains_key("PATH") || adentro["PATH"] != "/no",
+            "lo del turno no se pisa"
+        );
+
+        let aca: std::collections::HashMap<String, String> =
+            agent.worker_env(false).unwrap().into_iter().collect();
+        assert!(
+            !aca.contains_key("STRIPE_KEY"),
+            "acá el turno ya tiene el entorno del control plane"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {

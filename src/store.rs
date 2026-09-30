@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS orgs (
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS secrets (
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    blob BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (org_id, name)
+);
 CREATE TABLE IF NOT EXISTS machines (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
@@ -522,6 +530,57 @@ impl Store {
             return Ok(());
         }
         self.set_machine(&id, "local", "", "")
+    }
+
+    /// Un secreto de la org, ya sellado: acá se guardan bytes y nada más. Lo
+    /// que abre el secreto vive en `secrets.rs`, que es el que tiene la clave.
+    pub fn guardar_secreto(&self, org: &str, name: &str, blob: &[u8]) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO secrets (org_id, name, blob, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(org_id, name) DO UPDATE SET blob = excluded.blob, updated_at = excluded.updated_at",
+            params![org, name, blob, now()],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn leer_secreto(&self, org: &str, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT blob FROM secrets WHERE org_id = ?1 AND name = ?2",
+            params![org, name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn borrar_secreto(&self, org: &str, name: &str) -> Result<(), String> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "DELETE FROM secrets WHERE org_id = ?1 AND name = ?2",
+            params![org, name],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Los nombres de los secretos de una org, nunca los valores.
+    pub fn nombres_de_secretos(&self, org: &str) -> Result<Vec<String>, String> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db
+            .prepare("SELECT name FROM secrets WHERE org_id = ?1 ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let filas = statement
+            .query_map(params![org], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut nombres = Vec::new();
+        for fila in filas {
+            nombres.push(fila.map_err(|e| e.to_string())?);
+        }
+        Ok(nombres)
     }
 
     /// El plan de una org. Es lo que decide si tiene máquina: sin plan no hay

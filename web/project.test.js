@@ -1,7 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const {
+  PROJECT_BODIES,
+  PROJECT_EYES,
   projectColor,
+  projectFace,
   projectHue,
   projectInitials,
   projectTitle,
@@ -16,6 +19,20 @@ test("el color de un proyecto sale de su nombre, así que no cambia entre recarg
 test("dos proyectos distintos caen en colores distintos", () => {
   assert.notEqual(projectColor("jimmy"), projectColor("bifrost"));
   assert.notEqual(projectColor("heimdall"), projectColor("ken"));
+});
+
+test("la forma del proyecto sale de su nombre, así que no cambia entre recargas", () => {
+  assert.deepEqual(projectFace("jimmy"), projectFace("jimmy"));
+  assert.ok(PROJECT_BODIES.includes(projectFace("jimmy").body));
+  assert.ok(PROJECT_EYES.includes(projectFace("jimmy").eyes));
+});
+
+test("cuarenta proyectos reparten las cuatro formas de cuerpo y las cuatro de ojos", () => {
+  const names = Array.from({ length: 40 }, (_, index) => "proyecto-" + index);
+  const bodies = new Set(names.map((name) => projectFace(name).body));
+  const eyes = new Set(names.map((name) => projectFace(name).eyes));
+  assert.equal(bodies.size, PROJECT_BODIES.length);
+  assert.equal(eyes.size, PROJECT_EYES.length);
 });
 
 test("la pill lleva las tres primeras letras del proyecto", () => {

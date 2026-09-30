@@ -27,7 +27,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "axe"
 version = "0.1.0"
-source = "git+https://github.com/3-lines-studio/axe?rev=fe67edec43da62263d1949519babe95c126961ab#fe67edec43da62263d1949519babe95c126961ab"
+source = "git+https://github.com/3-lines-studio/axe?rev=55ef81231b35b2b1d0cf67eb53ab1daa272bda20#55ef81231b35b2b1d0cf67eb53ab1daa272bda20"
 dependencies = [
  "dom_query",
  "dom_smoothie",

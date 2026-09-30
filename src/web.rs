@@ -413,12 +413,12 @@ impl Web {
         // se le piden en el momento.
         match self.org(request) {
             Some(org) => match self.auth.store().machine(&org.id).ok().flatten() {
-                Some(_) => Box::new(crate::remote::Remoto::new(
+                Some(row) if row.provider == "tensorlake" => Box::new(crate::remote::Remoto::new(
                     org.id.clone(),
                     self.auth.store().clone(),
                     place(&self.root, &self.workspace, &org),
                 )),
-                None => Box::new(Local::from(place(&self.root, &self.workspace, &org))),
+                _ => Box::new(Local::from(place(&self.root, &self.workspace, &org))),
             },
             None => Box::new(Local::new(self.root.clone(), self.workspace.clone())),
         }
@@ -543,13 +543,15 @@ fn set_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
         return http::send_error(stream, 400, "no hay org activa");
     };
     let plan = request.field("plan").unwrap_or_default();
-    if let Err(error) = web.auth.store().set_plan(&org.id, &plan) {
-        return http::send_error(stream, 400, &error);
-    }
-    if plan == "paid" {
+    let plan = plan.trim();
+    if !plan.is_empty() {
         if let Err(error) = crate::remote::alta(&org.id, web.auth.store()) {
             return http::send_error(stream, 500, &error);
         }
+    }
+    let plan = (!plan.is_empty()).then_some(plan);
+    if let Err(error) = web.auth.store().set_plan(&org.id, plan) {
+        return http::send_error(stream, 400, &error);
     }
     state(web, request, stream)
 }
@@ -1292,23 +1294,30 @@ done
     #[test]
     fn el_estado_muestra_el_plan_y_solo_un_admin_lo_mueve() {
         let server = start("cuenta");
-        let bob = login(server.port, "bob@ejemplo.com");
+        let bob = entrar(&server, "bob@ejemplo.com");
         let estado = get(server.port, "/api/state", Some(&bob));
-        assert!(estado.contains("\"plan\":\"free\""), "{estado}");
+        assert!(estado.contains("\"plan\":null"), "{estado}");
         assert!(estado.contains("\"usage\""), "{estado}");
         assert!(estado.contains("\"admin\":true"), "{estado}");
 
-        let ana = login(server.port, "ana@ejemplo.com");
+        let ana = entrar(&server, "ana@ejemplo.com");
         let estado = get(server.port, "/api/state", Some(&ana));
         assert!(estado.contains("\"admin\":false"), "{estado}");
-        let ajena = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, Some(&ana));
+        let ajena = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, Some(&ana));
         assert!(ajena.starts_with("HTTP/1.1 403"), "{ajena}");
 
-        let sin_sesion = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, None);
+        let sin_sesion = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, None);
         assert!(sin_sesion.starts_with("HTTP/1.1 401"), "{sin_sesion}");
 
-        let propia = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, Some(&bob));
-        assert!(propia.starts_with("HTTP/1.1 200"), "{propia}");
+        // Pagar el plan es lo que da de alta la máquina: sin proveedor no se
+        // puede, y el plan no queda a medias.
+        let propia = post_with(server.port, "/api/plan", r#"{"plan":"paid"}"#, Some(&bob));
+        assert!(propia.starts_with("HTTP/1.1 500"), "{propia}");
+        let estado = get(server.port, "/api/state", Some(&bob));
+        assert!(
+            estado.contains("\"plan\":null"),
+            "el plan quedó a medias: {estado}"
+        );
 
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
@@ -1482,6 +1491,16 @@ done
         seen
     }
 
+    /// Entrar y darle a la org una máquina de acá: en las pruebas el trabajo de
+    /// una org corre en el mismo lugar que la instancia, que es una máquina
+    /// `local`. Una org sin máquina no corre en ningún lado.
+    fn entrar(server: &Server, email: &str) -> String {
+        let cookie = login(server.port, email);
+        let org = server.store.org_of_email(email).unwrap().expect("la org");
+        server.store.set_machine(&org.id, "local", "", "").unwrap();
+        cookie
+    }
+
     /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
     /// hay proveedor, así que el link vuelve en la misma respuesta.
     fn login(port: u16, email: &str) -> String {
@@ -1584,7 +1603,7 @@ done
             assert!(png.contains("image/png"), "{png}");
         }
 
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let page = get(server.port, "/", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(
@@ -1690,7 +1709,7 @@ done
         assert!(without.starts_with("HTTP/1.1 303"), "{without}");
         assert!(without.contains("Location: /login"), "{without}");
 
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let out = get(server.port, "/preview/loquesea/", Some(&cookie));
         assert!(out.starts_with("HTTP/1.1 404"), "{out}");
         assert!(out.contains("loquesea no está corriendo"), "{out}");
@@ -1707,7 +1726,7 @@ done
             let previews = server.previews.clone();
             move || crate::preview::listen(previews)
         });
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let order = crate::preview::Order {
             op: "start".into(),
@@ -1775,7 +1794,7 @@ done
     #[test]
     fn the_state_brings_the_last_answer_of_the_project() {
         let server = start("last");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -1801,7 +1820,7 @@ done
     #[test]
     fn cada_org_ve_sus_proyectos_y_no_los_de_la_otra() {
         let server = start("orgs");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains(r#""name":"ken""#), "{state}");
 
@@ -1847,7 +1866,7 @@ done
         use std::os::unix::fs::PermissionsExt;
 
         let server = start("org-turn");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/orgs",
@@ -1878,6 +1897,17 @@ done
         );
         assert!(made.starts_with("HTTP/1.1 200"), "{made}");
         let key = json_in(&made)["key"].as_str().unwrap().to_string();
+
+        // La org nueva corre acá, como la de la instancia: es la misma máquina.
+        let org = std::fs::read_dir(server.root.join("orgs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let id = org.file_name().unwrap().to_string_lossy().into_owned();
+        server.store.set_machine(&id, "local", "", "").unwrap();
+
         let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
@@ -1887,12 +1917,6 @@ done
         );
         assert!(sent.starts_with("HTTP/1.1 202"), "{sent}");
 
-        let org = std::fs::read_dir(server.root.join("orgs"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
         let workspace = org.join("workspace");
         let log = until(&rx, "\"done\"").join("\n");
         assert!(
@@ -1914,35 +1938,23 @@ done
     #[test]
     fn una_maquina_que_no_se_puede_despertar_frena_el_turno() {
         let server = start("maquina-rota");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let (_, org) = server.store.register("bob@ejemplo.com").unwrap();
         server
             .store
             .set_machine(&org.id, "otro", "caja", "fs")
             .unwrap();
 
-        // La conversación se siembra en el índice y no se crea por la web: crearla
-        // adentro del sandbox es justamente lo que esta máquina no puede hacer.
+        // La conversación existe donde la org trabaja: lo que esta máquina no
+        // puede es correr el turno.
         let key = "web-prueba".to_string();
-        server
-            .store
-            .sync_index(
-                &org.id,
-                &[crate::store::IndexProject {
-                    name: "general".into(),
-                    size: 0,
-                    unversioned: false,
-                    conversations: vec![crate::store::IndexConversation {
-                        key: key.clone(),
-                        project: "general".into(),
-                        title: None,
-                        read_only: false,
-                        last: None,
-                        touched_at: 0,
-                    }],
-                }],
-            )
-            .unwrap();
+        let chat = server.root.join("chats").join(&key);
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::write(
+            chat.join("meta.json"),
+            r#"{"project":"general","title":null}"#,
+        )
+        .unwrap();
         let rx = watching(&server, &key);
         let sent = post_with(
             server.port,
@@ -1977,7 +1989,7 @@ done
     #[test]
     fn a_project_is_renamed_with_the_conversations_inside() {
         let server = start("rename-project");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         post_with(
             server.port,
             "/api/conversations",
@@ -2012,7 +2024,7 @@ done
     #[test]
     fn a_project_is_duplicated_with_the_files_inside() {
         let server = start("duplicate-project");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         std::fs::write(
             server.workspace.join("projects/ken/nota.txt"),
             "los mismos archivos",
@@ -2091,7 +2103,7 @@ done
     #[test]
     fn the_state_lists_projects_and_conversations() {
         let server = start("state");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let mut state = get(server.port, "/api/state", Some(&cookie));
         assert!(state.contains("\"general\""), "{state}");
@@ -2119,7 +2131,7 @@ done
     #[test]
     fn the_web_creates_and_writes_its_own_conversations() {
         let server = start("write");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -2191,7 +2203,7 @@ done
     #[test]
     fn a_conversation_that_comes_from_a_transport_is_not_written_from_the_web() {
         let server = start("readonly");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let sent = post_with(
             server.port,
             "/api/send",
@@ -2226,7 +2238,7 @@ done
     #[test]
     fn an_image_goes_up_as_a_name_and_comes_back_whole() {
         let server = start("upload");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let png = b"\x89PNG\r\n\x1a\nlos bytes que sean";
@@ -2277,7 +2289,7 @@ done
     #[test]
     fn an_upload_only_touches_its_own_conversation() {
         let server = start("traversal");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let key = conversation(server.port, &cookie);
 
         let uploaded = post_bytes(
@@ -2358,7 +2370,7 @@ done
     #[test]
     fn the_file_tree_lists_a_project_one_level_at_a_time() {
         let server = start("files-tree");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::create_dir_all(ken.join("src/transport")).unwrap();
         std::fs::create_dir_all(ken.join("target")).unwrap();
@@ -2448,7 +2460,7 @@ done
     #[test]
     fn the_file_tree_cannot_leave_the_project() {
         let server = start("files-outside");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let ken = server.workspace.join("projects/ken");
         std::fs::write(server.root.join("afuera.txt"), "mas secreto").unwrap();
         std::fs::write(server.workspace.join("notes.md"), "secreto").unwrap();
@@ -2480,7 +2492,7 @@ done
     #[test]
     fn a_conversation_cannot_leave_the_chats_directory() {
         let server = start("chats-outside");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let afuera = server.root.parent().unwrap().join("afuera");
         std::fs::create_dir_all(afuera.join("uploads")).unwrap();
         std::fs::write(
@@ -2519,7 +2531,7 @@ done
     #[test]
     fn the_stream_says_who_is_watching() {
         let server = start("presence");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -2545,7 +2557,7 @@ done
     #[test]
     fn the_online_stream_knows_everyone_connected() {
         let server = start("online");
-        let bob = login(server.port, "bob@ejemplo.com");
+        let bob = entrar(&server, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -2556,7 +2568,7 @@ done
         let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
         assert!(next_data(&mut lines, "\"online\"").contains("bob"));
 
-        let ana = login(server.port, "ana@ejemplo.com");
+        let ana = entrar(&server, "ana@ejemplo.com");
         let mut second = connect(server.port);
         write!(
             second,
@@ -2571,7 +2583,7 @@ done
     #[test]
     fn typing_goes_live_but_is_not_written_down() {
         let server = start("typing");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let created = post_with(
             server.port,
             "/api/conversations",
@@ -2637,7 +2649,7 @@ done
     #[test]
     fn the_stream_opens_at_a_turn_and_the_history_goes_back() {
         let server = start("history");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let mut log = String::new();
         for turn in 0..300 {
             log.push_str(&format!(
@@ -2702,7 +2714,7 @@ done
     #[test]
     fn cancel_only_goes_to_a_conversation_you_can_write() {
         let server = start("cancel");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let refused = post_with(
             server.port,
@@ -2757,7 +2769,7 @@ done
     #[test]
     fn search_looks_in_what_was_said() {
         let server = start("search");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let found = get(server.port, "/api/search?q=gato", Some(&cookie));
         assert!(found.contains("el gato duerme"), "{found}");
@@ -2776,7 +2788,7 @@ done
     #[test]
     fn delete_takes_the_conversation_with_it() {
         let server = start("delete");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let created = post_with(
             server.port,
@@ -2812,7 +2824,7 @@ done
     #[test]
     fn a_project_is_deleted_only_when_it_has_nothing_to_lose() {
         let server = start("delete-project");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let projects = server.workspace.join("projects");
 
         std::fs::write(projects.join("ken/nota.txt"), "trabajo sin versionar").unwrap();
@@ -2901,7 +2913,7 @@ done
     #[test]
     fn the_stream_replays_the_backlog_and_then_follows() {
         let server = start("stream");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -2939,7 +2951,7 @@ done
     #[test]
     fn the_stream_skips_what_the_watcher_already_has() {
         let server = start("stream-since");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let mut stream = connect(server.port);
         write!(
@@ -3097,7 +3109,7 @@ done
     #[test]
     fn the_agenda_lists_tasks_with_their_last_runs() {
         let server = start("agenda");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let org = personal_org(&server, &cookie);
         let memoria = agenda_task(&server, &org, "memoria", Some("05:00"));
         agenda_task(&server, &org, "perezosa", None);
@@ -3157,7 +3169,7 @@ done
     #[test]
     fn la_agenda_de_una_org_no_ve_las_tareas_de_la_otra() {
         let server = start("agenda-orgs");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let personal = personal_org(&server, &cookie);
         agenda_task(&server, &personal, "de-bob", Some("05:00"));
 
@@ -3206,7 +3218,7 @@ done
     #[test]
     fn una_tarea_se_crea_y_se_borra_desde_la_web() {
         let server = start("agenda-create");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
 
         let made = post_with(
             server.port,
@@ -3266,7 +3278,7 @@ done
     #[test]
     fn running_a_task_from_the_web_advances_its_clock() {
         let server = start("agenda-run");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let org = personal_org(&server, &cookie);
         let lejos = agenda_task_at(&server, &org, "memoria", Some("05:00"), 9_999_999_999)
             .next_run_at
@@ -3317,7 +3329,7 @@ done
     #[test]
     fn pausing_a_task_from_the_web_keeps_the_rest() {
         let server = start("agenda-pause");
-        let cookie = login(server.port, "bob@ejemplo.com");
+        let cookie = entrar(&server, "bob@ejemplo.com");
         let org = personal_org(&server, &cookie);
         server
             .store

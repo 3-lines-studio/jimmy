@@ -191,6 +191,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(error) = store.marcar_la_org_de_la_instancia() {
+        eprintln!("jimmy: no pude marcar la máquina de la instancia: {error}");
+    }
     // El modelo del otro lado: por acá pasan todos los pedidos, y acá queda
     // anotado el consumo de cada org.
     let modelo = modelo_from_env(Some(store.clone()));
@@ -432,12 +435,14 @@ fn orgs_command(args: &[String]) -> i32 {
     }
     let result = match args.first().map(String::as_str) {
         Some("alta") => crate::remote::alta(&org.id, &store),
-        _ => store
-            .set_plan(&org.id, &plan)
-            .and_then(|_| match plan.as_str() {
-                "paid" => crate::remote::alta(&org.id, &store),
-                _ => Ok(()),
-            }),
+        _ => {
+            let plan = (!plan.is_empty()).then_some(plan.as_str());
+            let alta = match plan {
+                Some(_) => crate::remote::alta(&org.id, &store),
+                None => Ok(()),
+            };
+            alta.and_then(|_| store.set_plan(&org.id, plan))
+        }
     };
     match result {
         Ok(()) => {
@@ -452,7 +457,7 @@ fn orgs_command(args: &[String]) -> i32 {
 }
 
 fn orgs_usage() -> i32 {
-    eprintln!("uso: jimmy orgs [plan <mail> <free|paid> | alta <mail> | uso <mail>]");
+    eprintln!("uso: jimmy orgs [plan <mail> <plan> | alta <mail> | uso <mail>]");
     2
 }
 

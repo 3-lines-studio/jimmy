@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS orgs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     dir TEXT NOT NULL UNIQUE,
-    plan TEXT NOT NULL DEFAULT 'free',
+    plan TEXT NOT NULL DEFAULT '',
     personal_of_id TEXT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -153,9 +153,9 @@ pub struct User {
 pub struct Org {
     pub id: String,
     pub name: String,
-    /// `free` o `paid`: lo que decide si la org tiene sandbox. El sandbox llega
-    /// con el pago, y para probarlo alcanza con marcar el plan.
-    pub plan: String,
+    /// El plan que pagó la org, y nada más: es lo que decide si tiene máquina.
+    /// Sin plan no corre en ningún lado, y la máquina llega con el pago.
+    pub plan: Option<String>,
     /// Dónde vive todo lo de esta org, relativo a la raíz del control plane.
     /// Adentro están sus conversaciones y su workspace. La primera org se queda
     /// la raíz, que es donde ya estaba todo.
@@ -289,11 +289,11 @@ impl Store {
                     },
                     id,
                     name: personal_name(&email),
-                    plan: "free".to_string(),
+                    plan: None,
                 };
                 tx.execute(
-                    "INSERT INTO orgs (id, name, dir, personal_of_id, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    "INSERT INTO orgs (id, name, dir, plan, personal_of_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, '', ?4, ?5, ?5)",
                     params![org.id, org.name, org.dir, user.id, now()],
                 )
                 .map_err(|e| e.to_string())?;
@@ -377,7 +377,7 @@ impl Store {
             dir: format!("orgs/{id}"),
             id,
             name: name.to_string(),
-            plan: "free".to_string(),
+            plan: None,
         };
         tx.execute(
             "INSERT INTO orgs (id, name, dir, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
@@ -501,16 +501,37 @@ impl Store {
         Ok(uso)
     }
 
-    /// El plan de una org: `free` o `paid`. Es lo que decide si tiene sandbox:
-    /// el sandbox llega con el pago, y para probarlo alcanza con marcarlo.
-    pub fn set_plan(&self, org: &str, plan: &str) -> Result<(), String> {
-        if !matches!(plan, "free" | "paid") {
-            return Err(format!("ese plan no existe: {plan}"));
+    /// La org de la instancia es la que se quedó la raíz, que es donde su
+    /// trabajo vivió siempre: su máquina es la de acá. Sin fila no correría en
+    /// ningún lado, así que se la da al arrancar. No pisa una que ya tenga.
+    pub fn marcar_la_org_de_la_instancia(&self) -> Result<(), String> {
+        let id = {
+            let db = self.db.lock().unwrap();
+            db.query_row(
+                "SELECT id FROM orgs WHERE dir = '.' AND deleted_at IS NULL",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+        };
+        let Some(id) = id else {
+            return Ok(());
+        };
+        if self.machine(&id)?.is_some() {
+            return Ok(());
         }
+        self.set_machine(&id, "local", "", "")
+    }
+
+    /// El plan de una org. Es lo que decide si tiene máquina: sin plan no hay
+    /// dónde correr, y la máquina llega con el pago. No hay planes que valgan
+    /// por sí mismos: el nombre es el que diga el cobro.
+    pub fn set_plan(&self, org: &str, plan: Option<&str>) -> Result<(), String> {
         let db = self.db.lock().unwrap();
         db.execute(
             "UPDATE orgs SET plan = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
-            params![plan, now(), org],
+            params![plan.unwrap_or_default(), now(), org],
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -785,11 +806,12 @@ fn read_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
 }
 
 fn read_org(row: &rusqlite::Row) -> rusqlite::Result<Org> {
+    let plan: String = row.get(3)?;
     Ok(Org {
         id: row.get(0)?,
         name: row.get(1)?,
         dir: row.get(2)?,
-        plan: row.get(3)?,
+        plan: (!plan.is_empty()).then_some(plan),
     })
 }
 
@@ -924,9 +946,8 @@ impl Store {
         sandbox: &str,
         file_system: &str,
     ) -> Result<(), String> {
-        if provider.trim().is_empty() || sandbox.trim().is_empty() || file_system.trim().is_empty()
-        {
-            return Err("la máquina necesita proveedor, sandbox y filesystem".into());
+        if provider.trim().is_empty() {
+            return Err("la máquina necesita un proveedor".into());
         }
         let db = self.db.lock().unwrap();
         db.execute(
@@ -1591,18 +1612,20 @@ mod tests {
     fn el_plan_de_una_org_decide_si_tiene_sandbox() {
         let store = store("plan");
         let (_, org) = store.register("don@ejemplo.com").unwrap();
-        assert_eq!(org.plan, "free");
-        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, "free");
-        assert!(
-            store.set_plan(&org.id, "caro").is_err(),
-            "ese plan no existe"
-        );
+        assert_eq!(org.plan, None);
+        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, None);
 
-        store.set_plan(&org.id, "paid").unwrap();
-        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, "paid");
+        store.set_plan(&org.id, Some("paid")).unwrap();
+        assert_eq!(
+            store.org(&org.id).unwrap().unwrap().plan.as_deref(),
+            Some("paid")
+        );
         let por_mail = store.org_of_email("DON@ejemplo.com").unwrap().unwrap();
         assert_eq!(por_mail.id, org.id);
-        assert_eq!(por_mail.plan, "paid");
+        assert_eq!(por_mail.plan.as_deref(), Some("paid"));
+
+        store.set_plan(&org.id, None).unwrap();
+        assert_eq!(store.org(&org.id).unwrap().unwrap().plan, None);
         assert!(
             store.org_of_email("otro@ejemplo.com").unwrap().is_none(),
             "el que no está, no está"
@@ -1703,6 +1726,44 @@ mod tests {
         assert_eq!(store.index(&org.id).unwrap()[0].conversations.len(), 1);
     }
 
+    /// La org de la instancia es la que se quedó la raíz: su máquina es ésta,
+    /// y se la da al arrancar. Las demás no corren acá.
+    #[test]
+    fn la_org_de_la_instancia_corre_aca() {
+        let store = store("instancia");
+        let (user, primera) = store.register("don@ejemplo.com").unwrap();
+        assert_eq!(primera.dir, ".");
+        let segunda = store.create_org(&user.id, "La Empresa").unwrap();
+        assert_eq!(store.machine(&primera.id).unwrap(), None);
+
+        store.marcar_la_org_de_la_instancia().unwrap();
+        assert_eq!(
+            store
+                .machine(&primera.id)
+                .unwrap()
+                .unwrap()
+                .provider
+                .as_str(),
+            "local"
+        );
+        assert_eq!(store.machine(&segunda.id).unwrap(), None);
+
+        store
+            .set_machine(&primera.id, "tensorlake", "x", "fs")
+            .unwrap();
+        store.marcar_la_org_de_la_instancia().unwrap();
+        assert_eq!(
+            store
+                .machine(&primera.id)
+                .unwrap()
+                .unwrap()
+                .provider
+                .as_str(),
+            "tensorlake",
+            "no pisa la máquina que ya tiene"
+        );
+    }
+
     #[test]
     fn una_org_puede_tener_su_maquina() {
         let store = store("maquinas");
@@ -1725,7 +1786,11 @@ mod tests {
         assert_eq!(guardada.sandbox, "otra");
         assert_eq!(guardada.file_system, "otro-fs");
 
-        assert!(store.set_machine(&org.id, "", "x", "fs").is_err());
-        assert!(store.set_machine(&org.id, "tensorlake", "x", "").is_err());
+        assert!(store.set_machine(&org.id, "  ", "x", "fs").is_err());
+        store.set_machine(&org.id, "local", "", "").unwrap();
+        assert_eq!(
+            store.machine(&org.id).unwrap().unwrap().provider.as_str(),
+            "local"
+        );
     }
 }

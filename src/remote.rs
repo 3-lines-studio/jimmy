@@ -198,8 +198,11 @@ fn juntar(dir: &Path, con: &mut dyn FnMut(String)) -> Result<(), String> {
 /// está y se despierta si está dormido.
 pub fn ensure(org: &str, store: &Store) -> Result<Option<SandboxInfo>, String> {
     let Some(row) = store.machine(org)? else {
-        return Ok(None);
+        return Err("esta org todavía no tiene máquina: se le da una al pagar el plan".into());
     };
+    if row.provider == "local" {
+        return Ok(None);
+    }
     if row.provider != "tensorlake" {
         return Err(format!("no sé hablar con el proveedor {}", row.provider));
     }
@@ -763,10 +766,16 @@ mod tests {
         filesystems("borrar", &nombre).unwrap();
     }
 
+    /// Sin máquina no hay dónde correr: la org no cae al disco de acá, que no
+    /// es su lugar. La máquina llega con el plan.
     #[test]
-    fn una_org_sin_maquina_no_tiene_sandbox() {
+    fn una_org_sin_maquina_no_corre_en_ningun_lado() {
         let store = store("sin-maquina");
         let (_, org) = store.register("don@ejemplo.com").unwrap();
+        let error = ensure(&org.id, &store).unwrap_err();
+        assert!(error.contains("todavía no tiene máquina"), "{error}");
+
+        store.set_machine(&org.id, "local", "", "").unwrap();
         assert_eq!(ensure(&org.id, &store).unwrap(), None);
     }
 

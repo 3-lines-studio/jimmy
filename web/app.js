@@ -357,7 +357,7 @@ function renderCuenta() {
   const plan = document.createElement("span");
   plan.className = "value";
   plan.title = "Cómo está el plan de esta organización";
-  plan.textContent = org.plan === "paid" ? "pago" : "gratis";
+  plan.textContent = org.plan || "sin plan";
 
   const uso = document.createElement("span");
   uso.className = "value";
@@ -369,9 +369,9 @@ function renderCuenta() {
   if (!state.admin) return;
   const boton = document.createElement("button");
   boton.className = "link";
-  boton.textContent = org.plan === "paid" ? "volver a gratis" : "pasar a pago";
+  boton.textContent = org.plan ? "dejar sin plan" : "pasar a pago";
   boton.onclick = async () => {
-    const plan = org.plan === "paid" ? "free" : "paid";
+    const plan = org.plan ? "" : "paid";
     if (!(await api("/api/plan", { plan }))) return;
     await refresh();
   };

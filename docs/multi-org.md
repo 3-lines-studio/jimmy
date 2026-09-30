@@ -47,7 +47,7 @@ id sea de tipo texto y no un entero.
 | Tabla | Lo propio |
 | --- | --- |
 | `users` | `email`, `name` |
-| `orgs` | `name`, `dir` (su directorio, con sus conversaciones y su workspace adentro), `plan` (`free` o `paid`: el sandbox llega con el pago), `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
+| `orgs` | `name`, `dir` (su directorio, con sus conversaciones y su workspace adentro), `plan` (el que pagó: es lo que decide si la org tiene máquina, y la máquina llega con el pago), `personal_of_id` (el usuario dueño, si es la org personal de alguien) |
 | `memberships` | `org_id`, `user_id`, `role`, únicos por par |
 | `sessions` | `token`, `user_id`, `expires_at` |
 
@@ -84,7 +84,10 @@ la capa de datos tiene que estar sola en un módulo, que es como está.
 El control plane no sabe de Tensorlake: le pide la máquina de una org a
 `remote::ensure`, que lee su fila en `machines` —el proveedor, el nombre del
 sandbox y el filesystem que monta— y lo crea si no está o lo despierta si está
-dormido. Sin fila, el trabajo corre acá y no hay nada que despertar.
+dormido. Sin fila no hay dónde correr y el turno lo dice: el trabajo de una org
+no cae al disco del control plane, que no es su lugar. La única máquina de acá
+es `local`, que es la de la instancia —y la de las pruebas—: el trabajo corre en
+el mismo contenedor, en el lugar de esa org.
 
 Esa fila elige dónde corre el turno, no dónde corren las herramientas:
 con sandbox, el worker va adentro y sus herramientas son las de allá. El
@@ -346,8 +349,8 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
 6. **Hecho** — El turno adentro del sandbox: la fila de `machines` elige dónde
    corre, `remote::ensure` lo despierta antes del turno, el agente se publica en
    el volumen y el worker arranca ahí por la API de procesos. Los archivos que
-   toca son los suyos y la agenda corre igual que la web. Sin fila, el trabajo
-   corre acá.
+   toca son los suyos y la agenda corre igual que la web. Sin fila no corre en
+   ningún lado; la org de la instancia tiene una fila `local` y corre acá.
 7. **Hecho** — La web leyendo el volumen: la lista sale del índice —sin
    despertar a nadie— y los archivos y los adjuntos se le piden al sandbox en
    vivo, que para eso se despierta, como con el browser. Lo que la web escribe lo
@@ -358,12 +361,14 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
    volumen, donde lo ve el agente, y lo que manda el asistente espera en la cola
    del chat —que vive adentro, porque la escribe el CLI— y el worker, que corre
    adentro, la lee de ahí y la vacía. Probado de punta a punta con un archivo de verdad.
-9. **Hecho** — El alta de una org: con el plan en `paid` se crea su filesystem
+9. **Hecho** — El alta de una org: cuando se paga el plan se crea su filesystem
    —lo hace el SDK de Tensorlake, por `uv run --with tensorlake python
    deploy/filesystems.py crear`, que es el único que sabe hablar con ese
    servicio— y queda su fila en `machines`. El filesystem lleva el nombre de la
-   fila: es el volumen que el sandbox monta y nada más. Idempotente. Falta la
-   pasarela: hoy el plan se marca a mano (`jimmy orgs plan <mail> paid`).
+   fila: es el volumen que el sandbox monta y nada más. Idempotente, y el plan
+   no se mueve si el alta no salió. Falta la pasarela: hoy el plan se marca a
+   mano (`jimmy orgs plan <mail> paid`) o desde la web, un administrador de la
+   instancia.
 10. **Hecho** — El entorno del agente adentro del sandbox: `sandbox.dockerfile`
     con las toolchains, Chromium con su venv y `ffmpeg`, en una imagen que se
     registra aparte del código. El agente sigue llegando publicado.

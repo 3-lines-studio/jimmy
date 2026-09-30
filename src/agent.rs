@@ -1,11 +1,14 @@
 use crate::bus::Bus;
 use crate::conversations;
-use crate::log::Log;
 use crate::media;
-use crate::pool::{Pool, Turn};
+use crate::pool::Pool;
 use crate::protocol::{self, Event};
+use crate::sandbox::{Sandbox, Turn};
+use crate::store::Store;
+use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
+use crate::workspace::Place;
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -33,9 +36,18 @@ pub struct Agent {
     root: PathBuf,
     workspace: String,
     cwd: String,
+    /// De quién es este turno. El worker no la sabe: corre donde el control
+    /// plane le dice.
+    org: Option<String>,
+    /// La base del control plane, para lo que el turno necesita saber de la org.
+    store: Option<Arc<Store>>,
+    /// El modelo del otro lado: lo que corre adentro del sandbox le pide el
+    /// modelo a este control plane, así la clave del proveedor no viaja.
+    modelo: Option<Arc<crate::modelo::Modelo>>,
+    secretos: Option<Arc<crate::secrets::Secretos>>,
     fragments: String,
     context: String,
-    pool: Arc<Pool>,
+    pool: Arc<dyn Sandbox>,
     bus: Arc<Bus>,
     /// Un candado por conversación: un turno a la vez, el que llega espera.
     turns: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
@@ -55,10 +67,7 @@ impl Agent {
     ) -> Self {
         let cwd = workspace.clone();
         let context = runtime_context(&model, &base, &root, &workspace, &cwd);
-        let pool = Pool::new(
-            worker_env(&base, &model, &api_key, context_window, &root, &workspace),
-            None,
-        );
+        let pool: Arc<dyn Sandbox> = Pool::new(None);
         Self {
             base,
             model,
@@ -67,6 +76,10 @@ impl Agent {
             root,
             cwd: workspace.clone(),
             workspace,
+            org: None,
+            store: None,
+            modelo: None,
+            secretos: None,
             fragments,
             context,
             pool,
@@ -83,31 +96,16 @@ impl Agent {
         self.cancel = cancel;
     }
 
-    /// Interrumpe el turno que esté corriendo, y deja dicho quién lo frenó.
+    /// Interrumpe el turno que esté corriendo. Quién lo frenó se lo dice al
+    /// worker, que es el que escribe el log: acá sólo se lo interrumpe.
     pub fn cancel(&self, session: &Session, author: &str) {
-        if !author.is_empty() {
-            self.say(
-                session,
-                &Event::Stopped {
-                    author: author.to_string(),
-                },
-            );
-        }
-        self.pool.cancel(&session.key());
+        self.pool.cancel(&session.key(), author);
     }
 
-    /// Corta el worker y se lleva la carpeta de la conversación.
-    pub fn delete(&self, key: &str) -> Result<(), String> {
+    /// Suelta la conversación: corta el worker, si hay alguno. Lo que quedó en
+    /// el disco lo borra el workspace, que es de quien es.
+    pub fn release(&self, key: &str) {
         self.pool.kill(key);
-        let dir = self.conversation_dir(key);
-        if !dir.is_dir() {
-            return Ok(());
-        }
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
-    }
-
-    pub fn conversation_dir(&self, key: &str) -> PathBuf {
-        conversations::get(&self.root, Path::new(&self.workspace), key).dir
     }
 
     /// Busca en lo que se dijo, no en lo que se escribió en los archivos: es lo
@@ -163,26 +161,169 @@ impl Agent {
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
+    /// La base del control plane. La abre quien arma el agente: el worker no la
+    /// necesita, porque sabe dónde trabajar por el entorno del turno.
+    pub(crate) fn set_store(&mut self, store: Arc<Store>) {
+        self.store = Some(store);
+    }
+
+    /// El modelo del otro lado: lo que corre adentro del sandbox le pide el
+    /// modelo al control plane, así la clave del proveedor no viaja.
+    pub(crate) fn set_modelo(&mut self, modelo: Arc<crate::modelo::Modelo>) {
+        self.modelo = Some(modelo);
+    }
+
+    /// El modelo del otro lado, si hay: lo que la web necesita para atender a
+    /// los que corren adentro de un sandbox.
+    pub(crate) fn modelo(&self) -> Option<Arc<crate::modelo::Modelo>> {
+        self.modelo.clone()
+    }
+
+    /// Despertar la máquina de la org antes del turno. Sin org o sin fila en
+    /// `machines` el trabajo corre acá y no hay nada que despertar.
+    fn wake(&self) -> Result<Option<SandboxInfo>, String> {
+        let (Some(org), Some(store)) = (&self.org, &self.store) else {
+            return Ok(None);
+        };
+        crate::remote::ensure(org, store)
+    }
+
+    /// Copia a la base el índice de lo que hay en el volumen de la org: es lo
+    /// que la web muestra sin abrir el sandbox. Que no se pueda no rompe el
+    /// turno: el índice se queda como estaba y se reintenta en el próximo.
+    fn sincronizar(&self, listo: &SandboxInfo) {
+        let (Some(store), Some(org)) = (&self.store, &self.org) else {
+            return;
+        };
+        let Some(cliente) = Tensorlake::from_env() else {
+            return;
+        };
+        if let Err(error) = crate::remote::sincronizar(&cliente, &listo.name, store, org) {
+            eprintln!("jimmy: no pude sincronizar el índice de {org}: {error}");
+        }
+    }
+
+    /// La conversación como la ve el worker adentro del sandbox: los mismos
+    /// nombres, con los paths de su volumen, que es donde va a escribir.
+    fn en_el_sandbox(
+        &self,
+        mut conversation: conversations::Conversation,
+        en_sandbox: bool,
+    ) -> conversations::Conversation {
+        if en_sandbox {
+            conversation.cwd =
+                PathBuf::from(crate::remote::al_sandbox(&self.root, &conversation.cwd));
+        }
+        conversation
+    }
+
+    /// La máquina donde trabaja el turno: la de este proceso. El worker de una
+    /// org con sandbox corre adentro del sandbox, así que cuando el turno pasa
+    /// por acá es porque el trabajo es de este lado.
+    fn machine(&self) -> Arc<dyn axe::machine::Machine> {
+        Arc::new(axe::machine::Local::new(&self.cwd))
+    }
+
     /// Tell the parent what the turn is doing, event by event. Only the worker
     /// sets this: it is the one with a pipe at the other end of the process.
     pub(crate) fn set_pipe(&mut self, pipe: Arc<Pipe>) {
         self.pipe = Some(pipe);
     }
 
+    pub(crate) fn set_secretos(&mut self, secretos: Arc<crate::secrets::Secretos>) {
+        self.secretos = Some(secretos);
+    }
+
+    pub(crate) fn secretos(&self) -> Option<Arc<crate::secrets::Secretos>> {
+        self.secretos.clone()
+    }
+
     /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
-        self.pool = Pool::new(
-            worker_env(
-                &self.base,
-                &self.model,
-                &self.api_key,
-                self.context_window,
-                &self.root,
-                &self.workspace,
-            ),
-            Some(exe),
+        self.pool = Pool::new(Some(exe));
+    }
+
+    /// El mismo agente apuntado a otra org: mismo modelo, mismo pool y los
+    /// mismos candados (dos turnos de la misma conversación se siguen
+    /// esperando, y de orgs distintas también), otro lugar donde trabajar.
+    pub fn at(&self, place: &Place) -> Agent {
+        let mut agent = self.clone();
+        agent.root = place.root.clone();
+        agent.workspace = place.workspace.display().to_string();
+        agent.cwd = agent.workspace.clone();
+        agent.org = place.org.clone();
+        agent.context = runtime_context(
+            &agent.model,
+            &agent.base,
+            &agent.root,
+            &agent.workspace,
+            &agent.cwd,
         );
+        agent
+    }
+
+    /// Con qué se reconstruye el worker: la config del agente más el lugar
+    /// donde le toca correr. Si el turno va a un sandbox, ese lugar es su
+    /// volumen, y los paths son los de adentro.
+    /// El entorno del turno. La clave del proveedor no sale del control plane:
+    /// adentro del sandbox no hay proxy que valga si no, así que sin proxy el
+    /// turno no corre. Acá, en el mismo proceso, también pasa por el proxy
+    /// cuando hay uno, para que el consumo se anote en un solo lugar.
+    fn worker_env(&self, en_sandbox: bool) -> Result<Vec<(String, String)>, String> {
+        let (root, workspace) = match en_sandbox {
+            true => (PathBuf::from(MOUNT), format!("{MOUNT}/workspace")),
+            false => (self.root.clone(), self.workspace.clone()),
+        };
+        // Los secretos de la org viajan con el turno: adentro del sandbox no hay
+        // de dónde más sacarlos. Van antes que lo del turno, así lo del turno
+        // manda si alguna vez se cruzan.
+        let suyos = match en_sandbox {
+            true => match (&self.secretos, &self.org) {
+                (Some(secretos), Some(org)) => secretos.entorno(org),
+                _ => Vec::new(),
+            },
+            false => Vec::new(),
+        };
+        let mut env = worker_env(
+            &self.base,
+            &self.model,
+            &self.api_key,
+            self.context_window,
+            &root,
+            &workspace,
+        );
+        for par in suyos {
+            env.push(par);
+        }
+        let Some(modelo) = &self.modelo else {
+            if en_sandbox {
+                return Err(
+                    "no hay proxy del modelo: adentro del sandbox la clave no viaja".into(),
+                );
+            }
+            return Ok(env);
+        };
+        let destino = match en_sandbox {
+            true => modelo
+                .url()
+                .ok_or("falta JIMMY_WEB_URL: el sandbox no tiene cómo llegar al control plane")?,
+            false => match modelo.url_local() {
+                Some(destino) => destino,
+                None => return Ok(env),
+            },
+        };
+        let Some(org) = &self.org else {
+            return Err("ese turno no sabe de qué org es, y el modelo es de la org".into());
+        };
+        // El pase sólo sirve para pedirle turnos al modelo de esa org.
+        for (nombre, valor) in [("AXE_BASE", destino), ("OPENAI_API_KEY", modelo.pase(org))] {
+            match env.iter_mut().find(|(otro, _)| *otro == nombre) {
+                Some(par) => par.1 = valor,
+                None => env.push((nombre.to_string(), valor)),
+            }
+        }
+        Ok(env)
     }
 
     /// Hand the turn to this conversation's worker and relay what it answers.
@@ -236,21 +377,10 @@ impl Agent {
         );
     }
 
+    /// Avisarle a los que están mirando. El log no lo escribe el padre: lo
+    /// escribe el worker, que es el único que está donde vive la conversación.
     fn say(&self, session: &Session, event: &Event) {
-        let conversation = self.conversation(session);
-        let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
-        self.bus.publish(&conversation.key, &log, event);
-    }
-
-    /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
-    /// CLI es otro proceso y no puede escribir el log, así que las deja en la
-    /// cola de la conversación y esto las publica.
-    fn flush_media(&self, session: &Session) {
-        let conversation = self.conversation(session);
-        for event in media::drain(&conversation) {
-            self.say(session, &event);
-        }
+        self.bus.show(&session.key(), event);
     }
 
     /// Un turno por conversación: el que llega segundo espera.
@@ -273,14 +403,39 @@ impl Agent {
         let mut live = Live::new(transport, session, status);
         let conversation = self.conversation(session);
         let _ = std::fs::create_dir_all(&conversation.dir);
-        let log = Log::in_dir(&conversation.dir);
-        let turn = self
-            .pool
-            .turn(session, &conversation, command, &mut |event| {
+        let sandbox = match self.wake() {
+            Ok(listo) => listo,
+            Err(error) => {
+                let message = format!("⚠️ {error}");
+                transport.fail(session, live.take(), &message);
+                self.bus.show(&conversation.key, &Event::Error { message });
+                return Err(error);
+            }
+        };
+        let env = match self.worker_env(sandbox.is_some()) {
+            Ok(env) => env,
+            Err(error) => {
+                let message = format!("⚠️ {error}");
+                transport.fail(session, live.take(), &message);
+                self.bus.show(&conversation.key, &Event::Error { message });
+                return Err(error);
+            }
+        };
+        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
+        let turn = self.pool.turn(
+            session,
+            &del_worker,
+            &env,
+            command,
+            &mut |event| {
                 live.on(event);
-                self.bus.publish(&conversation.key, &log, event)
-            });
-        self.flush_media(session);
+                self.bus.show(&conversation.key, event)
+            },
+            sandbox.as_ref(),
+        );
+        if let Some(listo) = &sandbox {
+            self.sincronizar(listo);
+        }
         match turn {
             Ok(Turn::Answer(text)) => {
                 transport.answer(session, live.take(), &text);
@@ -398,15 +553,40 @@ impl Agent {
     ) -> Result<String, String> {
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
-        let user = Message {
-            role: "user".into(),
-            content: prompt.to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: String::new(),
-            reasoning: String::new(),
-            images: Vec::new(),
+        let conversation = self.conversation(session);
+        let _ = std::fs::create_dir_all(&conversation.dir);
+        let sandbox = self.wake()?;
+        let env = self.worker_env(sandbox.is_some())?;
+        let del_worker = self.en_el_sandbox(conversation.clone(), sandbox.is_some());
+        let status = if silent {
+            None
+        } else {
+            transport.progress(session)
         };
-        self.execute(transport, session, vec![user], Vec::new(), None, silent)
+        let mut live = Live::new(transport, session, status);
+        let command = protocol::Command::Prompt {
+            text: prompt.to_string(),
+            images: Vec::new(),
+            author: String::new(),
+        };
+        let turn = self.pool.turn(
+            session,
+            &del_worker,
+            &env,
+            command,
+            &mut |event| {
+                live.on(event);
+                self.bus.show(&conversation.key, event)
+            },
+            sandbox.as_ref(),
+        )?;
+        if let Some(listo) = &sandbox {
+            self.sincronizar(listo);
+        }
+        match turn {
+            Turn::Answer(text) => Ok(text),
+            Turn::Failed(message) => Err(message),
+        }
     }
 
     pub(crate) fn conversation(&self, session: &Session) -> conversations::Conversation {
@@ -422,7 +602,7 @@ impl Agent {
         dir: Option<PathBuf>,
         silent: bool,
     ) -> Result<String, String> {
-        let mut tools = axe::tui::build_tools(&self.cwd);
+        let mut tools = axe::tui::build_tools_on(self.machine());
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {
@@ -745,6 +925,17 @@ struct EventSink {
     pipe: Option<Arc<Pipe>>,
 }
 
+impl EventSink {
+    /// Un evento del turno: sale por el pipe, que es por donde el worker le
+    /// cuenta al padre y donde queda escrito el log.
+    fn emit(&mut self, event: Event) {
+        let Some(pipe) = &self.pipe else {
+            return;
+        };
+        let _ = pipe.emit(&event);
+    }
+}
+
 pub(crate) struct Inflight {
     path: PathBuf,
     _file: std::fs::File,
@@ -785,29 +976,20 @@ impl Sink for EventSink {
     }
 
     fn assistant_delta(&mut self, text: &str) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::Delta {
+        self.emit(Event::Delta {
             text: text.to_string(),
         });
     }
 
     fn tool_delta(&mut self, call: &ToolCall, text: &str) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolDelta {
+        self.emit(Event::ToolDelta {
             id: call.id.clone(),
             text: text.to_string(),
         });
     }
 
     fn tool_start(&mut self, call: &ToolCall) {
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolStart {
+        self.emit(Event::ToolStart {
             id: call.id.clone(),
             name: call.name.clone(),
             args: call.arguments.clone(),
@@ -829,10 +1011,7 @@ impl Sink for EventSink {
                 }),
             );
         }
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::ToolResult {
+        self.emit(Event::ToolResult {
             id: call.id.clone(),
             text: output.text.clone(),
             ms: elapsed.as_millis() as u64,
@@ -845,10 +1024,7 @@ impl Sink for EventSink {
         if message.content.is_empty() {
             return;
         }
-        let Some(pipe) = &self.pipe else {
-            return;
-        };
-        let _ = pipe.emit(&Event::Assistant {
+        self.emit(Event::Assistant {
             text: message.content.clone(),
         });
     }
@@ -868,7 +1044,7 @@ fn worker_env(
     root: &Path,
     workspace: &str,
 ) -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         ("OPENAI_API_KEY".into(), api_key.to_string()),
         ("AXE_BASE".into(), base.to_string()),
         ("AXE_MODEL".into(), model.to_string()),
@@ -878,7 +1054,15 @@ fn worker_env(
         ),
         ("JIMMY_ROOT".into(), root.display().to_string()),
         ("JIMMY_WORKSPACE".into(), workspace.to_string()),
-    ]
+    ];
+    // El worker de acá los hereda, el del sandbox no: sin ellos no puede armar
+    // el system prompt, así que van en el entorno del turno.
+    for nombre in ["JIMMY_PROMPT", "JIMMY_VARS"] {
+        if let Some(valor) = crate::env(nombre) {
+            env.push((nombre.into(), valor));
+        }
+    }
+    env
 }
 
 fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &str) -> String {
@@ -959,7 +1143,7 @@ fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
 /// `uploads/` de la conversación, que es lo que la web puede servir después. Un
 /// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
 /// mostrar y se queda afuera.
-fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
+pub(crate) fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
     let uploads = dir.join(media::UPLOADS);
     images
         .iter()
@@ -1086,6 +1270,118 @@ mod tests {
     use crate::transport::Msg;
     use axe::ToolCall;
     use std::sync::Mutex;
+
+    fn agente(org: Option<&str>) -> Agent {
+        let base = std::env::temp_dir().join(format!("jimmy-agente-{}", std::process::id()));
+        let lugar = Place {
+            root: base.clone(),
+            workspace: base.join("workspace"),
+            org: org.map(str::to_string),
+        };
+        Agent::new(
+            "https://api.deepseek.com".into(),
+            "deepseek-flash".into(),
+            "la-clave".into(),
+            None,
+            base,
+            "un-workspace".into(),
+            String::new(),
+        )
+        .at(&lugar)
+    }
+
+    /// El modelo es el control plane, de los dos lados: adentro del sandbox
+    /// porque la clave no viaja, y acá adentro para que el consumo pase por un
+    /// solo lugar. La clave del proveedor no aparece en ningún entorno.
+    #[test]
+    fn el_modelo_pasa_por_el_control_plane_en_los_dos_casos() {
+        let modelo = Arc::new(crate::modelo::Modelo::new(
+            "https://api.deepseek.com".into(),
+            "la-clave".into(),
+            Some("https://jimmy.ejemplo".into()),
+            Some("http://127.0.0.1:9/modelo".into()),
+        ));
+        let mut agent = agente(Some("org-1"));
+        agent.set_modelo(modelo.clone());
+        let pase = modelo.pase("org-1");
+
+        let adentro: std::collections::HashMap<String, String> =
+            agent.worker_env(true).unwrap().into_iter().collect();
+        assert_eq!(adentro["AXE_BASE"], "https://jimmy.ejemplo/modelo");
+        assert_eq!(adentro["OPENAI_API_KEY"], pase);
+
+        let aca: std::collections::HashMap<String, String> =
+            agent.worker_env(false).unwrap().into_iter().collect();
+        assert_eq!(aca["AXE_BASE"], "http://127.0.0.1:9/modelo");
+        assert_eq!(aca["OPENAI_API_KEY"], pase);
+        for entorno in [&adentro, &aca] {
+            assert!(
+                !entorno["OPENAI_API_KEY"].contains("la-clave"),
+                "la clave del proveedor se fue con el turno"
+            );
+        }
+
+        // Sin org no hay a quién anotarle el consumo, y el modelo es de una
+        // org: ese turno no corre.
+        let mut sin_org = agente(None);
+        sin_org.set_modelo(modelo.clone());
+        assert!(sin_org.worker_env(false).is_err());
+
+        // Y sin proxy no hay turno adentro del sandbox: la clave no viaja.
+        let sin_proxy = agente(Some("org-1"));
+        let error = sin_proxy.worker_env(true).unwrap_err();
+        assert!(error.contains("no hay proxy"), "{error}");
+        let aca = sin_proxy.worker_env(false).unwrap();
+        let aca: std::collections::HashMap<String, String> = aca.into_iter().collect();
+        assert_eq!(
+            aca["OPENAI_API_KEY"], "la-clave",
+            "acá no salió del proceso"
+        );
+    }
+
+    /// Los secretos de la org van con el turno y a ningún otro lado: adentro
+    /// del sandbox no hay de dónde más sacarlos, y acá se quedan donde están,
+    /// que es donde ya los tiene el que corre.
+    #[test]
+    fn los_secretos_de_la_org_van_con_su_turno() {
+        let dir = resume_dir("secretos");
+        let store = Arc::new(crate::store::Store::open(&dir.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        let (_, ajena) = store.register("otra@ejemplo.com").unwrap();
+        let key = crate::secrets::Key::from_hex(&"ab".repeat(32)).unwrap();
+        let secretos = Arc::new(crate::secrets::Secretos::new(key, store));
+        secretos.set(&org.id, "STRIPE_KEY", "sk-1").unwrap();
+        secretos.set(&ajena.id, "DE_OTRA", "no-va").unwrap();
+        secretos.set(&org.id, "PATH", "/no").unwrap();
+
+        let mut agent = agente(Some(&org.id));
+        agent.set_secretos(secretos.clone());
+        agent.set_modelo(Arc::new(crate::modelo::Modelo::new(
+            "https://api.deepseek.com".into(),
+            "la-clave".into(),
+            Some("https://jimmy.ejemplo".into()),
+            None,
+        )));
+        let adentro: std::collections::HashMap<String, String> =
+            agent.worker_env(true).unwrap().into_iter().collect();
+        assert_eq!(adentro["STRIPE_KEY"], "sk-1");
+        assert!(
+            !adentro.contains_key("DE_OTRA"),
+            "los de otra org no viajan"
+        );
+        assert!(
+            !adentro.contains_key("PATH") || adentro["PATH"] != "/no",
+            "lo del turno no se pisa"
+        );
+
+        let aca: std::collections::HashMap<String, String> =
+            agent.worker_env(false).unwrap().into_iter().collect();
+        assert!(
+            !aca.contains_key("STRIPE_KEY"),
+            "acá el turno ya tiene el entorno del control plane"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn assistant(content: &str, tool_calls: Vec<ToolCall>) -> Message {
         Message {
@@ -1322,6 +1618,25 @@ mod tests {
 
     /// Cada llamada escribe un archivo nuevo: reescribir uno que otro proceso
     /// todavía está ejecutando da «Text file busy».
+    /// Lo que ve el que está mirando la conversación: el log lo escribe el
+    /// worker, así que desde acá se observa el flujo, que son los mismos
+    /// eventos en vivo.
+    fn watching(agent: &Agent, key: &str) -> std::sync::mpsc::Receiver<Event> {
+        agent.bus.attach(key, "quien mira").1
+    }
+
+    /// El próximo evento que no sea de presencia: quién está mirando no es
+    /// parte de la conversación.
+    fn siguiente(flujo: &std::sync::mpsc::Receiver<Event>) -> Option<String> {
+        while let Ok(event) = flujo.recv_timeout(Duration::from_millis(200)) {
+            let text = serde_json::to_string(&event).unwrap();
+            if !text.contains("\"presence\"") && !text.contains("\"online\"") {
+                return Some(text);
+            }
+        }
+        None
+    }
+
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = resume_dir(name);
@@ -1333,6 +1648,33 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// Apuntar el agente a otra org cambia dónde trabaja y nada más: el pool,
+    /// el bus y los candados son los del agente de siempre.
+    #[test]
+    fn el_agente_apuntado_a_otra_org_cambia_de_lugar_y_comparte_lo_demas() {
+        let root = resume_dir("at");
+        let agent = agent_in(&root);
+        let org = root.join("orgs/01ABC");
+        let otro = Place {
+            root: org.clone(),
+            workspace: org.join("workspace"),
+            org: Some("01ABC".into()),
+        };
+
+        let clon = agent.at(&otro);
+        let workspace = otro.workspace.display().to_string();
+        assert_eq!(clon.root, org);
+        assert_eq!(clon.workspace, workspace);
+        assert_eq!(clon.cwd, workspace);
+        assert_eq!(clon.org.as_deref(), Some("01ABC"));
+        assert!(clon.context.contains(&workspace), "{}", clon.context);
+        assert_eq!(agent.root, root, "el de siempre no se movió");
+        assert!(Arc::ptr_eq(&agent.pool, &clon.pool));
+        assert!(Arc::ptr_eq(&agent.turns, &clon.turns));
+        assert!(Arc::ptr_eq(&agent.bus, &clon.bus));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1352,66 +1694,26 @@ done
 ",
         ));
         let fake = Fake::default();
+        let flujo = watching(&agent, "x");
         agent
             .respond(&fake, &Session::channel("x"), "hola", Vec::new(), "bob")
             .unwrap();
         assert_eq!(fake.answers.lock().unwrap().as_slice(), ["eco"]);
         assert!(fake.failures.lock().unwrap().is_empty());
 
-        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
-        let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(lines.len(), 5, "{log}");
+        let mut lines = Vec::new();
+        while let Some(event) = siguiente(&flujo) {
+            lines.push(event);
+        }
+        assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(
             lines[0].contains("\"user\"") && lines[0].contains("hola"),
-            "{log}"
+            "{lines:?}"
         );
-        assert!(lines[1].contains("\"assistant\""), "{log}");
-        assert!(lines[2].contains("\"tool_start\""), "{log}");
-        assert!(lines[3].contains("\"tool_result\""), "{log}");
-        assert!(lines[4].contains("\"done\""), "{log}");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn what_jimmy_send_leaves_in_the_queue_ends_up_in_the_log() {
-        let root = resume_dir("media");
-        let mut agent = agent_in(&root);
-        agent.use_worker_exe(worker_script(
-            "media.sh",
-            "echo '{\"event\":\"ready\"}'
-while read -r line; do
-  case \"$line\" in *shutdown*) exit 0 ;; esac
-  echo '{\"event\":\"done\",\"text\":\"listo\"}'
-done
-",
-        ));
-        let conversation = conversations::get(&root, Path::new("/tmp"), "x");
-        media::queue(
-            &conversation,
-            &Event::Image {
-                name: "17-foto.png".into(),
-                caption: "mirá".into(),
-            },
-        )
-        .unwrap();
-
-        agent
-            .respond(
-                &Fake::default(),
-                &Session::channel("x"),
-                "hola",
-                Vec::new(),
-                "bob",
-            )
-            .unwrap();
-
-        let log = std::fs::read_to_string(root.join("chats/x/conversation.jsonl")).unwrap();
-        assert!(log.contains("\"event\":\"image\""), "{log}");
-        assert!(log.contains("\"name\":\"17-foto.png\""), "{log}");
-        assert!(
-            !conversation.dir.join("outbox.jsonl").exists(),
-            "la cola queda vacía"
-        );
+        assert!(lines[1].contains("\"assistant\""), "{lines:?}");
+        assert!(lines[2].contains("\"tool_start\""), "{lines:?}");
+        assert!(lines[3].contains("\"tool_result\""), "{lines:?}");
+        assert!(lines[4].contains("\"done\""), "{lines:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1433,7 +1735,7 @@ done
                 go.display()
             ),
         ));
-        let log = root.join("chats/x/conversation.jsonl");
+        let flujo = watching(&agent, "x");
         let running = agent.clone();
         let handle = std::thread::spawn(move || {
             running
@@ -1446,21 +1748,17 @@ done
                 )
                 .unwrap();
         });
-        let mut text = String::new();
-        for _ in 0..400 {
-            text = std::fs::read_to_string(&log).unwrap_or_default();
-            if text.contains("\"user\"") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(text.contains("\"author\":\"ana\""), "{text}");
-        assert!(!text.contains("\"done\""), "el turno sigue: {text}");
+        let primero = siguiente(&flujo).expect("el mensaje no llegó");
+        assert!(primero.contains("\"author\":\"ana\""), "{primero}");
+        assert!(
+            siguiente(&flujo).is_none(),
+            "el turno sigue y ya hay otro evento"
+        );
 
         std::fs::write(&go, "anda").unwrap();
         handle.join().unwrap();
-        let text = std::fs::read_to_string(&log).unwrap();
-        assert!(text.contains("\"done\""), "{text}");
+        let ultimo = siguiente(&flujo).expect("el turno no terminó");
+        assert!(ultimo.contains("\"done\""), "{ultimo}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

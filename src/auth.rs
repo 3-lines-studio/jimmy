@@ -32,6 +32,10 @@ struct Link {
 
 pub struct Auth {
     allowed: Vec<String>,
+    /// Quiénes pueden tocar el plan de una org. Es de la instancia, no de la
+    /// org: mover el plan es lo que después va a hacer el pago, y hasta que
+    /// exista lo hace el dueño de la casa.
+    admins: Vec<String>,
     links: Mutex<HashMap<String, Link>>,
     store: Arc<Store>,
     pub mail: Option<Mail>,
@@ -42,19 +46,33 @@ impl Auth {
     /// `allowed` es la lista de mails autorizados, separados por coma. La base
     /// del control plane la abre quien arma todo esto, que es el que sabe dónde
     /// vive.
-    pub fn new(store: Arc<Store>, allowed: &str, mail: Option<Mail>, dev: bool) -> Auth {
-        let allowed = allowed
-            .split(',')
-            .map(|email| email.trim().to_lowercase())
-            .filter(|email| !email.is_empty())
-            .collect();
+    pub fn new(
+        store: Arc<Store>,
+        allowed: &str,
+        mail: Option<Mail>,
+        dev: bool,
+        admins: &str,
+    ) -> Auth {
+        let mails = |lista: &str| -> Vec<String> {
+            lista
+                .split(',')
+                .map(|email| email.trim().to_lowercase())
+                .filter(|email| !email.is_empty())
+                .collect()
+        };
         Auth {
-            allowed,
+            allowed: mails(allowed),
+            admins: mails(admins),
             links: Mutex::new(HashMap::new()),
             store,
             mail,
             dev,
         }
+    }
+
+    /// Si este mail puede tocar el plan de una org.
+    pub fn is_admin(&self, email: &str) -> bool {
+        self.admins.contains(&email.trim().to_lowercase())
     }
 
     /// Quién es el dueño de la sesión, con su id, si sigue viva.
@@ -144,6 +162,7 @@ fn test_auth(root: &std::path::Path, emails: &str) -> Auth {
         emails,
         None,
         true,
+        "",
     )
 }
 

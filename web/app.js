@@ -366,13 +366,13 @@ function renderCuenta() {
 
   cuentaEl.append(plan, uso);
 
-  if (!state.dev) return;
+  if (!state.admin) return;
   const boton = document.createElement("button");
   boton.className = "link";
   boton.textContent = org.plan === "paid" ? "volver a gratis" : "pasar a pago";
   boton.onclick = async () => {
     const plan = org.plan === "paid" ? "free" : "paid";
-    if (!(await api("/api/dev/plan", { plan }))) return;
+    if (!(await api("/api/plan", { plan }))) return;
     await refresh();
   };
   cuentaEl.append(boton);

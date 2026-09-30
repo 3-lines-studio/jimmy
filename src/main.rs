@@ -590,6 +590,7 @@ fn serve_web(
         &env("JIMMY_WEB_EMAILS").unwrap_or_default(),
         mail::Mail::from_env(),
         env("JIMMY_WEB_DEV").is_some_and(|value| value == "1"),
+        &env("JIMMY_ADMINS").unwrap_or_default(),
     );
     if auth.allowed().is_empty() {
         eprintln!("jimmy: no hay mails autorizados; poné JIMMY_WEB_EMAILS");

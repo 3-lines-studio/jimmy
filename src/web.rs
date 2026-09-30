@@ -184,7 +184,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/login") => login(web, &request, stream),
         ("POST", "/api/org") => set_org(web, &request, stream),
         ("POST", "/api/orgs") => create_org(web, &request, stream),
-        ("POST", "/api/dev/plan") => dev_plan(web, &request, stream),
+        ("POST", "/api/plan") => set_plan(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
         ("GET", "/api/state") => state(web, &request, stream),
@@ -488,6 +488,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
             })
         })
         .collect();
+    let admin = web.auth.is_admin(&user.email);
     http::send_json(
         stream,
         200,
@@ -502,7 +503,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "completion": uso.completion,
                 "total": uso.total(),
             },
-            "dev": web.auth.dev || plan_de_prueba(),
+            "admin": admin,
             "machine": machine::usage(&web.root),
             "projects": projects,
             "previews": previews,
@@ -528,22 +529,16 @@ fn set_org(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io
     state(web, request, stream)
 }
 
-/// Si esta instancia deja mover el plan a mano. Es una puerta aparte de
-/// `JIMMY_WEB_DEV` a propósito: aquélla deja entrar sin mail, y para probar el
-/// sistema no hace falta eso.
-fn plan_de_prueba() -> bool {
-    crate::env("JIMMY_WEB_DEV_PLAN").is_some()
-}
-
-/// Marcar el plan a mano, para probar el sistema antes de que exista la
-/// pasarela: pasar a pago da de alta el sandbox de la org.
-fn dev_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    if !plan_de_prueba() && !web.auth.dev {
-        return http::send_error(stream, 403, "esa puerta no está abierta");
-    }
+/// Mover el plan de la org activa. Es una acción de administración, no una
+/// puerta de prueba: la va a hacer el pago, y hasta que exista la hace el dueño
+/// de la instancia. Pasar a pago da de alta el sandbox.
+fn set_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(user) = current_user(web, request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
+    if !web.auth.is_admin(&user.email) {
+        return http::send_error(stream, 403, "el plan de una org lo mueve un administrador");
+    }
     let Some(org) = web.auth.store().active_org(&user.id).ok().flatten() else {
         return http::send_error(stream, 400, "no hay org activa");
     };
@@ -1235,7 +1230,13 @@ done
             agent.set_modelo(modelo);
         }
         agent.set_store(store.clone());
-        let auth = Auth::new(store.clone(), "bob@ejemplo.com, ana@ejemplo.com", None, dev);
+        let auth = Auth::new(
+            store.clone(),
+            "bob@ejemplo.com, ana@ejemplo.com",
+            None,
+            dev,
+            "bob@ejemplo.com",
+        );
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
@@ -1288,28 +1289,30 @@ done
         (port, visto)
     }
 
-    /// El plan y el consumo se ven en el estado, y la puerta para mover el plan
-    /// a mano sólo está abierta en modo dev: es con lo que se prueba el sistema
-    /// entero sin pasarela.
+    /// El plan y el consumo se ven en el estado. Mover el plan es de un
+    /// administrador de la instancia, no de cualquiera que entre.
     #[test]
-    fn el_estado_muestra_el_plan_y_el_consumo() {
+    fn el_estado_muestra_el_plan_y_solo_un_admin_lo_mueve() {
         let server = start("cuenta");
-        let cookie = login(server.port, "bob@ejemplo.com");
-        let estado = get(server.port, "/api/state", Some(&cookie));
+        let bob = login(server.port, "bob@ejemplo.com");
+        let estado = get(server.port, "/api/state", Some(&bob));
         assert!(estado.contains("\"plan\":\"free\""), "{estado}");
         assert!(estado.contains("\"usage\""), "{estado}");
-        assert!(estado.contains("\"dev\":true"), "{estado}");
+        assert!(estado.contains("\"admin\":true"), "{estado}");
 
-        // Con la puerta abierta (acá el modo dev la abre) el que falta es la
-        // sesión; cerrada, no hay puerta.
-        let sin_sesion = post_with(server.port, "/api/dev/plan", r#"{"plan":"free"}"#, None);
+        let ana = login(server.port, "ana@ejemplo.com");
+        let estado = get(server.port, "/api/state", Some(&ana));
+        assert!(estado.contains("\"admin\":false"), "{estado}");
+        let ajena = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, Some(&ana));
+        assert!(ajena.starts_with("HTTP/1.1 403"), "{ajena}");
+
+        let sin_sesion = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, None);
         assert!(sin_sesion.starts_with("HTTP/1.1 401"), "{sin_sesion}");
-        let sin_dev = start_with("cuenta-sin-dev", false);
-        let puerta = post_with(sin_dev.port, "/api/dev/plan", r#"{"plan":"paid"}"#, None);
-        assert!(puerta.starts_with("HTTP/1.1 403"), "{puerta}");
+
+        let propia = post_with(server.port, "/api/plan", r#"{"plan":"free"}"#, Some(&bob));
+        assert!(propia.starts_with("HTTP/1.1 200"), "{propia}");
 
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
-        let _ = std::fs::remove_dir_all(sin_dev.root.parent().unwrap());
     }
 
     /// El modelo pasa por el control plane: el sandbox lleva un pase y no la

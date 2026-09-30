@@ -1,8 +1,15 @@
+//! La agenda del control plane: qué tareas hay, a cuál le toca y qué contestó.
+//!
+//! El estado vive en la base, no en el workspace de la org: el control plane
+//! tiene que poder leerla y escribirla sin despertar el sandbox. Cada vuelta
+//! reclama lo vencido —lo reclama uno solo, y ese es el que lo corre— y lo
+//! corre con el agente apuntado a la org de la tarea.
+
 use crate::agent::Agent;
+use crate::store::{NewTask, Store, Task};
 use crate::transport::{Null, Session, Transport};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use crate::workspace::{place, Place};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,184 +17,112 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const TICK: Duration = Duration::from_secs(60);
 const HOUR: i64 = 3_600;
 const DAY: i64 = 86_400;
-const MAX_RUNS_PER_HOUR: usize = 6;
-const KEEP: usize = 20;
-const DIR: &str = "schedule";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Task {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub every: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-    pub prompt: String,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub silent: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub paused: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Run {
-    pub ts: i64,
-    pub date: String,
-    pub ms: u64,
-    pub ok: bool,
-    pub text: String,
-}
-
-pub struct Entry {
-    pub name: String,
-    pub task: Task,
-    pub runs: Vec<Run>,
-    pub unread: usize,
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
-}
-
-pub fn list(dir: &Path) -> Vec<Entry> {
-    let seen = read_seen(dir);
-    let mut entries: Vec<Entry> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.path().extension().is_some_and(|kind| kind == "toml"))
-        .filter_map(|entry| {
-            let name = entry.path().file_stem()?.to_string_lossy().to_string();
-            let task = read_task(&entry.path())?;
-            let runs = read_runs(dir, &name);
-            let last_seen = seen.get(&name).copied().unwrap_or(0);
-            let unread = runs.iter().filter(|run| run.ts > last_seen).count();
-            Some(Entry {
-                name,
-                task,
-                runs,
-                unread,
-            })
-        })
-        .collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    entries
-}
-
-/// Marca leída la última corrida de una tarea, o la de todas. Lo leído se
-/// guarda por tarea como el momento: todo lo que llegó después es nuevo.
-pub fn mark_read(dir: &Path, name: Option<&str>) -> Result<(), String> {
-    let mut seen = read_seen(dir);
-    let names: Vec<String> = match name {
-        Some(name) => vec![name.to_string()],
-        None => list(dir).into_iter().map(|entry| entry.name).collect(),
-    };
-    for name in names {
-        let runs = read_runs(dir, &name);
-        if runs.is_empty() {
-            continue;
-        }
-        seen.insert(name, last_run(&runs));
-    }
-    write_seen(dir, &seen)
-}
-
-fn seen_path(dir: &Path) -> PathBuf {
-    dir.join("read.json")
-}
-
-fn read_seen(dir: &Path) -> HashMap<String, i64> {
-    std::fs::read_to_string(seen_path(dir))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-fn write_seen(dir: &Path, seen: &HashMap<String, i64>) -> Result<(), String> {
-    let text = serde_json::to_string(seen).map_err(|e| e.to_string())?;
-    axe::atomic_write(&seen_path(dir), text.as_bytes()).map_err(|e| e.to_string())
-}
-
-pub fn set_paused(dir: &Path, name: &str, paused: bool) -> Result<(), String> {
-    let path = task_path(dir, name);
-    let mut task = read_task(&path).ok_or_else(|| format!("no existe la tarea {name}"))?;
-    task.paused = paused;
-    let text = toml::to_string(&task).map_err(|e| e.to_string())?;
-    axe::atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
-}
-
-pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) -> Sender<String> {
+/// La agenda la mueve el control plane. El canal no lleva la tarea: sólo
+/// despierta al reloj cuando la web pide una corrida y no vale la pena esperar
+/// al próximo minuto.
+pub fn spawn(
+    transport: Arc<dyn Transport>,
+    agent: Agent,
+    store: Arc<Store>,
+    root: PathBuf,
+    workspace: PathBuf,
+) -> Sender<()> {
     let (sender, runner) = std::sync::mpsc::channel();
+    let offset = tz_offset();
     std::thread::spawn(move || {
-        let dir = workspace.join("state").join(DIR);
-        migrate(&dir);
-        let offset = std::env::var("JIMMY_TZ_OFFSET")
-            .ok()
-            .and_then(|value| value.trim().parse().ok())
-            .unwrap_or(0);
-        let mut pending: Option<String> = None;
+        let agenda = Agenda {
+            transport: transport.as_ref(),
+            agent: &agent,
+            store: &store,
+            base: Place {
+                root,
+                workspace,
+                org: None,
+            },
+            offset,
+        };
         loop {
-            let mut asked: Vec<String> = pending.take().into_iter().collect();
-            while let Ok(name) = runner.try_recv() {
-                asked.push(name);
-            }
-            asked.sort();
-            asked.dedup();
-            tick(transport.as_ref(), &agent, &dir, offset, &asked);
-            pending = runner.recv_timeout(TICK).ok();
+            agenda.tick();
+            let _ = runner.recv_timeout(TICK);
         }
     });
     sender
 }
 
-fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64, asked: &[String]) {
-    let now = now_secs();
-    let (date, time) = local_parts(now, offset);
-    for entry in list(dir) {
-        if entry.task.paused {
-            continue;
-        }
-        let manual = asked.contains(&entry.name);
-        if !manual && !due(&entry.task, &entry.runs, now, &date, &time) {
-            continue;
-        }
-        let recent = entry.runs.iter().filter(|run| now - run.ts < HOUR).count();
-        if !manual && recent >= MAX_RUNS_PER_HOUR {
-            eprintln!("jimmy: agenda: {} superó el tope por hora", entry.name);
-            continue;
-        }
-        eprintln!("jimmy: agenda: corriendo {}", entry.name);
-        run(transport, agent, dir, &entry, &date, now);
-    }
+/// Lo que hace falta para correr lo que le toca a alguien: de dónde salen las
+/// tareas, quién las corre y en qué lugar base vive cada org.
+struct Agenda<'a> {
+    transport: &'a dyn Transport,
+    agent: &'a Agent,
+    store: &'a Store,
+    base: Place,
+    offset: i64,
 }
 
-fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date: &str, now: i64) {
-    let (outbound, session, warning) = outbound(transport, entry);
-    let started = Instant::now();
-    let result = agent.run_task(outbound, &session, &entry.task.prompt, entry.task.silent);
-    let (ok, mut text) = match result {
-        Ok(reply) => (true, reply),
-        Err(e) => (false, e),
-    };
-    if let Some(warning) = warning {
-        if !text.is_empty() {
-            text.push_str("\n\n");
+impl Agenda<'_> {
+    fn tick(&self) {
+        let now = now_secs();
+        let due = match self.store.claim_due(now) {
+            Ok(due) => due,
+            Err(error) => {
+                eprintln!("jimmy: agenda: no pude ver qué le toca a cada tarea: {error}");
+                return;
+            }
+        };
+        for task in due {
+            self.run(&task, now);
         }
-        text.push_str(&warning);
     }
-    record(
-        dir,
-        &entry.name,
-        Run {
-            ts: now,
-            date: date.to_string(),
-            ms: started.elapsed().as_millis() as u64,
-            ok,
-            text,
-        },
-    );
+
+    fn run(&self, task: &Task, now: i64) {
+        let org = match self.store.org(&task.org_id) {
+            Ok(Some(org)) => org,
+            Ok(None) => {
+                eprintln!("jimmy: agenda: {} quedó sin org", task.name);
+                return;
+            }
+            Err(error) => {
+                eprintln!(
+                    "jimmy: agenda: no pude leer la org de {}: {error}",
+                    task.name
+                );
+                return;
+            }
+        };
+        let home = place(&self.base.root, &self.base.workspace, &org);
+        eprintln!("jimmy: agenda: corriendo {} de {}", task.name, org.name);
+        let (outbound, session, warning) = outbound(self.transport, task);
+        let started = Instant::now();
+        let result = self
+            .agent
+            .at(&home)
+            .run_task(outbound, &session, &task.prompt, task.silent);
+        let (ok, mut text) = match result {
+            Ok(reply) => (true, reply),
+            Err(error) => (false, error),
+        };
+        if let Some(warning) = warning {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&warning);
+        }
+        let next = next_run(
+            task.when_at.as_deref(),
+            task.at.as_deref(),
+            task.every.as_deref(),
+            now,
+            self.offset,
+        );
+        let ms = started.elapsed().as_millis() as i64;
+        if let Err(error) = self.store.record_run(task, now, next, ms, ok, &text) {
+            eprintln!(
+                "jimmy: agenda: no pude anotar la corrida de {}: {error}",
+                task.name
+            );
+        }
+    }
 }
 
 /// A dónde sale la corrida: al chat del target si el transporte lo conoce, y si
@@ -195,162 +130,148 @@ fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date
 /// hace igual, queda en el historial y ahí dice por qué no salió.
 fn outbound<'a>(
     transport: &'a dyn Transport,
-    entry: &Entry,
+    task: &Task,
 ) -> (&'a dyn Transport, Session, Option<String>) {
-    let Some(target) = entry.task.target.as_deref() else {
-        return (&Null, Session::channel(entry.name.as_str()), None);
+    let Some(target) = task.target.as_deref() else {
+        return (&Null, Session::channel(task.name.as_str()), None);
     };
     match transport.parse_target(target) {
         Ok(session) => (transport, session, None),
-        Err(e) => (
+        Err(error) => (
             &Null,
-            Session::channel(entry.name.as_str()),
-            Some(format!("⚠️ no salió a {target}: {e}")),
+            Session::channel(task.name.as_str()),
+            Some(format!("⚠️ no salió a {target}: {error}")),
         ),
     }
 }
 
-fn due(task: &Task, runs: &[Run], now: i64, date: &str, time: &str) -> bool {
-    if let Some(when) = task.when.as_deref() {
-        return runs.is_empty() && format!("{date}T{time}") >= when.trim().replace(' ', "T");
-    }
-    if let Some(at) = task.at.as_deref() {
-        return hhmm(at).is_some_and(|at| time >= at.as_str()) && last_date(runs) != Some(date);
-    }
-    if let Some(every) = task.every.as_deref() {
-        return period(every)
-            .is_some_and(|period| last_run(runs) == 0 || now - last_run(runs) >= period);
-    }
-    false
-}
-
-fn last_run(runs: &[Run]) -> i64 {
-    runs.last().map(|run| run.ts).unwrap_or(0)
-}
-
-fn last_date(runs: &[Run]) -> Option<&str> {
-    runs.last().map(|run| run.date.as_str())
-}
-
-fn task_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.toml"))
-}
-
-fn runs_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.jsonl"))
-}
-
-fn read_task(path: &Path) -> Option<Task> {
-    let text = std::fs::read_to_string(path).ok()?;
-    match toml::from_str(&text) {
-        Ok(task) => Some(task),
-        Err(e) => {
-            eprintln!("jimmy: agenda: {}: {e}", path.display());
-            None
-        }
-    }
-}
-
-fn read_runs(dir: &Path, name: &str) -> Vec<Run> {
-    let Ok(text) = std::fs::read_to_string(runs_path(dir, name)) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn record(dir: &Path, name: &str, run: Run) {
-    let mut runs = read_runs(dir, name);
-    runs.push(run);
-    if runs.len() > KEEP {
-        runs.drain(..runs.len() - KEEP);
-    }
-    let text: String = runs
+/// Programa una tarea nueva: valida el horario y le calcula la primera vez que
+/// le toca. Una tarea sin horario queda para correr a mano.
+pub fn program(store: &Store, org: &str, new: NewTask) -> Result<Task, String> {
+    let horarios = [new.when_at.is_some(), new.at.is_some(), new.every.is_some()]
         .iter()
-        .filter_map(|run| serde_json::to_string(run).ok())
-        .map(|line| line + "\n")
-        .collect();
-    let _ = axe::atomic_write(&runs_path(dir, name), text.as_bytes());
-}
-
-#[derive(Deserialize)]
-struct Legacy {
-    #[serde(default)]
-    task: Vec<LegacyTask>,
-}
-
-#[derive(Deserialize)]
-struct LegacyTask {
-    name: String,
-    #[serde(default)]
-    target: Option<String>,
-    #[serde(default)]
-    chat: Option<i64>,
-    prompt: String,
-    #[serde(default)]
-    silent: bool,
-    #[serde(default)]
-    when: Option<String>,
-    #[serde(default)]
-    at: Option<String>,
-    #[serde(default)]
-    every: Option<String>,
-}
-
-fn migrate(dir: &Path) {
-    let Some(state) = dir.parent() else {
-        return;
-    };
-    let legacy = state.join("schedule.toml");
-    let Ok(text) = std::fs::read_to_string(&legacy) else {
-        return;
-    };
-    let Ok(file) = toml::from_str::<Legacy>(&text) else {
-        eprintln!("jimmy: agenda: no pude leer {}", legacy.display());
-        return;
-    };
-    if std::fs::create_dir_all(dir).is_err() {
-        return;
+        .filter(|hay| **hay)
+        .count();
+    if horarios > 1 {
+        return Err("una tarea corre con un solo horario".into());
     }
-    for task in file.task {
-        let target = task
-            .target
-            .or_else(|| task.chat.map(|chat| chat.to_string()));
-        let converted = Task {
-            when: task.when,
-            at: task.at,
-            every: task.every,
-            target,
-            prompt: task.prompt,
-            silent: task.silent,
-            paused: false,
-        };
-        let path = task_path(dir, &task.name);
-        if path.exists() {
-            continue;
-        }
-        if let Ok(text) = toml::to_string(&converted) {
-            let _ = axe::atomic_write(&path, text.as_bytes());
-        }
+    if new.prompt.trim().is_empty() {
+        return Err("la tarea necesita algo que hacer".into());
     }
-    let _ = std::fs::rename(&legacy, state.join("schedule.toml.old"));
-    let _ = std::fs::remove_file(state.join("schedule.state.json"));
-    eprintln!(
-        "jimmy: agenda: migré {} a {}",
-        legacy.display(),
-        dir.display()
-    );
+    let name = new.name.trim().to_string();
+    if !name.is_empty() && store.task_named(org, &name)?.is_some() {
+        return Err(format!("ya hay una tarea que se llama {name}"));
+    }
+    let offset = tz_offset();
+    let next = match (
+        new.when_at.as_deref(),
+        new.at.as_deref(),
+        new.every.as_deref(),
+    ) {
+        (Some(when), _, _) if when_secs(when, offset).is_none() => {
+            return Err("esa fecha no se entiende: se escribe como 2026-09-14T15:00".into())
+        }
+        (_, Some(at), _) if hhmm(at).is_none() => {
+            return Err("esa hora no se entiende: se escribe como 05:00".into())
+        }
+        (_, _, Some(every)) if period(every).is_none() => {
+            return Err("ese intervalo no se entiende: se escribe como 30m, 6h o 2d".into())
+        }
+        _ => first_run(
+            new.when_at.as_deref(),
+            new.at.as_deref(),
+            new.every.as_deref(),
+            now_secs(),
+            offset,
+        ),
+    };
+    store.create_task(
+        org,
+        NewTask {
+            name,
+            next_run_at: next,
+            ..new
+        },
+    )
 }
 
-fn hhmm(s: &str) -> Option<String> {
-    let (hour, minute) = s.trim().split_once(':')?;
-    let hour: u32 = hour.trim().parse().ok()?;
-    let minute: u32 = minute.trim().parse().ok()?;
-    if hour > 23 || minute > 59 {
+/// Cuándo le toca la primera vez. Una tarea `when` con la hora ya pasada corre
+/// apenas se cree: es una cita que se pidió una sola vez.
+fn first_run(
+    when_at: Option<&str>,
+    at: Option<&str>,
+    every: Option<&str>,
+    now: i64,
+    offset: i64,
+) -> Option<i64> {
+    if let Some(when) = when_at {
+        return when_secs(when, offset);
+    }
+    if let Some(at) = at {
+        return next_at(at, now, offset);
+    }
+    if every.is_some() {
+        return Some(now);
+    }
+    None
+}
+
+/// Cuándo le toca después de correr. `None` es una tarea que ya no vuelve:
+/// `when` corre una sola vez, y una tarea sin horario sólo corre a mano.
+fn next_run(
+    when_at: Option<&str>,
+    at: Option<&str>,
+    every: Option<&str>,
+    now: i64,
+    offset: i64,
+) -> Option<i64> {
+    if when_at.is_some() {
         return None;
     }
-    Some(format!("{hour:02}:{minute:02}"))
+    if let Some(at) = at {
+        return next_at(at, now, offset);
+    }
+    every.and_then(period).map(|period| now + period)
+}
+
+/// La próxima vez que el reloj local marque esa hora, hoy o mañana.
+fn next_at(at: &str, now: i64, offset: i64) -> Option<i64> {
+    let (hour, minute) = hhmm(at)?;
+    let day = (now + offset * HOUR).div_euclid(DAY);
+    let mut candidate = day * DAY + hour * HOUR + minute * 60 - offset * HOUR;
+    if candidate <= now {
+        candidate += DAY;
+    }
+    Some(candidate)
+}
+
+/// Una cita suelta, en hora local, como instante.
+fn when_secs(when: &str, offset: i64) -> Option<i64> {
+    let when = when.trim().replace(' ', "T");
+    let (date, time) = when.split_once('T')?;
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.trim().parse().ok()?;
+    let month: i64 = parts.next()?.trim().parse().ok()?;
+    let day: i64 = parts.next()?.trim().parse().ok()?;
+    let (hour, minute) = hhmm(time)?;
+    Some(days_from_civil(year, month, day) * DAY + hour * HOUR + minute * 60 - offset * HOUR)
+}
+
+fn tz_offset() -> i64 {
+    std::env::var("JIMMY_TZ_OFFSET")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn hhmm(s: &str) -> Option<(i64, i64)> {
+    let (hour, minute) = s.trim().split_once(':')?;
+    let hour: i64 = hour.trim().parse().ok()?;
+    let minute: i64 = minute.trim().parse().ok()?;
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    Some((hour, minute))
 }
 
 fn period(s: &str) -> Option<i64> {
@@ -374,17 +295,17 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn local_parts(now: i64, offset: i64) -> (String, String) {
-    let local = now + offset * HOUR;
-    let days = local.div_euclid(DAY);
-    let secs = local.rem_euclid(DAY);
-    let (year, month, day) = civil_from_days(days);
-    (
-        format!("{year:04}-{month:02}-{day:02}"),
-        format!("{:02}:{:02}", secs / HOUR, secs % HOUR / 60),
-    )
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
+#[cfg(test)]
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -402,6 +323,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::transport::Msg;
+    use std::path::{Path, PathBuf};
 
     fn scratch(tag: &str) -> PathBuf {
         let dir =
@@ -410,34 +332,16 @@ mod tests {
         dir
     }
 
-    fn task(when: Option<&str>, at: Option<&str>, every: Option<&str>) -> Task {
-        Task {
-            when: when.map(String::from),
-            at: at.map(String::from),
-            every: every.map(String::from),
-            target: None,
-            prompt: "p".into(),
-            silent: false,
-            paused: false,
-        }
-    }
-
-    fn run(ts: i64, date: &str) -> Run {
-        Run {
-            ts,
-            date: date.into(),
-            ms: 10,
-            ok: true,
-            text: "ok".into(),
-        }
-    }
-
-    fn entry(name: &str) -> Entry {
-        Entry {
+    fn tarea(name: &str, next: Option<i64>) -> NewTask {
+        NewTask {
             name: name.into(),
-            task: task(None, Some("09:00"), None),
-            runs: Vec::new(),
-            unread: 0,
+            prompt: "p".into(),
+            when_at: None,
+            at: None,
+            every: Some("1h".into()),
+            target: None,
+            silent: false,
+            next_run_at: next,
         }
     }
 
@@ -468,200 +372,229 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_fires_once_after_its_time() {
-        let t = task(Some("2026-09-14T15:00"), None, None);
-        assert!(!due(&t, &[], 0, "2026-09-14", "14:59"));
-        assert!(due(&t, &[], 0, "2026-09-14", "15:00"));
-        assert!(!due(&t, &[run(0, "2026-09-14")], 0, "2026-09-15", "10:00"));
+    fn una_cita_corre_una_sola_vez() {
+        let when = "2026-09-14T15:00";
+        let now = when_secs("2026-09-14T14:00", 0).unwrap();
+        assert_eq!(
+            first_run(Some(when), None, None, now, 0),
+            when_secs(when, 0),
+            "la cita es a su hora"
+        );
+        assert_eq!(next_run(Some(when), None, None, now, 0), None);
+        assert_eq!(
+            first_run(Some("ayer"), None, None, now, 0),
+            None,
+            "y una rota no corre"
+        );
     }
 
     #[test]
-    fn daily_fires_once_per_date() {
-        let t = task(None, Some("09:00"), None);
-        let done = [run(0, "2026-09-14")];
-        assert!(due(&t, &done, 0, "2026-09-15", "09:00"));
-        assert!(!due(&t, &done, 0, "2026-09-14", "10:00"));
-        assert!(!due(&t, &[], 0, "2026-09-15", "08:59"));
+    fn el_diario_apunta_a_la_proxima_hora() {
+        let medianoche = days_from_civil(2026, 9, 14) * DAY;
+        let hoy_a_las_9 = medianoche + 9 * HOUR;
+        assert_eq!(
+            first_run(None, Some("09:00"), None, medianoche, 0),
+            Some(hoy_a_las_9)
+        );
+        assert_eq!(
+            first_run(None, Some("09:00"), None, hoy_a_las_9 + 60, 0),
+            Some(hoy_a_las_9 + DAY),
+            "la de hoy ya pasó"
+        );
+        assert_eq!(
+            next_run(None, Some("09:00"), None, hoy_a_las_9 + 60, 0),
+            Some(hoy_a_las_9 + DAY)
+        );
+        assert_eq!(first_run(None, Some("25:00"), None, medianoche, 0), None);
     }
 
     #[test]
-    fn interval_uses_last_run() {
-        let t = task(None, None, Some("6h"));
-        assert!(due(&t, &[], 1_000, "2026-09-14", "00:00"));
-        let done = [run(1_000, "2026-09-14")];
-        assert!(!due(&t, &done, 1_000 + HOUR, "2026-09-14", "00:00"));
-        assert!(due(&t, &done, 1_000 + 6 * HOUR, "2026-09-14", "00:00"));
+    fn el_diario_es_la_hora_local() {
+        let medianoche = days_from_civil(2026, 9, 14) * DAY;
+        let offset = 3;
+        assert_eq!(
+            first_run(None, Some("09:00"), None, medianoche, offset),
+            Some(medianoche + 6 * HOUR),
+            "las 9 de UTC-3 son las 12 UTC"
+        );
     }
 
     #[test]
-    fn a_task_without_a_schedule_never_fires() {
-        assert!(!due(&task(None, None, None), &[], 0, "2026-09-14", "10:00"));
+    fn el_de_cada_tanto_suma_su_periodo() {
+        let now = 1_000;
+        assert_eq!(
+            first_run(None, None, Some("6h"), now, 0),
+            Some(now),
+            "la primera es ya"
+        );
+        assert_eq!(
+            next_run(None, None, Some("6h"), now, 0),
+            Some(now + 6 * HOUR)
+        );
+        assert_eq!(next_run(None, None, Some("30m"), now, 0), Some(now + 1_800));
+        assert_eq!(first_run(None, None, Some("raro"), now, 0), Some(now));
+        assert_eq!(next_run(None, None, Some("raro"), now, 0), None);
+    }
+
+    #[test]
+    fn una_tarea_sin_horario_solo_corre_a_mano() {
+        assert_eq!(first_run(None, None, None, 1_000, 0), None);
+        assert_eq!(next_run(None, None, None, 1_000, 0), None);
     }
 
     #[test]
     fn parses_hhmm_and_periods() {
-        assert_eq!(hhmm("9:5").as_deref(), Some("09:05"));
+        assert_eq!(hhmm("5:07"), Some((5, 7)));
+        assert_eq!(hhmm(" 23:59 "), Some((23, 59)));
         assert_eq!(hhmm("24:00"), None);
-        assert_eq!(period("6h"), Some(6 * HOUR));
+        assert_eq!(hhmm("nueve"), None);
         assert_eq!(period("30m"), Some(1_800));
-        assert_eq!(period("2d"), Some(2 * DAY));
-        assert_eq!(period("cada rato"), None);
+        assert_eq!(period("2h"), Some(7_200));
+        assert_eq!(period("1d"), Some(86_400));
+        assert_eq!(period("45s"), Some(45));
+        assert_eq!(period("45"), None);
     }
 
     #[test]
     fn civil_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2026, 9, 14), 20_710);
+        assert_eq!(civil_from_days(20_710), (2026, 9, 14));
+        assert_eq!(days_from_civil(2024, 2, 29), 19_782, "año bisiesto");
     }
 
-    #[test]
-    fn local_time_applies_offset() {
-        assert_eq!(local_parts(0, 0), ("1970-01-01".into(), "00:00".into()));
-        assert_eq!(local_parts(0, -3), ("1969-12-31".into(), "21:00".into()));
-    }
-
-    #[test]
-    fn reads_a_task_per_file_and_ignores_a_broken_one() {
-        let dir = scratch("read");
-        std::fs::write(
-            dir.join("morning.toml"),
-            "at = \"09:00\"\nprompt = \"hola\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("night.toml"),
-            "prompt = \"chau\"\nevery = \"6h\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("roto.toml"), "at = ").unwrap();
-        std::fs::write(dir.join("notas.md"), "no es una tarea").unwrap();
-
-        let entries = list(&dir);
-        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(names, ["morning", "night"]);
-        assert_eq!(entries[0].task.at.as_deref(), Some("09:00"));
-        assert_eq!(entries[1].task.every.as_deref(), Some("6h"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn keeps_the_last_runs_and_reads_them_back() {
-        let dir = scratch("runs");
-        for ts in 0..(KEEP as i64 + 3) {
-            record(&dir, "t", run(ts, "2026-09-14"));
+    fn guardada(name: &str, target: Option<&str>) -> Task {
+        Task {
+            id: crate::ulid::new(),
+            org_id: "01ORG".into(),
+            name: name.into(),
+            when_at: None,
+            at: None,
+            every: Some("1h".into()),
+            target: target.map(String::from),
+            prompt: "p".into(),
+            silent: false,
+            paused: false,
+            next_run_at: Some(1),
+            last_read_at: 0,
         }
-        let runs = read_runs(&dir, "t");
-        assert_eq!(runs.len(), KEEP);
-        assert_eq!(runs.first().unwrap().ts, 3);
-        assert_eq!(last_run(&runs), (KEEP as i64) + 2);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_target_the_transport_does_not_know_still_runs_and_says_so() {
-        let mut entry = entry("memoria");
-        entry.task.target = Some("123456789".into());
-
-        let (_, session, warning) = outbound(&Reject, &entry);
+        let task = guardada("memoria", Some("123"));
+        let (outbound, session, warning) = outbound(&Reject, &task);
+        assert!(outbound.progress(&session).is_none());
         assert_eq!(session.key(), "memoria");
-        let warning = warning.expect("tenía que avisar que no salió");
-        assert!(warning.contains("123456789"), "{warning}");
+        assert!(
+            warning.unwrap().contains("no conozco el chat 123"),
+            "el historial dice por qué no salió"
+        );
     }
 
     #[test]
     fn a_task_without_a_target_has_nothing_to_report() {
-        let (_, session, warning) = outbound(&Reject, &entry("limpieza"));
-        assert_eq!(session.key(), "limpieza");
+        let task = guardada("memoria", None);
+        let (_, session, warning) = outbound(&Reject, &task);
         assert!(warning.is_none());
+        assert_eq!(session.key(), "memoria");
     }
 
-    fn unread_of(dir: &Path, name: &str) -> usize {
-        list(dir)
-            .into_iter()
-            .find(|entry| entry.name == name)
-            .unwrap()
-            .unread
-    }
-
-    #[test]
-    fn what_arrived_after_the_last_look_is_new() {
-        let dir = scratch("unread");
-        std::fs::write(dir.join("t.toml"), "at = \"09:00\"\nprompt = \"p\"\n").unwrap();
-        std::fs::write(dir.join("quieta.toml"), "at = \"09:00\"\nprompt = \"p\"\n").unwrap();
-        for ts in [100, 200, 300] {
-            record(&dir, "t", run(ts, "2026-09-14"));
+    fn wait_runs(store: &Store, task: &str) -> Vec<crate::store::Run> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let runs = store.runs_of(task, 5).unwrap();
+            if !runs.is_empty() || Instant::now() > deadline {
+                return runs;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(unread_of(&dir, "t"), 3);
-        assert_eq!(unread_of(&dir, "quieta"), 0, "no hay nada nuevo que mirar");
-
-        mark_read(&dir, Some("t")).unwrap();
-        assert_eq!(unread_of(&dir, "t"), 0);
-
-        record(&dir, "t", run(400, "2026-09-14"));
-        assert_eq!(unread_of(&dir, "t"), 1);
-
-        record(&dir, "quieta", run(500, "2026-09-14"));
-        assert_eq!(unread_of(&dir, "quieta"), 1);
-        mark_read(&dir, None).unwrap();
-        assert_eq!(unread_of(&dir, "t"), 0);
-        assert_eq!(unread_of(&dir, "quieta"), 0);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// La agenda es una sola y el reloj también, pero cada tarea corre donde
+    /// vive su org: una de cada lado, y cada una anota su corrida.
     #[test]
-    fn pausing_rewrites_the_file_without_losing_anything() {
-        let dir = scratch("pause");
+    fn cada_org_corre_sus_tareas() {
+        let base = scratch("orgs");
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, bob) = store.register("bob@ejemplo.com").unwrap();
+        let (_, ana) = store.register("ana@ejemplo.com").unwrap();
+        assert_ne!(bob.id, ana.id);
+
+        let de_bob = store
+            .create_task(&bob.id, tarea("resumen", Some(1_000)))
+            .unwrap();
+        let de_ana = store
+            .create_task(&ana.id, tarea("resumen", Some(1_000)))
+            .unwrap();
+
+        let script = script(&base);
+        let mut agent = Agent::new(
+            "http://127.0.0.1:1".into(),
+            "model".into(),
+            "key".into(),
+            None,
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.use_worker_exe(script);
+        let _agenda = spawn(
+            Arc::new(Null),
+            agent,
+            store.clone(),
+            root.clone(),
+            workspace.clone(),
+        );
+
+        let runs = wait_runs(&store, &de_bob.id);
+        assert_eq!(runs.len(), 1, "la de bob corrió");
+        assert!(runs[0].ok, "corrió: {}", runs[0].text);
+        assert!(
+            runs[0].text.contains(&workspace.display().to_string()),
+            "el turno de bob no corrió en su workspace: {}",
+            runs[0].text
+        );
+        let de_ana_org = wait_runs(&store, &de_ana.id);
+        assert_eq!(
+            de_ana_org.len(),
+            1,
+            "y la de ana también, con el mismo nombre"
+        );
+        assert!(
+            de_ana_org[0]
+                .text
+                .contains(&root.join(format!("orgs/{}", ana.id)).display().to_string()),
+            "el turno de ana no corrió en su org: {}",
+            de_ana_org[0].text
+        );
+        let despues = store.task_named(&bob.id, "resumen").unwrap().unwrap();
+        assert!(
+            despues.next_run_at.unwrap() > 1_000,
+            "y la tarea se reprograma"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Un worker de mentira que cuenta dónde le tocó correr.
+    fn script(base: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = base.join("worker.sh");
         std::fs::write(
-            dir.join("t.toml"),
-            "at = \"09:00\"\ntarget = \"123\"\nprompt = \"hola\"\nsilent = true\n",
+            &path,
+            "#!/bin/sh
+echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  echo \"{\\\"event\\\":\\\"done\\\",\\\"text\\\":\\\"$JIMMY_ROOT|$JIMMY_WORKSPACE|$*\\\"}\"
+done
+",
         )
         .unwrap();
-
-        set_paused(&dir, "t", true).unwrap();
-        let entry = &list(&dir)[0];
-        assert!(entry.task.paused);
-        assert!(entry.task.silent);
-        assert_eq!(entry.task.target.as_deref(), Some("123"));
-        assert_eq!(entry.task.prompt, "hola");
-        assert_eq!(entry.task.at.as_deref(), Some("09:00"));
-
-        set_paused(&dir, "t", false).unwrap();
-        assert!(!list(&dir)[0].task.paused);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn an_unknown_task_cannot_be_paused() {
-        let dir = scratch("unknown");
-        assert!(set_paused(&dir, "no-existe", true).is_err());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn migrates_the_single_file_into_one_per_task() {
-        let root = scratch("migrate");
-        let dir = root.join(DIR);
-        std::fs::write(
-            root.join("schedule.toml"),
-            "[[task]]\nname = \"memoria\"\nchat = 123\nat = \"05:00\"\nprompt = \"p\"\n\n[[task]]\nname = \"limpieza\"\nevery = \"6h\"\nprompt = \"q\"\nsilent = true\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("schedule.state.json"), "{}").unwrap();
-
-        migrate(&dir);
-        let entries = list(&dir);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].name, "limpieza");
-        assert!(entries[0].task.silent);
-        assert_eq!(entries[1].name, "memoria");
-        assert_eq!(entries[1].task.target.as_deref(), Some("123"));
-        assert!(root.join("schedule.toml.old").exists());
-        assert!(!root.join("schedule.toml").exists());
-        assert!(!root.join("schedule.state.json").exists());
-
-        migrate(&dir);
-        assert_eq!(list(&dir).len(), 2);
-        std::fs::remove_dir_all(&root).ok();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 }

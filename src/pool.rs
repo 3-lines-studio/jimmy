@@ -5,49 +5,59 @@
 //! events out until one of them is terminal. Nothing survives a turn, so the
 //! pool is a record of what is running right now and never a pile of idle
 //! processes.
+//!
+//! Cuando la org tiene sandbox, el worker no es un proceso de acá: es uno
+//! adentro del sandbox, con su volumen montado, y el mismo protocolo viaja por
+//! la API de procesos. El turno cuenta igual —el comando entra y los eventos
+//! salen—, solo que del otro lado los archivos son los suyos.
 
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
+use crate::sandbox::{OnEvent, Sandbox, Turn};
+use crate::tensorlake::{SandboxInfo, Tensorlake, MOUNT};
 use crate::transport::Session;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command as Process, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const WORKER_SLOTS: usize = 64;
 static WORKER_PIDS: [AtomicI32; WORKER_SLOTS] = [const { AtomicI32::new(0) }; WORKER_SLOTS];
 
-pub enum Turn {
-    Answer(String),
-    Failed(String),
+/// El otro lado del pipe: un proceso de acá o uno del sandbox de la org.
+enum Destino {
+    Local {
+        stdin: Mutex<ChildStdin>,
+        child: Mutex<Child>,
+    },
+    Remoto {
+        cliente: Arc<Tensorlake>,
+        sandbox: String,
+        pid: i64,
+    },
 }
-
-/// What the caller wants to do with every event on the way to the end of the
-/// turn: jimmy writes them down as the conversation's log.
-pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
     key: String,
+    /// El pid de acá, que es el que vigila el reaper. Del otro lado es 0.
     pid: i32,
-    stdin: Mutex<ChildStdin>,
-    child: Mutex<Child>,
+    destino: Destino,
     events: Mutex<Receiver<Event>>,
 }
 
 pub struct Pool {
     workers: Mutex<HashMap<String, Arc<Worker>>>,
-    env: Vec<(String, String)>,
     exe: Option<PathBuf>,
 }
 
 impl Pool {
-    pub fn new(env: Vec<(String, String)>, exe: Option<PathBuf>) -> Arc<Pool> {
+    pub fn new(exe: Option<PathBuf>) -> Arc<Pool> {
         Arc::new(Pool {
             workers: Mutex::new(HashMap::new()),
-            env,
             exe,
         })
     }
@@ -56,10 +66,12 @@ impl Pool {
         &self,
         session: &Session,
         conversation: &Conversation,
+        env: &[(String, String)],
         command: Command,
         on_event: OnEvent,
+        sandbox: Option<&SandboxInfo>,
     ) -> Result<Turn, String> {
-        let worker = self.spawn(session, conversation)?;
+        let worker = self.spawn(session, conversation, env, sandbox)?;
         let result = worker
             .send(&command)
             .and_then(|_| self.pump(&worker, on_event));
@@ -84,10 +96,12 @@ impl Pool {
 
     /// Interrumpe el turno de esa conversación, si hay uno corriendo. Va por el
     /// mismo pipe que todo lo demás, así que el worker decide cuándo mirarlo.
-    pub fn cancel(&self, key: &str) {
+    pub fn cancel(&self, key: &str, author: &str) {
         let worker = self.workers.lock().unwrap().get(key).cloned();
         if let Some(worker) = worker {
-            let _ = worker.send(&Command::Cancel);
+            let _ = worker.send(&Command::Cancel {
+                author: author.to_string(),
+            });
         }
     }
 
@@ -101,7 +115,18 @@ impl Pool {
         if !self.forget(&worker) {
             return;
         }
-        unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+        match &worker.destino {
+            Destino::Local { .. } => {
+                unsafe { libc::kill(worker.pid, libc::SIGTERM) };
+            }
+            Destino::Remoto {
+                cliente,
+                sandbox,
+                pid,
+            } => {
+                let _ = cliente.kill(sandbox, *pid);
+            }
+        }
         wait(&worker);
     }
 
@@ -111,13 +136,27 @@ impl Pool {
 
     /// Un proceso nuevo por turno: arranca en milisegundos y rearma su contexto
     /// desde el transcript, así que no hay nada que guardar entre turnos.
-    fn spawn(&self, session: &Session, conversation: &Conversation) -> Result<Arc<Worker>, String> {
+    fn spawn(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+        sandbox: Option<&SandboxInfo>,
+    ) -> Result<Arc<Worker>, String> {
+        match sandbox {
+            Some(sandbox) => self.spawn_remoto(session, conversation, env, sandbox),
+            None => self.spawn_local(session, conversation, env),
+        }
+    }
+
+    fn spawn_local(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+    ) -> Result<Arc<Worker>, String> {
         let key = session.key();
-        let exe = match &self.exe {
-            Some(exe) => exe.clone(),
-            None => std::env::current_exe().map_err(|e| e.to_string())?,
-        };
-        let mut process = Process::new(exe);
+        let mut process = Process::new(self.exe()?);
         process
             .arg("worker")
             .arg("--chat")
@@ -128,12 +167,10 @@ impl Pool {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        for (name, value) in &self.env {
+        for (name, value) in env {
             process.env(name, value);
         }
-        let mut child = process
-            .spawn()
-            .map_err(|e| format!("no pude lanzar el worker: {e}"))?;
+        let mut child = lanzar(&mut process)?;
         let stdin = child.stdin.take().ok_or("el worker no tiene stdin")?;
         let stdout = child.stdout.take().ok_or("el worker no tiene stdout")?;
         let pid = child.id() as i32;
@@ -142,14 +179,75 @@ impl Pool {
         let worker = Arc::new(Worker {
             key: key.clone(),
             pid,
-            stdin: Mutex::new(stdin),
-            child: Mutex::new(child),
+            destino: Destino::Local {
+                stdin: Mutex::new(stdin),
+                child: Mutex::new(child),
+            },
             events: Mutex::new(receiver),
         });
         self.workers.lock().unwrap().insert(key, worker.clone());
 
         spawn_reader(stdout, sender);
         Ok(worker)
+    }
+
+    /// El worker de una org, adentro de su sandbox: el binario sale de su
+    /// volumen —publicado una vez por versión— y el proceso arranca con el
+    /// volumen montado, así que los archivos que toca son los suyos.
+    fn spawn_remoto(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+        listo: &SandboxInfo,
+    ) -> Result<Arc<Worker>, String> {
+        let key = session.key();
+        let sandbox = listo.name.as_str();
+        let cliente =
+            Arc::new(Tensorlake::from_env().ok_or("esta org necesita TENSORLAKE_API_KEY")?);
+        let binario = crate::remote::publicar(&cliente, listo, &self.exe()?)?;
+        let mut entorno: BTreeMap<String, String> = env.iter().cloned().collect();
+        // El PATH de la imagen del entorno, con los shims de mise: sin esto el
+        // modelo no encuentra ni node, ni bun, ni cargo.
+        entorno.entry("PATH".into()).or_insert(
+            "/root/.local/share/mise/shims:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin".into(),
+        );
+        entorno.entry("HOME".into()).or_insert("/root".into());
+        let pid = cliente.start(
+            sandbox,
+            &binario,
+            &[
+                "worker".to_string(),
+                "--chat".to_string(),
+                key.clone(),
+                "--cwd".to_string(),
+                conversation.cwd.display().to_string(),
+            ],
+            &entorno,
+            MOUNT,
+        )?;
+        let (sender, receiver) = mpsc::channel();
+        let worker = Arc::new(Worker {
+            key: key.clone(),
+            pid: 0,
+            destino: Destino::Remoto {
+                cliente: cliente.clone(),
+                sandbox: sandbox.to_string(),
+                pid,
+            },
+            events: Mutex::new(receiver),
+        });
+        self.workers.lock().unwrap().insert(key, worker.clone());
+
+        spawn_follower(cliente, sandbox.to_string(), pid, sender);
+        Ok(worker)
+    }
+
+    fn exe(&self) -> Result<PathBuf, String> {
+        match &self.exe {
+            Some(exe) => Ok(exe.clone()),
+            None => std::env::current_exe().map_err(|e| e.to_string()),
+        }
     }
 
     /// Lo que terminó su turno se saca del registro y se le pide que se vaya:
@@ -177,17 +275,67 @@ impl Pool {
     }
 }
 
+impl Sandbox for Pool {
+    /// En local el sandbox es este proceso: no hay nada que preparar.
+    fn ensure(&self, _org: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn turn(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        env: &[(String, String)],
+        command: Command,
+        on_event: OnEvent,
+        sandbox: Option<&SandboxInfo>,
+    ) -> Result<Turn, String> {
+        Pool::turn(self, session, conversation, env, command, on_event, sandbox)
+    }
+
+    fn cancel(&self, key: &str, author: &str) {
+        Pool::cancel(self, key, author);
+    }
+
+    fn kill(&self, key: &str) {
+        Pool::kill(self, key);
+    }
+
+    fn running(&self, key: &str) -> bool {
+        Pool::running(self, key)
+    }
+
+    /// Nada que dormir: los procesos viven lo que dura el turno.
+    fn suspend(&self, _org: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Nada que bajar: cuando el proceso muere no queda nada suyo.
+    fn destroy(&self, _org: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 impl Worker {
     fn send(&self, command: &Command) -> Result<(), String> {
         let mut line = serde_json::to_string(command).map_err(|e| e.to_string())?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().unwrap();
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("el worker terminó sin responder: {e}"))?;
-        stdin
-            .flush()
-            .map_err(|e| format!("el worker terminó sin responder: {e}"))
+        match &self.destino {
+            Destino::Local { stdin, .. } => {
+                let mut stdin = stdin.lock().unwrap();
+                stdin
+                    .write_all(line.as_bytes())
+                    .map_err(|e| format!("el worker terminó sin responder: {e}"))?;
+                stdin
+                    .flush()
+                    .map_err(|e| format!("el worker terminó sin responder: {e}"))
+            }
+            Destino::Remoto {
+                cliente,
+                sandbox,
+                pid,
+            } => cliente.write_stdin(sandbox, *pid, line.as_bytes()),
+        }
     }
 
     fn receive(&self) -> Result<Event, String> {
@@ -199,9 +347,48 @@ impl Worker {
     }
 }
 
+/// Lanzar el worker, insistiendo si el archivo está ocupado.
+///
+/// `Text file busy` (ETXTBSY) quiere decir que alguien tiene el ejecutable
+/// abierto para escribir justo cuando se lo intenta correr: pasa cuando el
+/// binario se acaba de escribir —una prueba que arma su worker, o un despliegue
+/// que reescribe el mismo inode— y no dice nada del programa. Es transitorio por
+/// naturaleza, así que se espera y se prueba de nuevo; sin esto, un turno se
+/// caía por una carrera de milisegundos.
+fn lanzar(process: &mut Process) -> Result<std::process::Child, String> {
+    let mut ultimo = String::new();
+    for intento in 0..20 {
+        match process.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) => {
+                let error = error.to_string();
+                if !error.contains("Text file busy") {
+                    return Err(format!("no pude lanzar el worker: {error}"));
+                }
+                ultimo = error;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25 * (intento + 1).min(8)));
+    }
+    Err(format!("no pude lanzar el worker: {ultimo}"))
+}
+
 fn wait(worker: &Worker) {
-    if let Ok(mut child) = worker.child.lock() {
-        let _ = child.wait();
+    match &worker.destino {
+        Destino::Local { child, .. } => {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.wait();
+            }
+        }
+        // Del otro lado el proceso se va con el shutdown; si se quedó colgado
+        // no se espera para siempre.
+        Destino::Remoto { .. } => {
+            let _ = worker
+                .events
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
     }
 }
 
@@ -211,14 +398,28 @@ fn spawn_reader(stdout: ChildStdout, sender: Sender<Event>) {
             let Ok(line) = line else {
                 break;
             };
-            let Ok(event) = serde_json::from_str::<Event>(&line) else {
-                continue;
-            };
-            if sender.send(event).is_err() {
+            if !send_line(&line, &sender) {
                 break;
             }
         }
     });
+}
+
+/// Del otro lado la salida llega por SSE, línea por línea, hasta que el proceso
+/// termina.
+fn spawn_follower(cliente: Arc<Tensorlake>, sandbox: String, pid: i64, sender: Sender<Event>) {
+    std::thread::spawn(move || {
+        let _ = cliente.follow(&sandbox, pid, &mut |line| {
+            send_line(line, &sender);
+        });
+    });
+}
+
+fn send_line(line: &str, sender: &Sender<Event>) -> bool {
+    let Ok(event) = serde_json::from_str::<Event>(line) else {
+        return true;
+    };
+    sender.send(event).is_ok()
 }
 
 fn register(pid: i32) {
@@ -263,6 +464,42 @@ mod tests {
     use crate::protocol::Command;
     use std::path::Path;
 
+    /// Un ejecutable abierto para escribir no se puede correr —`Text file busy`—:
+    /// medido, es lo que hacía fallar un test distinto cada vez cuando la suite
+    /// entera corría junta. El que lanza espera y prueba de nuevo, así que un
+    /// archivo ocupado un rato no rompe el turno.
+    #[test]
+    fn un_ejecutable_ocupado_no_rompe_el_lanzamiento() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("jimmy-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("worker.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Alguien lo tiene abierto para escribir, así que no se puede lanzar.
+        let abierto = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
+        let suelta = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            drop(abierto);
+        });
+        // Sin esperar, no hay vuelta: el mismo lanzamiento falla.
+        assert!(
+            Process::new(&script).spawn().is_err(),
+            "el archivo ocupado se lanzó igual: esta prueba no estaría probando nada"
+        );
+
+        let mut process = Process::new(&script);
+        let child = lanzar(&mut process).expect("el archivo se libera y el worker arranca");
+        assert!(child.wait_with_output().unwrap().status.success());
+        suelta.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// El archivo lo escribe un proceso hijo: si lo escribiera éste, el fork de
     /// cualquier otro test heredaría su descriptor y el exec daría «Text file
     /// busy».
@@ -303,6 +540,16 @@ mod tests {
     }
 
     #[test]
+    fn en_local_no_hay_nada_que_preparar_ni_dormir() {
+        let pool = Pool::new(None);
+        for org in ["una-org", ""] {
+            assert!(pool.ensure(org).is_ok(), "preparar no hace nada");
+            assert!(pool.suspend(org).is_ok(), "dormir no hace nada");
+            assert!(pool.destroy(org).is_ok(), "bajar no hace nada");
+        }
+    }
+
+    #[test]
     fn a_turn_gets_what_the_worker_answers() {
         let dir = scratch("answer");
         let exe = script(
@@ -315,12 +562,19 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .turn(
+                    &session,
+                    &conversation,
+                    &[],
+                    Command::Resume,
+                    &mut |_| {},
+                    None,
+                )
                 .unwrap()
             {
                 Turn::Answer(text) => {
@@ -347,13 +601,20 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         let mut pids = Vec::new();
         for _ in 0..2 {
             match pool
-                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .turn(
+                    &session,
+                    &conversation,
+                    &[],
+                    Command::Resume,
+                    &mut |_| {},
+                    None,
+                )
                 .unwrap()
             {
                 Turn::Answer(text) => pids.push(text),
@@ -384,11 +645,18 @@ done
                 left.display()
             ),
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
-        pool.turn(&session, &conversation, Command::Resume, &mut |_| {})
-            .unwrap();
+        pool.turn(
+            &session,
+            &conversation,
+            &[],
+            Command::Resume,
+            &mut |_| {},
+            None,
+        )
+        .unwrap();
         assert!(left.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -407,13 +675,20 @@ while read -r line; do
 done
 ",
         );
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         let mut seen = false;
-        pool.turn(&session, &conversation, Command::Resume, &mut |_| {
-            seen = pool.running("test");
-        })
+        pool.turn(
+            &session,
+            &conversation,
+            &[],
+            Command::Resume,
+            &mut |_| {
+                seen = pool.running("test");
+            },
+            None,
+        )
         .unwrap();
         assert!(seen);
         assert!(!pool.running("test"));
@@ -424,16 +699,513 @@ done
     fn a_worker_that_dies_leaves_no_trace() {
         let dir = scratch("dead");
         let exe = script(&dir, "worker.sh", "exit 0\n");
-        let pool = Pool::new(Vec::new(), Some(exe));
+        let pool = Pool::new(Some(exe));
         let session = Session::channel("test");
         let conversation = conversation("../workspace");
         assert!(pool
-            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .turn(
+                &session,
+                &conversation,
+                &[],
+                Command::Resume,
+                &mut |_| {},
+                None
+            )
             .is_err());
         assert!(pool.workers.lock().unwrap().is_empty());
         assert!(pool
-            .turn(&session, &conversation, Command::Resume, &mut |_| {})
+            .turn(
+                &session,
+                &conversation,
+                &[],
+                Command::Resume,
+                &mut |_| {},
+                None
+            )
             .is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod remoto {
+    use super::*;
+    use crate::store::Store;
+    use crate::workspace::place;
+    use crate::Agent;
+    use std::path::Path;
+
+    /// Baja el sandbox aunque la prueba falle a mitad: el plan de prueba deja
+    /// uno solo por vez.
+    struct Guardado(Arc<Tensorlake>, String);
+
+    impl Drop for Guardado {
+        fn drop(&mut self) {
+            let _ = self.0.terminate(&self.1);
+        }
+    }
+
+    /// El binario que va al sandbox: el release es el que se publica en serio,
+    /// así que la prueba lo prefiere si se lo señalan.
+    fn exe() -> PathBuf {
+        match crate::env("JIMMY_TEST_EXE") {
+            Some(path) => PathBuf::from(path),
+            None => std::env::current_exe().unwrap(),
+        }
+    }
+
+    /// El turno entero pasa por el control plane: el worker lleva un pase, el
+    /// proxy le pone la clave del proveedor y el consumo queda anotado en la
+    /// org. Corre a mano porque lanza el binario de verdad:
+    ///
+    ///     cargo build && JIMMY_TEST_EXE=target/debug/jimmy \
+    ///       cargo test --bin jimmy -- --ignored el_turno_va_por_el_proxy
+    #[test]
+    #[ignore]
+    fn el_turno_va_por_el_proxy() {
+        let base = std::env::temp_dir().join(format!("jimmy-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let (proveedor, visto) = proveedor_de_mentira();
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store.set_machine(&org.id, "local", "", "").unwrap();
+
+        let puerta = crate::web::listen(0).unwrap();
+        let puerto = puerta.local_addr().unwrap().port();
+        let modelo = Arc::new(crate::modelo::Modelo::new(
+            format!("http://127.0.0.1:{proveedor}"),
+            "la-clave-de-verdad".into(),
+            None,
+            Some(format!("http://127.0.0.1:{puerto}/modelo")),
+        ));
+        modelo.set_store(store.clone());
+
+        let mut agent = Agent::new(
+            format!("http://127.0.0.1:{proveedor}"),
+            "fake".into(),
+            "la-clave-de-verdad".into(),
+            None,
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.set_store(store.clone());
+        agent.set_modelo(modelo.clone());
+        agent.use_worker_exe(exe());
+        let auth = crate::auth::Auth::new(
+            store.clone(),
+            "don@ejemplo.com",
+            None,
+            false,
+            "don@ejemplo.com",
+        );
+        let web = crate::web::Web::new(
+            root.clone(),
+            workspace.clone(),
+            agent.bus(),
+            agent.clone(),
+            auth,
+            crate::preview::Previews::new(&workspace),
+            std::sync::mpsc::channel().0,
+        );
+        std::thread::spawn(move || crate::web::serve(web, puerta));
+
+        let session = Session::channel("web-proxy");
+        let respuesta = agent
+            .at(&place(&root, &workspace, &org))
+            .run_task(&crate::transport::Null, &session, "hola", true)
+            .expect("el turno por el proxy");
+        assert_eq!(respuesta, "por el proxy");
+
+        let pedido = visto.lock().unwrap().clone();
+        assert!(
+            pedido.contains("Bearer la-clave-de-verdad"),
+            "el proxy no le puso la clave: {pedido}"
+        );
+        let pase = modelo.pase(&org.id);
+        assert!(
+            !pedido.contains(&pase),
+            "el pase del worker llegó al proveedor: {pedido}"
+        );
+        assert_eq!(
+            store.uso_de(&org.id, None).unwrap().calls,
+            1,
+            "el consumo no se anotó en la org"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Un proveedor de mentira: contesta un pedazo de SSE y guarda lo que le
+    /// pidieron, que es donde se ve qué clave viajó.
+    fn proveedor_de_mentira() -> (u16, Arc<std::sync::Mutex<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = listener.local_addr().unwrap().port();
+        let visto = Arc::new(std::sync::Mutex::new(String::new()));
+        let guardado = visto.clone();
+        std::thread::spawn(move || {
+            for entrada in listener.incoming() {
+                let Ok(mut stream) = entrada else { break };
+                let mut buffer = [0u8; 8192];
+                let leidos = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                *guardado.lock().unwrap() = String::from_utf8_lossy(&buffer[..leidos]).into_owned();
+                let cuerpo = "data: {\"choices\":[{\"delta\":{\"content\":\"por el proxy\"}}]}\n\n\
+                              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\
+                              \"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}\n\n\
+                              data: [DONE]\n\n";
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                         Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{cuerpo}\r\n0\r\n\r\n",
+                        cuerpo.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = std::io::Write::flush(&mut stream);
+            }
+        });
+        (puerto, visto)
+    }
+
+    /// La compuerta del turno adentro: el worker arranca en el sandbox de una
+    /// org, escribe su transcript y sus archivos en el volumen, y los eventos
+    /// vuelven. Habla con el modelo de verdad y crea recursos, así que corre a
+    /// mano:
+    ///
+    ///     cargo build --release
+    ///     heimdall run -p jimmy -c dev -- env JIMMY_TEST_EXE=/tmp/cargo-target/release/jimmy \
+    ///       cargo test --bin jimmy -- --ignored el_turno_corre_adentro --nocapture
+    #[test]
+    #[ignore]
+    fn el_turno_corre_adentro_del_sandbox() {
+        let base = std::env::temp_dir().join(format!("jimmy-adentro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("projects/ken")).unwrap();
+
+        let store = Arc::new(Store::open(&root.join("jimmy.db")).unwrap());
+        let (_, org) = store.register("don@ejemplo.com").unwrap();
+        store
+            .set_machine(&org.id, "tensorlake", "turno-adentro", "jimmy-org")
+            .unwrap();
+
+        let mut agent = Agent::new(
+            crate::env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
+            crate::env("AXE_MODEL").unwrap_or_else(|| "deepseek-flash".into()),
+            crate::env("OPENAI_API_KEY").expect("esta prueba habla con el modelo"),
+            crate::env("AXE_CONTEXT_WINDOW").and_then(|w| w.parse().ok()),
+            root.clone(),
+            workspace.display().to_string(),
+            String::new(),
+        );
+        agent.set_store(store.clone());
+        agent.use_worker_exe(exe());
+        // El modelo del otro lado: adentro del sandbox la clave del proveedor
+        // no viaja, así que el worker sólo puede hablar con un control plane.
+        // Acá no hay ninguno, y el turno lo tiene que decir.
+        agent.set_modelo(Arc::new(crate::modelo::Modelo::new(
+            crate::env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
+            crate::env("OPENAI_API_KEY").expect("esta prueba habla con el modelo"),
+            Some("http://127.0.0.1:9".into()),
+            None,
+        )));
+        let agent = agent.at(&place(&root, &workspace, &org));
+
+        let session = Session::channel("adentro-del-sandbox");
+        let chat = root.join("chats/adentro-del-sandbox");
+        let primero = std::time::Instant::now();
+        let respuesta = agent.run_task(
+            &crate::transport::Null,
+            &session,
+            "Escribí el archivo hola.txt con la palabra hola en el directorio actual \
+             (con una ruta relativa) y contestá listo.",
+            true,
+        );
+        let frio = primero.elapsed();
+        assert!(
+            respuesta.is_err(),
+            "sin control plane al que llegar, el turno no puede correr: {respuesta:?}"
+        );
+
+        let cliente = Arc::new(Tensorlake::from_env().unwrap());
+        let sandbox = cliente
+            .find("turno-adentro")
+            .unwrap()
+            .expect("el sandbox quedó de la corrida");
+        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
+
+        // El agente adentro es el mismo de acá, y en los mismos paths: si no,
+        // lo que el modelo corre por bash no es el agente.
+        let donde = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                "command -v jimmy; command -v browse; jimmy skill list | head -3",
+                60,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(donde.contains("/usr/local/bin/jimmy"), "{donde}");
+        assert!(donde.contains("/usr/local/bin/browse"), "{donde}");
+        assert!(donde.contains("browse"), "el CLI no ve las skills: {donde}");
+
+        // El entorno: lo que el agente usa para trabajar en los proyectos y lo
+        // que necesita su herramienta de navegar.
+        let entorno = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                "for c in node bun cargo go fd jq rg chromium ffmpeg python3; do \
+                   command -v $c > /dev/null || echo falta $c; done; \
+                 /opt/browse-venv/bin/python -c 'import playwright' && echo playwright ok; \
+                 for i in 1 2 3; do salida=$(browse goto https://example.com | head -3); \
+                   echo \"$salida\"; echo \"$salida\" | grep -qi example && break; sleep 2; \
+                 done",
+                180,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(
+            !entorno.contains("falta "),
+            "el entorno no está completo: {entorno}"
+        );
+        assert!(entorno.contains("playwright ok"), "{entorno}");
+        // La página es de la red del sandbox, que a veces no llega: medido, no
+        // llegó en 2 de 5 corridas. Que el browser arranque sí se espera; que
+        // traiga la página se avisa y no decide la prueba.
+        if !entorno.to_lowercase().contains("example") {
+            eprintln!("ojo: browse no trajo la página en este sandbox: {entorno:?}");
+        }
+        let instalado = cliente
+            .read_file("turno-adentro", "/usr/local/bin/jimmy")
+            .unwrap();
+        assert_eq!(
+            instalado,
+            std::fs::read(exe()).unwrap(),
+            "el jimmy del sandbox no es el mismo binario"
+        );
+        let prompt = cliente
+            .read_file(
+                "turno-adentro",
+                "/usr/local/share/jimmy/prompts/identidad.md",
+            )
+            .unwrap();
+        assert_eq!(
+            prompt,
+            std::fs::read(Path::new(crate::prompt::BUILTIN).join("identidad.md")).unwrap(),
+            "los prompts del sandbox no son los de acá"
+        );
+
+        eprintln!("el sandbox y su publicación: {frio:?}");
+
+        // El worker arrancó adentro y escribió ahí: el mensaje y el final del
+        // turno están en el volumen, que es donde vive la conversación.
+        let transcript = cliente
+            .read_file(
+                "turno-adentro",
+                &format!("{MOUNT}/chats/adentro-del-sandbox/transcript.jsonl"),
+            )
+            .expect("el transcript está en el volumen");
+        assert!(
+            String::from_utf8_lossy(&transcript).contains("hola.txt"),
+            "el transcript no es de este turno: {}",
+            String::from_utf8_lossy(&transcript)
+        );
+        let log = cliente
+            .read_file(
+                "turno-adentro",
+                &format!("{MOUNT}/chats/adentro-del-sandbox/conversation.jsonl"),
+            )
+            .expect("el log quedó adentro del volumen");
+        let log = String::from_utf8_lossy(&log).into_owned();
+        assert!(
+            log.contains("\"user\""),
+            "el log no tiene el mensaje: {log}"
+        );
+        assert!(
+            log.contains("\"done\"") || log.contains("\"error\""),
+            "{log}"
+        );
+
+        // Lo que el agente deja en el volumen se lee de ahí, en vivo.
+        cliente
+            .write_file(
+                "turno-adentro",
+                &format!("{MOUNT}/workspace/hola.txt"),
+                b"hola\n",
+            )
+            .expect("escribir en el volumen");
+
+        assert!(
+            !chat.join("transcript.jsonl").exists(),
+            "el transcript quedó de este lado"
+        );
+        assert!(
+            !workspace.join("hola.txt").exists(),
+            "el archivo del modelo quedó de este lado"
+        );
+
+        // El índice: lo que la web muestra sin abrir el volumen.
+        let antes = std::time::Instant::now();
+        crate::remote::sincronizar(&cliente, "turno-adentro", &store, &org.id).unwrap();
+        eprintln!("la copia: {:?}", antes.elapsed());
+        let indice = store.index(&org.id).unwrap();
+        let charla = indice
+            .iter()
+            .find(|proyecto| proyecto.name == "general")
+            .and_then(|proyecto| {
+                proyecto
+                    .conversations
+                    .iter()
+                    .find(|charla| charla.key == "adentro-del-sandbox")
+            })
+            .expect("la conversación está en el índice");
+        assert!(
+            charla.last.as_deref().unwrap_or_default().contains("hola"),
+            "el índice no trae el último mensaje: {charla:?}"
+        );
+
+        // El workspace de la web contra el sandbox: la lista sale del índice y
+        // los archivos se le piden al volumen en el momento.
+        use crate::workspace::Workspace;
+        let espacio = crate::remote::Remoto::new(
+            org.id.clone(),
+            store.clone(),
+            place(&root, &workspace, &org),
+        );
+        let general = espacio.tree("general", "").unwrap();
+        assert!(
+            general
+                .iter()
+                .any(|entrada| entrada.name == "hola.txt" && entrada.size == 5),
+            "el árbol en vivo no trae el archivo del modelo: {:?}",
+            general
+                .iter()
+                .map(|entrada| entrada.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        let (bytes, size) = espacio.read_file("general", "hola.txt", None).unwrap();
+        assert_eq!(size, 5);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("hola"),
+            "el archivo en vivo: {bytes:?}"
+        );
+
+        // El log de la conversación vive con ella: lo escribió el worker adentro
+        // y la web lo lee de ahí, del mismo lugar de donde saca los archivos.
+        let vista = espacio
+            .window("adentro-del-sandbox", usize::MAX)
+            .expect("la web no pudo leer el log del volumen");
+        let eventos: Vec<String> = vista
+            .events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap())
+            .collect();
+        assert!(
+            eventos.iter().any(|evento| evento.contains("hola.txt")),
+            "lo que pasó adentro no volvió por el log: {eventos:?}"
+        );
+
+        // Y lo que la web escribe lo escriben las mismas funciones de adentro,
+        // por el CLI: no hay un segundo layout.
+        espacio.create_project("nuevo").unwrap();
+        assert!(
+            espacio
+                .projects()
+                .unwrap()
+                .iter()
+                .any(|proyecto| proyecto.name == "nuevo"),
+            "el proyecto nuevo no quedó en la lista"
+        );
+        let clave = espacio.create_conversation("nuevo", "una charla").unwrap();
+        let charla = espacio.writable(&clave).unwrap();
+        assert_eq!(charla.project, "nuevo");
+        assert_eq!(charla.title.as_deref(), Some("una charla"));
+        assert_eq!(
+            espacio.tree("nuevo", "").unwrap().len(),
+            0,
+            "el proyecto nuevo arranca vacío"
+        );
+        espacio.delete_conversation(&clave).unwrap();
+        espacio.delete_project("nuevo", true).unwrap();
+        assert!(
+            !espacio
+                .projects()
+                .unwrap()
+                .iter()
+                .any(|proyecto| proyecto.name == "nuevo"),
+            "el proyecto borrado sigue en la lista"
+        );
+
+        // Los adjuntos, de punta a punta: lo que sube la web llega al volumen
+        // —donde lo ve el agente— y lo que manda el asistente vuelve por la cola
+        // del chat, que vive adentro.
+        let clave = espacio
+            .create_conversation("general", "con adjuntos")
+            .unwrap();
+        let png = b"\x89PNG\r\n\x1a\n y lo que siga".to_vec();
+        let subido = espacio.write_attachment(&clave, "foto.png", &png).unwrap();
+        assert_eq!(
+            espacio.read_attachment(&clave, &subido).unwrap(),
+            png,
+            "el adjunto subido no vuelve igual"
+        );
+        let visto = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                &format!("wc -c < /work/chats/{clave}/uploads/{subido}"),
+                60,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            visto.trim(),
+            png.len().to_string(),
+            "el adjunto no está donde el agente mira"
+        );
+
+        let mandado = cliente
+            .run(
+                "turno-adentro",
+                MOUNT,
+                &format!(
+                    "printf PNG > /work/workspace/dibujo.png && \
+                     JIMMY_ROOT=/work JIMMY_WORKSPACE=/work/workspace /usr/local/bin/jimmy send \
+                     /work/workspace/dibujo.png --target {clave} --caption 'un dibujo'",
+                ),
+                120,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(
+            mandado.contains(".png"),
+            "el CLI no anotó lo que mandó: {mandado}"
+        );
+
+        let cola = format!(
+            "{}/{}/{}",
+            MOUNT,
+            crate::remote::al_sandbox(&root, &crate::conversations::chat_dir(&root, &clave))
+                .trim_start_matches(MOUNT)
+                .trim_start_matches('/'),
+            crate::media::OUTBOX
+        );
+        let anotado = cliente
+            .read_file("turno-adentro", &cola)
+            .expect("el CLI no dejó la cola en el volumen");
+        assert!(
+            String::from_utf8_lossy(&anotado).contains("un dibujo"),
+            "la cola no trajo lo que mandó: {}",
+            String::from_utf8_lossy(&anotado)
+        );
+        espacio.delete_conversation(&clave).unwrap();
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

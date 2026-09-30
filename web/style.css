@@ -221,6 +221,40 @@ textarea:focus {
   white-space: nowrap;
 }
 
+#cuenta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--faint);
+  font-size: 12px;
+}
+
+#cuenta .secrets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+#cuenta .secret {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#cuenta .secret .value.revealed {
+  font-family: monospace;
+  color: var(--text);
+}
+
+#cuenta .secret input {
+  width: 8rem;
+}
+
+#cuenta .value {
+  color: var(--text);
+  white-space: nowrap;
+}
+
 #footer {
   display: flex;
   align-items: center;
@@ -590,6 +624,76 @@ textarea:focus {
   height: 26px;
   padding: 0 var(--s2);
   border-radius: var(--r-full);
+}
+
+#orgs {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--row);
+  margin: var(--s3) var(--s3) var(--s2);
+  background: var(--raised);
+  border-radius: var(--r-full);
+}
+
+#orgs select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  color: inherit;
+  font: inherit;
+}
+
+#orgs select:focus-visible {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--ring);
+}
+
+#orgs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--row);
+  height: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-full);
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+#orgs button:hover {
+  color: var(--text);
+}
+
+#new-org-form {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--row);
+  margin: 0 var(--s3) var(--s2);
+  background: var(--raised);
+  border-radius: var(--r-full);
+}
+
+#new-org-form input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s3);
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--r-full);
+}
+
+#new-org-form input:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 #new-project {
@@ -1828,6 +1932,7 @@ main {
 .agenda-foot {
   display: flex;
   justify-content: center;
+  gap: var(--s2);
   padding-top: var(--s3);
 }
 
@@ -1854,6 +1959,46 @@ main {
 
 .task.open {
   border-color: var(--line-strong);
+}
+
+.task-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3);
+}
+
+.task-when-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s3);
+}
+
+.task-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.task-field > span {
+  color: var(--faint);
+  font-size: 0.75rem;
+}
+
+.task-field input,
+.task-field select {
+  height: var(--row);
+  padding: 0 var(--s3);
+}
+
+.task-save {
+  align-self: flex-start;
+  height: var(--row);
+  padding: 0 var(--s4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-full);
+  color: var(--text);
 }
 
 .task-head {

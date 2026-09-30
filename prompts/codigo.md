@@ -7,5 +7,5 @@
 - Nada especulativo: sin abstracciones para un solo uso, sin flexibilidad ni configurabilidad que no se pidió, sin manejo de errores para escenarios imposibles.
 - Minimizá dependencias: librería estándar y features nativas del lenguaje.
 - UIs mobile-first. Archivos TypeScript en kebab-case, Go en snake_case.
-- NUNCA generes migraciones de base de datos ni las apliques.
+- Generá migraciones de base de datos cuando haga falta. NUNCA las apliques en producción.
 - NUNCA hagas push a `main` ni a `dev` directo, ni a repos ajenos. Para mejorarte vos: rama + PR contra `dev` (ver `## Proyectos y git`).

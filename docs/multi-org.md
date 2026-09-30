@@ -385,10 +385,10 @@ El orden manda: cada paso deja algo andando y verificable antes del siguiente.
     volumen, con el mensaje de quien lo pidió y quién lo frenó, y la web lo lee
     de ahí. El control plane sólo reparte los eventos a quien esté mirando.
 13. heimdall por org y su UI.
-14. **A medias** — Cuotas, medidores y los dos planes: el consumo ya se ve en
-   la web (el plan y los tokens de la org activa, al lado del workspace) y el
-   plan lo mueve un administrador de la instancia (`JIMMY_ADMINS`), que es la
-   acción que después va a hacer el pago. Falta la cuota: cortar cuando el plan
-   se pasa.
+14. **Hecho** — Los medidores: el consumo de cada org se ve en la web (el plan
+    y los tokens de la org activa, al lado del workspace) y con `jimmy orgs uso`.
+    El plan lo mueve un administrador de la instancia (`JIMMY_ADMINS`), que es la
+    acción que después va a hacer el pago. No hay cuota: el plan todavía no corta
+    nada.
 15. Los transports por org (Slack y Telegram con sus credenciales), los previews
     y los backups.

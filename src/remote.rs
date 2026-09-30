@@ -417,83 +417,18 @@ pub fn exe() -> Result<PathBuf, String> {
     }
 }
 
-/// El alta de una org: su filesystem, su fila, y lo que ya tenía acá adentro.
-/// El filesystem lo crea el SDK de Tensorlake —el único que sabe hablar con ese
-/// servicio— y la fila queda con el mismo nombre, que es el que el sandbox
-/// monta. Idempotente: si el filesystem ya está, no se toca.
-pub fn alta(org: &str, store: &Store, raiz: &Path) -> Result<(), String> {
+/// El alta de una org: su filesystem y su fila. El filesystem lo crea el SDK de
+/// Tensorlake —el único que sabe hablar con ese servicio— y la fila queda con el
+/// mismo nombre, que es el que el sandbox monta. Idempotente: si el filesystem
+/// ya está, no se toca.
+///
+/// No copia nada de acá: el trabajo de una org vive donde vive, y duplicarlo
+/// sería tener dos copias del mismo dato. Una org nace con su máquina; no se le
+/// da una después.
+pub fn alta(org: &str, store: &Store) -> Result<(), String> {
     let nombre = format!("jimmy-{}", org.to_lowercase());
     filesystems("crear", &nombre)?;
-    store.set_machine(org, "tensorlake", &nombre, &nombre)?;
-    let dir = store.org(org)?.map(|org| org.dir).unwrap_or_default();
-    let lugar = raiz.join(dir);
-    if !hay_que_mudar(&lugar) {
-        return Ok(());
-    }
-    let cliente = Tensorlake::from_env().ok_or("falta TENSORLAKE_API_KEY")?;
-    let listo = cliente.ensure(&nombre, &image(), &nombre)?;
-    let sandbox = if listo.name.is_empty() {
-        nombre
-    } else {
-        listo.name
-    };
-    mudanza(&cliente, &sandbox, &lugar)
-}
-
-fn hay_que_mudar(lugar: &Path) -> bool {
-    ["chats", "workspace"]
-        .iter()
-        .any(|nombre| lugar.join(nombre).is_dir())
-}
-
-/// Lo que la org ya tenía acá viaja con ella: el volumen es su lugar, y su
-/// trabajo no puede quedar de este lado. Va en un tar porque la API de archivos
-/// no tiene rangos: se manda en pedazos y se arma adentro. Una org nueva no
-/// tiene nada que mudar, y esto no toca lo de acá: es una copia.
-pub fn mudanza(cliente: &Tensorlake, sandbox: &str, lugar: &Path) -> Result<(), String> {
-    let entradas: Vec<&str> = ["chats", "workspace"]
-        .into_iter()
-        .filter(|nombre| lugar.join(nombre).is_dir())
-        .collect();
-    if entradas.is_empty() {
-        return Ok(());
-    }
-    let paquete = std::env::temp_dir().join(format!("jimmy-mudanza-{}.tar.gz", std::process::id()));
-    let listo = std::process::Command::new("tar")
-        .arg("-czf")
-        .arg(&paquete)
-        .arg("-C")
-        .arg(lugar)
-        .args(&entradas)
-        .status()
-        .map_err(|error| error.to_string())?;
-    if !listo.success() {
-        return Err("no pude armar el paquete de la mudanza".into());
-    }
-    let bytes = std::fs::read(&paquete).map_err(|error| error.to_string())?;
-    let _ = std::fs::remove_file(&paquete);
-
-    const CAJA: &str = ".mudanza";
-    const PEDAZO: usize = 32 * 1024 * 1024;
-    for (numero, pedazo) in bytes.chunks(PEDAZO).enumerate() {
-        let parte = format!("{MOUNT}/{CAJA}/parte-{numero:04}");
-        cliente.write_file(sandbox, &parte, pedazo)?;
-    }
-    let (salida, codigo) = cliente.run_codigo(
-        sandbox,
-        MOUNT,
-        &format!(
-            "cat {MOUNT}/{CAJA}/parte-* > {MOUNT}/{CAJA}/paquete.tar.gz \
-             && tar xzf {MOUNT}/{CAJA}/paquete.tar.gz -C {MOUNT} \
-             && rm -rf {MOUNT}/{CAJA}"
-        ),
-        1800,
-        &mut |_| {},
-    )?;
-    if codigo != Some(0) {
-        return Err(format!("la mudanza no salió adentro: {salida}"));
-    }
-    Ok(())
+    store.set_machine(org, "tensorlake", &nombre, &nombre)
 }
 
 /// Lo que sabe hacer el SDK: crear, listar y borrar el volumen de una org.
@@ -815,21 +750,13 @@ mod tests {
         let store = store("alta");
         let raiz = std::env::temp_dir().join(format!("jimmy-alta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&raiz);
-        let chat = raiz.join("chats/1");
-        let proyecto = raiz.join("workspace/projects/ken");
-        std::fs::create_dir_all(&chat).unwrap();
-        std::fs::create_dir_all(&proyecto).unwrap();
-        std::fs::write(chat.join("conversation.jsonl"), "{\"event\":\"user\"}\n").unwrap();
-        std::fs::write(proyecto.join("hola.txt"), "hola").unwrap();
-
-        let cliente = Arc::new(Tensorlake::from_env().unwrap());
-        let antes = cliente.list().unwrap_or_default();
 
         let (_, org) = store.register("don@ejemplo.com").unwrap();
         assert!(store.machine(&org.id).unwrap().is_none(), "sin sandbox");
-        alta(&org.id, &store, &raiz).unwrap();
         let nombre = format!("jimmy-{}", org.id.to_lowercase());
         let _borrado = BorradoDelfs(nombre.clone());
+
+        alta(&org.id, &store).unwrap();
         let maquina = store
             .machine(&org.id)
             .unwrap()
@@ -843,30 +770,15 @@ mod tests {
             "el filesystem no está: {listado}"
         );
 
-        // Lo que la org ya tenía acá viaja con ella: el volumen es su lugar.
-        let sandbox = cliente.find(&nombre).unwrap().expect("su sandbox");
-        let _guardado = Guardado(cliente.clone(), sandbox.id.clone());
-        let copiado = cliente
-            .read_file(
-                &sandbox.name,
-                &format!("{MOUNT}/workspace/projects/ken/hola.txt"),
-            )
-            .expect("lo que había acá no llegó al volumen");
-        assert_eq!(String::from_utf8_lossy(&copiado), "hola");
-        let log = cliente
-            .read_file(
-                &sandbox.name,
-                &format!("{MOUNT}/chats/1/conversation.jsonl"),
-            )
-            .unwrap();
-        assert!(String::from_utf8_lossy(&log).contains("user"));
+        // El alta no copia nada ni despierta a nadie: el trabajo de una org
+        // vive donde vive, y duplicarlo sería tener dos copias del mismo dato.
+        let cliente = Tensorlake::from_env().unwrap();
         assert!(
-            proyecto.join("hola.txt").is_file(),
-            "la mudanza es una copia: lo de acá no se toca"
+            cliente.find(&nombre).unwrap().is_none(),
+            "el alta despertó un sandbox sin tener nada que hacer"
         );
-        assert!(antes.iter().all(|info| info.name != nombre));
 
-        alta(&org.id, &store, &raiz).unwrap();
+        alta(&org.id, &store).unwrap();
         let _ = std::fs::remove_dir_all(&raiz);
     }
 

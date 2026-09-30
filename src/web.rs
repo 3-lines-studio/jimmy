@@ -545,7 +545,7 @@ fn set_plan(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
     let plan = request.field("plan").unwrap_or_default();
     let plan = plan.trim();
     if !plan.is_empty() {
-        if let Err(error) = crate::remote::alta(&org.id, web.auth.store(), &web.root) {
+        if let Err(error) = crate::remote::alta(&org.id, web.auth.store()) {
             return http::send_error(stream, 500, &error);
         }
     }

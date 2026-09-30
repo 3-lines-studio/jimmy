@@ -434,11 +434,11 @@ fn orgs_command(args: &[String]) -> i32 {
         };
     }
     let result = match args.first().map(String::as_str) {
-        Some("alta") => crate::remote::alta(&org.id, &store, &root_from_env()),
+        Some("alta") => crate::remote::alta(&org.id, &store),
         _ => {
             let plan = (!plan.is_empty()).then_some(plan.as_str());
             let alta = match plan {
-                Some(_) => crate::remote::alta(&org.id, &store, &root_from_env()),
+                Some(_) => crate::remote::alta(&org.id, &store),
                 None => Ok(()),
             };
             alta.and_then(|_| store.set_plan(&org.id, plan))

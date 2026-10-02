@@ -255,7 +255,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id) && !isFiles(id) && !isAgenda(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id)) closeTab(id);
   }
   renderSidebar();
   renderPreviews();

@@ -9,7 +9,7 @@ from pathlib import Path
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 MODEL = "gemini-3.1-flash-image"
-SIZES = ("0.5K", "1K", "2K", "4K")
+SIZES = ("512", "1K", "2K", "4K")
 MIME_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -65,7 +65,7 @@ def main():
     parser.add_argument("prompt")
     parser.add_argument("-o", "--out", required=True)
     parser.add_argument("--aspect", default="1:1")
-    parser.add_argument("--size", default="1K", choices=SIZES)
+    parser.add_argument("--size", default="2K", choices=SIZES)
     parser.add_argument("--ref", action="append", default=[], type=Path)
     args = parser.parse_args()
 

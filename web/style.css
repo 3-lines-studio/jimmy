@@ -253,6 +253,7 @@ textarea:focus {
 }
 
 #agenda,
+#vault,
 .preview {
   display: flex;
   align-items: center;
@@ -268,12 +269,14 @@ textarea:focus {
 }
 
 #agenda:hover,
+#vault:hover,
 .preview:hover {
   background: var(--hover);
   color: var(--text);
 }
 
 #agenda .slot,
+#vault .slot,
 .preview .slot {
   display: flex;
   align-items: center;
@@ -284,6 +287,7 @@ textarea:focus {
 }
 
 #agenda .label,
+#vault .label,
 .preview .name {
   overflow: hidden;
   text-overflow: ellipsis;

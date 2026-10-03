@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/theme.css" />
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/avatar.css" />
+    <link rel="stylesheet" href="/vault.css" />
     <script>
       (() => {
         const saved = localStorage.getItem("jimmy-theme");
@@ -42,6 +43,9 @@
           <button id="agenda" aria-label="Agenda">
             <span class="label">Agenda</span>
             <span id="agenda-badge" hidden></span>
+          </button>
+          <button id="vault" aria-label="Vault">
+            <span class="label">Vault</span>
           </button>
           <div id="previews" hidden></div>
         </div>
@@ -89,6 +93,7 @@
     <script src="/project.js"></script>
     <script src="/avatar.js"></script>
     <script src="/agenda.js"></script>
+    <script src="/vault.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

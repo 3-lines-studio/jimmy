@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const { avatarState } = require("./avatar.js");
+const { PROJECT_BODIES, PROJECT_EYES } = require("./project.js");
 
 const idle = { open: true };
 
@@ -45,4 +48,10 @@ test("el que terminó gana sobre el que sigue trabajando", () => {
 
 test("un proyecto sin tabs abiertas pero corriendo no duerme", () => {
   assert.equal(avatarState({ open: false, working: true }), "working");
+});
+
+test("el css dibuja cada cuerpo y cada par de ojos que un proyecto puede pedir", () => {
+  const css = fs.readFileSync(path.join(__dirname, "avatar.css"), "utf8");
+  for (const body of PROJECT_BODIES) assert.ok(css.includes(`.bot.body-${body} {`), body);
+  for (const eyes of PROJECT_EYES) assert.ok(css.includes(`.bot.eyes-${eyes} .eye i {`), eyes);
 });

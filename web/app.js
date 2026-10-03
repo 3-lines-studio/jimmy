@@ -37,6 +37,7 @@ const PATHS = {
   globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  key: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
   play: '<path d="m6 4 14 8-14 8Z"/>',
   pause: '<path d="M9 4v16"/><path d="M15 4v16"/>',
   folder:
@@ -123,6 +124,12 @@ agendaSlot.className = "slot";
 agendaSlot.append(icon("clock", 16));
 agendaEl.prepend(agendaSlot);
 agendaEl.onclick = () => openTab(AGENDA);
+const vaultEl = document.getElementById("vault");
+const vaultSlot = document.createElement("span");
+vaultSlot.className = "slot";
+vaultSlot.append(icon("key", 16));
+vaultEl.prepend(vaultSlot);
+vaultEl.onclick = () => openTab(VAULT);
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);
@@ -201,12 +208,13 @@ function projectPill(name) {
 function titleOf(id) {
   if (isFiles(id)) return "Archivos: " + projectTitle(filesProject(id));
   if (isAgenda(id)) return "Agenda";
+  if (isVault(id)) return "Vault";
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
 }
 
 function knownTab(id) {
-  return isFiles(id) || isAgenda(id) || Boolean(conversationById(id));
+  return isFiles(id) || isAgenda(id) || isVault(id) || Boolean(conversationById(id));
 }
 
 function isRunning(id) {
@@ -247,7 +255,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id) && !isFiles(id) && !isAgenda(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id)) closeTab(id);
   }
   renderSidebar();
   renderPreviews();
@@ -729,6 +737,7 @@ function openTab(id) {
 function createTab(id) {
   if (isFiles(id)) return createFilesTab(id);
   if (isAgenda(id)) return createAgendaTab(id);
+  if (isVault(id)) return createVaultTab(id);
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -888,8 +897,9 @@ function activate(id) {
   activeId = id;
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   const tab = tabs.get(id);
-  if (tab && !tab.stream && !tab.files && !tab.agenda) subscribe(tab);
+  if (tab && !tab.stream && !tab.files && !tab.agenda && !tab.vault) subscribe(tab);
   if (isAgenda(id)) loadAgenda();
+  if (isVault(id)) loadVault();
   if (tab) tab.attention = null;
   renderSidebar();
   renderTabs();
@@ -975,7 +985,7 @@ function renderTabs() {
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   const running = Boolean(tab) && isRunning(activeId);
-  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda));
+  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda) || Boolean(tab.vault));
   tabActionsEl.hidden = !tab || extra;
   composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;

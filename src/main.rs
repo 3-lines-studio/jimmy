@@ -22,6 +22,7 @@ mod schedule;
 mod skill;
 mod tools;
 mod transport;
+mod vault;
 mod watch;
 mod web;
 mod worker;
@@ -85,6 +86,28 @@ fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// El mismo binario es `heimdall` y `doppler` cuando lo llaman así: los
+/// Makefiles de los proyectos los invocan por nombre, y adentro el vault es el
+/// que corre en este proceso.
+fn invoked_as() -> Option<String> {
+    let name = Path::new(&std::env::args().next()?)
+        .file_name()?
+        .to_string_lossy()
+        .into_owned();
+    matches!(name.as_str(), "heimdall" | "doppler").then_some(name)
+}
+
+fn heimdall_command(name: &str) -> i32 {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match heimdall::cli::run(&args) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{name}: {e}");
+            1
+        }
+    }
+}
+
 fn root_from_env() -> PathBuf {
     PathBuf::from(
         env("JIMMY_ROOT")
@@ -120,6 +143,9 @@ fn unknown_command(args: &[String]) -> Option<&str> {
 
 fn main() {
     axe::set_non_dumpable();
+    if let Some(name) = invoked_as() {
+        std::process::exit(heimdall_command(&name));
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("memo") {
         std::process::exit(memo_command(&args[1..]));
@@ -161,7 +187,7 @@ fn main() {
     axe::sentinel::seed(&config.api_key);
     if transport_name() != "none" && config.allowed.is_empty() {
         eprintln!(
-            "jimmy: atención: TELEGRAM_ALLOWED_USER_IDS está vacío, cualquiera puede usar el bot"
+            "jimmy: atención: JIMMY_ALLOWED_USER_IDS está vacío, así que el bot no le contesta a nadie"
         );
     }
     for dir in ["", "notes", "projects", "files", "scratch", "state"] {
@@ -191,6 +217,7 @@ fn main() {
     let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
     let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    vault::open(&config.root);
     serve_web(
         &config,
         agent.bus(),
@@ -239,7 +266,7 @@ fn main() {
             if event.is_bot {
                 continue;
             }
-            if !config.allowed.is_empty() && !config.allowed.contains(&event.sender) {
+            if !config.allowed.contains(&event.sender) {
                 eprintln!("jimmy: ignoré un mensaje de {}", event.sender);
                 continue;
             }
@@ -385,6 +412,9 @@ fn serve_web(
             "jimmy: sin RESEND_API_KEY ni JIMMY_WEB_FROM nadie puede entrar; \
              JIMMY_WEB_DEV=1 devuelve el link en la respuesta"
         );
+    }
+    if auth.dev {
+        eprintln!("jimmy: JIMMY_WEB_DEV=1: el link de entrada sale en la respuesta");
     }
     let web = web::Web::new(
         config.root.clone(),

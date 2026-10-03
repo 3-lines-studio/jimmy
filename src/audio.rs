@@ -127,7 +127,9 @@ mod tests {
     use super::*;
 
     fn temp(name: &str, data: &[u8]) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(name);
+        let dir = std::env::temp_dir().join(format!("jimmy-audio-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
         std::fs::write(&path, data).unwrap();
         path
     }
@@ -142,7 +144,7 @@ mod tests {
         assert!(text.contains("OggS-data\r\n"));
         assert!(text.contains("name=\"model\"\r\n\r\nwhisper-large-v3\r\n"));
         assert!(text.ends_with("--XYZ--\r\n"));
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -150,7 +152,7 @@ mod tests {
         let path = temp("jimmy-test-audio-long.ogg", b"x");
         let error = transcribe("key", &path, MAX_SECONDS + 1).unwrap_err();
         assert!(error.contains("máximo es 300s"));
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

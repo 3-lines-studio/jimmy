@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn extra_tools_join_the_builtin_list() {
-        let mut tools = axe::tui::build_tools("/tmp");
+        let mut tools = axe::tools::build_tools("/tmp");
         assert_eq!(tools.len(), 6);
         tools.extend(all());
         assert_eq!(tools.len(), 7);

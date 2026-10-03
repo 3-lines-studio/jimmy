@@ -422,7 +422,7 @@ impl Agent {
         dir: Option<PathBuf>,
         silent: bool,
     ) -> Result<String, String> {
-        let mut tools = axe::tui::build_tools(&self.cwd);
+        let mut tools = axe::tools::build_tools(&self.cwd);
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
         if !self.fragments.is_empty() {

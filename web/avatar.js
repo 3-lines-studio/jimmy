@@ -16,7 +16,8 @@ function avatarState(project) {
 
 function avatarBot(name) {
   const el = document.createElement("span");
-  el.className = "avatar bot";
+  const face = projectFace(name);
+  el.className = `avatar bot body-${face.body} eyes-${face.eyes}`;
   el.style.setProperty("--h", projectHue(name));
   el.style.setProperty("--blink", (2.8 + Math.random() * 3.4).toFixed(2) + "s");
   el.style.setProperty("--delay", (-Math.random() * 5).toFixed(2) + "s");

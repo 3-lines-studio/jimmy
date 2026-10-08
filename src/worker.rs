@@ -102,6 +102,7 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
             };
             if matches!(command, Command::Cancel) {
                 cancel.store(true, Ordering::SeqCst);
+                crate::reap::kill_descendants();
                 continue;
             }
             if commands.send(command).is_err() {

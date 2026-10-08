@@ -371,3 +371,62 @@ fn the_tools_run_in_the_project_the_conversation_belongs_to() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// El botón de pausa tiene que cortar el turno y el proceso que la tool
+/// arrancó, no esperar a que terminen solos.
+#[test]
+fn cancelling_a_running_tool_stops_it_at_once() {
+    let root = scratch("cancel");
+    let workspace = root.join("workspace");
+    let pid_file = workspace.join("bash.pid");
+    let late = workspace.join("late");
+    let command = format!(
+        "echo $$ > {}; sleep 30; touch {}",
+        pid_file.display(),
+        late.display()
+    );
+    let (base, _) = model_server(vec![tool_chunk(&command), answer_chunk("listo")]);
+
+    let mut worker = Worker::start(&root, &base, &workspace);
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"dormí\"}");
+    loop {
+        let event = worker.next();
+        if event.contains("tool_start") {
+            break;
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pid_file.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "el bash nunca arrancó"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let bash_pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    worker.send("{\"cmd\":\"cancel\"}");
+    let events = worker.until_done();
+    let elapsed = started.elapsed();
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let alive = Path::new(&format!("/proc/{bash_pid}")).exists();
+    let touched = late.exists();
+    std::fs::remove_dir_all(&root).ok();
+
+    assert!(
+        events.last().unwrap().contains("interrumpido"),
+        "el turno no avisó que se interrumpió: {events:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "el turno tardó {elapsed:?} en frenar"
+    );
+    assert!(!alive, "el bash {bash_pid} siguió vivo después del cancel");
+    assert!(!touched, "el comando siguió corriendo después del cancel");
+}

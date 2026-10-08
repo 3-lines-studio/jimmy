@@ -31,6 +31,41 @@ impl Reaper {
     }
 }
 
+/// Baja a todo lo que cuelga de este proceso: las tools que están corriendo
+/// (un bash, un Chromium) y lo que ellas hayan arrancado, nietos incluidos.
+/// Se llama desde el hilo que lee comandos, así que el turno lo nota apenas
+/// su tool desaparece.
+pub fn kill_descendants() {
+    for pid in descendants_of(std::process::id() as i32) {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+fn descendants_of(root: i32) -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for pid in entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.parse::<i32>().ok())
+    {
+        if let Some(parent) = parent(pid) {
+            children.entry(parent).or_default().push(pid);
+        }
+    }
+    let mut victims = Vec::new();
+    let mut pending = vec![root];
+    while let Some(pid) = pending.pop() {
+        for child in children.get(&pid).into_iter().flatten() {
+            victims.push(*child);
+            pending.push(*child);
+        }
+    }
+    victims
+}
+
 fn orphans() -> Vec<i32> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -83,6 +118,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("el hijo {pid} no quedó reparentado a 1");
+    }
+
+    #[test]
+    fn descendants_include_grandchildren() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg("sleep 30 & sleep 31 & wait")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut found = Vec::new();
+        while Instant::now() < deadline {
+            found = descendants_of(pgid);
+            if found.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(found.len() >= 2, "esperaba los dos sleep: {found:?}");
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        child.wait().unwrap();
     }
 
     #[test]

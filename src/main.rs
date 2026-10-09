@@ -433,7 +433,10 @@ fn serve_web(
         }
     };
     eprintln!("jimmy: web escuchando en el puerto {port}");
-    std::thread::spawn(move || web::serve(web, listener));
+    std::thread::Builder::new()
+        .name("web".into())
+        .spawn(move || web::serve(web, listener))
+        .expect("failed to spawn thread");
     std::thread::spawn(move || preview::listen(previews));
 }
 

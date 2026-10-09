@@ -112,31 +112,55 @@ pub fn listen(port: u16) -> Result<TcpListener, String> {
 }
 
 /// Un thread por conexión: con la web expuesta, un tope es la diferencia entre
-/// atender y quedarse sin memoria por una cola de pedidos.
+/// atender y quedarse sin memoria por una cola de pedidos. Con el contenedor en
+/// su tope de tareas, `spawn` falla con EAGAIN: la conexión se contesta con un
+/// 503 y la ronda sigue, porque acá arriba lo que sube es el hilo que atiende.
 const MAX_CONNECTIONS: usize = 64;
 
 pub fn serve(web: Arc<Web>, listener: TcpListener) {
     let live = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming().flatten() {
+    for mut stream in listener.incoming().flatten() {
         if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-            let mut stream = stream;
             let _ = http::send_error(&mut stream, 503, "demasiados pedidos a la vez");
             continue;
         }
-        live.fetch_add(1, Ordering::Relaxed);
+        // La conexión viaja por el canal y no dentro del hilo: un `spawn` que
+        // falla deja el cierre sin dropear, así que un socket adentro se queda
+        // abierto y el cliente esperando para siempre.
+        let (handoff, incoming) = std::sync::mpsc::channel();
         let web = web.clone();
         let live = live.clone();
-        std::thread::spawn(move || {
-            let _live = Live(live);
-            let mut stream = stream;
-            if let Err(e) = handle(&web, &mut stream) {
-                eprintln!("jimmy web: {e}");
+        let atendida = std::thread::Builder::new()
+            .name("web-conn".into())
+            .spawn(move || {
+                let _live = Live::new(live);
+                let Ok(mut stream) = incoming.recv() else {
+                    return;
+                };
+                if let Err(e) = handle(&web, &mut stream) {
+                    eprintln!("jimmy web: {e}");
+                }
+            });
+        match atendida {
+            Ok(_) => {
+                let _ = handoff.send(stream);
             }
-        });
+            Err(e) => {
+                eprintln!("jimmy web: no pude atender la conexión: {e}");
+                let _ = http::send_error(&mut stream, 503, "no puedo atender más pedidos");
+            }
+        }
     }
 }
 
 struct Live(Arc<AtomicUsize>);
+
+impl Live {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Live(counter)
+    }
+}
 
 impl Drop for Live {
     fn drop(&mut self) {

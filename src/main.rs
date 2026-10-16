@@ -229,12 +229,12 @@ fn main() {
     let mut watch = watch::Watch::default();
     let root = config.root.clone();
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(60));
+        std::thread::sleep(watch::TICK);
         reaper.reap(std::time::Instant::now());
         memlog::sample(&workspace);
         let memory = machine::usage(&root).memory;
         let quiet = !pool::busy() && previews.list().is_empty();
-        if watch.overdue(memory.used, quiet) {
+        if watch.overdue(memory.used, memory.total, quiet) {
             eprintln!(
                 "jimmy: {} MB en el cgroup sin nadie corriendo: salgo para que me levanten",
                 memory.used / 1024 / 1024

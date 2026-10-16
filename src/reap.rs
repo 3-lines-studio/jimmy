@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const TTL: Duration = Duration::from_secs(30 * 60);
+pub(crate) const TTL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Default)]
 pub struct Reaper {

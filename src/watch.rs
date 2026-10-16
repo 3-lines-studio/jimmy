@@ -4,17 +4,34 @@
 //!
 //! Mide `memory.current` entero y no el `anon`, porque lo que se cobra es el
 //! cgroup: la page cache y el slab que dejan los builds no los reclama nadie,
-//! que el techo son 32 GB y el kernel no siente presión. `memory.high` y
-//! `memory.reclaim` están montados de solo lectura, así que sólo queda nacer de
-//! nuevo.
+//! que el techo lo declara `memory.max` y el kernel no siente presión.
+//! `memory.high` y `memory.reclaim` están montados de solo lectura, así que
+//! sólo queda nacer de nuevo.
 
-const LIMIT: u64 = 500 * 1024 * 1024;
+use crate::reap;
+use std::time::Duration;
 
-/// Cinco vueltas es lo que tarda el reaper en bajar a un huérfano (`reap::TTL`):
-/// la sexta es la del avistamiento y la séptima la del kill, que esta lectura
-/// todavía puede ver alta. Una vuelta más y el que pesa ya no puede ser un
-/// huérfano.
-const TICKS: u32 = 7;
+/// Lo que dura una vuelta: el `sleep` del hilo que mira en `main`. El TTL del
+/// reaper se cuenta con esto, así que los dos van juntos.
+pub const TICK: Duration = Duration::from_secs(60);
+
+/// El cgroup sin nadie corriendo se mide contra una fracción del techo y no
+/// contra un número fijo: lo que el contenedor pesa en reposo — la page cache
+/// que dejan los builds, el slab — es el mismo sea el plan que sea, y un piso
+/// bajo mata a un jimmy que no hizo nada. Un cuarto del techo es holgado para
+/// lo medido (la instancia de dev llegó a 2,6 GB antes de morir) y sigue
+/// estando lejos del OOM que el reinicio evita.
+const SHARE: u64 = 4;
+
+/// Cuando el cgroup no declara techo, `memory.max` dice `max` y vale cero: ahí
+/// el número es un piso elegido para no matar temprano, no una medida.
+const NO_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Una vuelta más que el reaper para bajar a un huérfano (`reap::TTL`): la que
+/// lo ve, las del TTL, y la que todavía puede leer el kill ya hecho. Se calcula
+/// y no se escribe, que el TTL ya subió de cinco minutos a treinta sin que
+/// nadie tocara esto.
+const TICKS: u32 = (reap::TTL.as_secs() / TICK.as_secs() + 2) as u32;
 
 #[derive(Default)]
 pub struct Watch {
@@ -22,10 +39,11 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Una vuelta del reaper. `used` son los bytes del cgroup enteros, cache y
-    /// slab adentro, y `quiet` que no hay nadie corriendo.
-    pub fn overdue(&mut self, used: u64, quiet: bool) -> bool {
-        self.high = if quiet && used > LIMIT {
+    /// Una vuelta del reaper. `used` y `total` son los bytes del cgroup enteros
+    /// —`memory.current` y `memory.max`, cache y slab adentro— y `quiet` que no
+    /// hay nadie corriendo.
+    pub fn overdue(&mut self, used: u64, total: u64, quiet: bool) -> bool {
+        self.high = if quiet && used > limit(total) {
             self.high + 1
         } else {
             0
@@ -34,17 +52,27 @@ impl Watch {
     }
 }
 
+const fn limit(total: u64) -> u64 {
+    if total == 0 {
+        NO_LIMIT
+    } else {
+        total / SHARE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALTO: u64 = LIMIT + 1;
+    const TOTAL: u64 = 32 * 1024 * 1024 * 1024;
+    const ALTO: u64 = limit(TOTAL) + 1;
+    const REPOSO: u64 = 569 * 1024 * 1024;
 
     #[test]
     fn con_alguien_corriendo_no_cuenta() {
         let mut watch = Watch::default();
         for _ in 0..TICKS * 10 {
-            assert!(!watch.overdue(ALTO, false));
+            assert!(!watch.overdue(ALTO, TOTAL, false));
         }
     }
 
@@ -52,11 +80,34 @@ mod tests {
     fn la_memoria_baja_vuelve_a_contar_de_cero() {
         let mut watch = Watch::default();
         for _ in 0..TICKS - 1 {
-            watch.overdue(ALTO, true);
+            watch.overdue(ALTO, TOTAL, true);
         }
-        watch.overdue(LIMIT, true);
+        watch.overdue(limit(TOTAL), TOTAL, true);
         for _ in 0..TICKS - 1 {
-            assert!(!watch.overdue(ALTO, true));
+            assert!(!watch.overdue(ALTO, TOTAL, true));
+        }
+    }
+
+    #[test]
+    fn el_peso_del_contenedor_en_reposo_no_basta_para_salir() {
+        let mut watch = Watch::default();
+        for vuelta in 0..TICKS * 2 {
+            assert!(
+                !watch.overdue(REPOSO, TOTAL, true),
+                "salió en la vuelta {vuelta}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_sale_antes_de_que_el_reaper_llegue_al_huerfano() {
+        let mut watch = Watch::default();
+        let vueltas = (reap::TTL.as_secs() / TICK.as_secs()) as u32;
+        for vuelta in 0..vueltas {
+            assert!(
+                !watch.overdue(ALTO, TOTAL, true),
+                "salió en la vuelta {vuelta}"
+            );
         }
     }
 
@@ -64,8 +115,14 @@ mod tests {
     fn la_memoria_alta_sostenida_se_lo_lleva() {
         let mut watch = Watch::default();
         for _ in 0..TICKS - 1 {
-            assert!(!watch.overdue(ALTO, true));
+            assert!(!watch.overdue(ALTO, TOTAL, true));
         }
-        assert!(watch.overdue(ALTO, true));
+        assert!(watch.overdue(ALTO, TOTAL, true));
+    }
+
+    #[test]
+    fn un_cgroup_sin_techo_declarado_usa_el_piso() {
+        assert_eq!(limit(0), NO_LIMIT);
+        assert_eq!(limit(TOTAL), TOTAL / SHARE);
     }
 }

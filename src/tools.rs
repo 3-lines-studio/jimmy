@@ -178,7 +178,10 @@ mod tests {
 
     #[test]
     fn extra_tools_join_the_builtin_list() {
-        let mut tools = axe::tools::build_tools("/tmp");
+        let mut tools = axe::tools::build_tools_with(
+            std::sync::Arc::new(axe::machine::Local::new("/tmp")),
+            Some(axe::web::Web::new("test")),
+        );
         assert_eq!(tools.len(), 6);
         tools.extend(all());
         assert_eq!(tools.len(), 7);

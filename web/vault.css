@@ -212,6 +212,32 @@
   box-shadow: 0 0 0 3px var(--ring);
 }
 
+.vault-form input[type="checkbox"] {
+  flex: none;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.vault-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--muted);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+}
+
+.vault-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vault-editing .vault-key {
+  max-width: 30%;
+}
+
 .vault-form button {
   flex: none;
   height: var(--row);

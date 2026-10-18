@@ -16,6 +16,7 @@ let vaultPlain = new Set();
 let vaultOpen = null;
 let vaultRevealed = new Set();
 let vaultMinted = null;
+let vaultEditing = null;
 
 function isVault(id) {
   return id === VAULT;
@@ -166,6 +167,7 @@ function vaultEnvsEl() {
 
 async function openVaultEnv(environment) {
   const key = vaultKey(environment);
+  vaultEditing = null;
   if (vaultOpen === key) {
     vaultOpen = null;
     vaultSecrets = null;
@@ -194,6 +196,10 @@ function vaultSecretsEl() {
   const list = document.createElement("div");
   list.className = "vault-keys";
   for (const name of keys) {
+    if (vaultEditing === name) {
+      list.append(vaultEditRow(project, env, name, secrets[name]));
+      continue;
+    }
     const row = document.createElement("div");
     row.className = "vault-row";
     const label = document.createElement("span");
@@ -220,6 +226,16 @@ function vaultSecretsEl() {
     actions.className = "vault-actions";
     actions.append(copyButton(secrets[name], `Copiar ${name}`));
     actions.append(
+      iconButton(
+        "pencil",
+        `Editar ${name}`,
+        () => {
+          vaultEditing = name;
+          renderVault();
+        },
+      ),
+    );
+    actions.append(
       iconButton("close", `Borrar ${name}`, () => vaultOrder("/api/vault/unset", { project, env, name })),
     );
     row.append(label, value, actions);
@@ -242,6 +258,59 @@ function vaultSecretsEl() {
     ),
   );
   return section;
+}
+
+function vaultCheck(checked, text = "secreto") {
+  const label = document.createElement("label");
+  label.className = "vault-check";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(checked);
+  input.defaultChecked = Boolean(checked);
+  label.append(input, document.createTextNode(text));
+  return { label, input };
+}
+
+function vaultEditRow(project, env, name, value) {
+  const row = document.createElement("div");
+  row.className = "vault-row vault-editing";
+  const label = document.createElement("span");
+  label.className = "vault-key";
+  label.textContent = name;
+  const form = document.createElement("form");
+  form.className = "vault-form vault-edit";
+  const input = document.createElement("input");
+  input.value = value;
+  input.setAttribute("aria-label", `Valor de ${name}`);
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  const check = vaultCheck(!vaultPlain.has(name));
+  check.input.setAttribute("aria-label", "secreto");
+  const save = document.createElement("button");
+  save.textContent = "Guardar";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancelar";
+  cancel.onclick = () => {
+    vaultEditing = null;
+    renderVault();
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const data = await api("/api/vault/set", {
+      project,
+      env,
+      name,
+      value: input.value,
+      secret: check.input.checked,
+    });
+    if (!data) return;
+    vaultEditing = null;
+    await loadSecrets({ project, env });
+  };
+  form.append(input, check.label, save, cancel);
+  row.append(label, form);
+  return row;
 }
 
 function vaultTokensEl() {
@@ -350,15 +419,18 @@ function vaultForm(placeholders, action, submit) {
   const form = document.createElement("form");
   form.className = "vault-form";
   const inputs = placeholders.map(({ placeholder, type, checked }) => {
+    if (type === "checkbox") {
+      const box = vaultCheck(checked, placeholder);
+      box.input.setAttribute("aria-label", placeholder);
+      box.input.title = placeholder;
+      form.append(box.label);
+      return box.input;
+    }
     const input = document.createElement("input");
     input.placeholder = placeholder;
     input.setAttribute("aria-label", placeholder);
     input.title = placeholder;
     input.type = type || "text";
-    if (type === "checkbox") {
-      input.checked = Boolean(checked);
-      input.defaultChecked = Boolean(checked);
-    }
     input.spellcheck = false;
     input.autocomplete = "off";
     input.autocapitalize = "off";

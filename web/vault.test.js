@@ -8,6 +8,7 @@ const {
   vaultMask,
   vaultAction,
   vaultClock,
+  vaultValue,
 } = require("./vault.js");
 
 test("el entorno se nombra proyecto y entorno", () => {
@@ -30,6 +31,12 @@ test("los entornos se agrupan por proyecto, general primero", () => {
   assert.deepEqual(groups[2].environments.map((environment) => environment.env), ["prd"]);
   assert.deepEqual(groups[1].environments.map((environment) => environment.env), ["dev", "prd"]);
   assert.deepEqual(vaultProjects([]), []);
+});
+
+test("la casilla de secreto viaja como on o nada", () => {
+  assert.equal(vaultValue({ type: "checkbox", checked: true }), "on");
+  assert.equal(vaultValue({ type: "checkbox", checked: false }), "");
+  assert.equal(vaultValue({ type: "text", value: "  AUTHOR  " }), "AUTHOR");
 });
 
 test("las claves se cuentan en singular y en plural", () => {

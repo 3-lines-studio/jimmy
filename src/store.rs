@@ -1,0 +1,167 @@
+use axe::durable::Journal;
+use axe::session::Entry;
+use std::path::Path;
+
+pub fn open(dir: &Path) -> Result<Journal, String> {
+    import(dir)?;
+    Journal::open(dir).map_err(|error| match error.kind() {
+        std::io::ErrorKind::WouldBlock => "el chat lo está corriendo otra instancia".to_string(),
+        _ => error.to_string(),
+    })
+}
+
+pub fn load(dir: &Path) -> Vec<Entry> {
+    if !dir.join("state.json").exists() && !dir.join("journal.jsonl").exists() {
+        return legacy(dir);
+    }
+    Journal::load(dir)
+        .map(|records| records.into_iter().map(|record| record.entry).collect())
+        .unwrap_or_default()
+}
+
+pub fn texts(dir: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(dir.join("conversation.jsonl")) else {
+        return legacy(dir)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Message { message } => Some((message.role, message.content)),
+                _ => None,
+            })
+            .collect();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let role = match event.get("event").and_then(|kind| kind.as_str()) {
+            Some("user") => "user",
+            Some("assistant") => "assistant",
+            Some("tool_result") => "tool",
+            _ => continue,
+        };
+        let Some(content) = event.get("text").and_then(|text| text.as_str()) else {
+            continue;
+        };
+        if content.trim().is_empty() {
+            continue;
+        }
+        out.push((role.to_string(), content.to_string()));
+    }
+    out
+}
+
+fn import(dir: &Path) -> Result<(), String> {
+    if dir.join("state.json").exists() || dir.join("journal.jsonl").exists() {
+        return Ok(());
+    }
+    let entries = legacy(dir);
+    if entries.is_empty() {
+        return Ok(());
+    }
+    Journal::seed(dir, entries).map_err(|error| error.to_string())?;
+    let _ = std::fs::rename(
+        dir.join("transcript.jsonl"),
+        dir.join("transcript.imported.jsonl"),
+    );
+    Ok(())
+}
+
+fn legacy(dir: &Path) -> Vec<Entry> {
+    let Ok(text) = std::fs::read_to_string(dir.join("transcript.jsonl")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axe::Message;
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("jimmy-store-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn entry(role: &str, content: &str) -> String {
+        let message = Message {
+            role: role.into(),
+            content: content.into(),
+            ..Message::default()
+        };
+        serde_json::to_string(&Entry::Message { message }).unwrap()
+    }
+
+    #[test]
+    fn a_transcript_is_imported_once_and_renamed() {
+        let dir = dir("import");
+        let transcript = format!(
+            "{}\n{}\n",
+            entry("user", "hola"),
+            entry("assistant", "listo")
+        );
+        std::fs::write(dir.join("transcript.jsonl"), &transcript).unwrap();
+
+        let journal = open(&dir).unwrap();
+        assert_eq!(journal.entries().len(), 2);
+        drop(journal);
+
+        assert!(dir.join("state.json").exists());
+        assert!(dir.join("transcript.imported.jsonl").exists());
+        assert!(!dir.join("transcript.jsonl").exists());
+        assert_eq!(load(&dir).len(), 2);
+    }
+
+    #[test]
+    fn a_legacy_transcript_without_a_journal_still_reads() {
+        let dir = dir("legacy");
+        std::fs::write(
+            dir.join("transcript.jsonl"),
+            format!("{}\n", entry("assistant", "viejo")),
+        )
+        .unwrap();
+        assert_eq!(load(&dir).len(), 1);
+    }
+
+    #[test]
+    fn texts_come_from_the_event_log() {
+        let dir = dir("texts");
+        std::fs::write(
+            dir.join("conversation.jsonl"),
+            "{\"event\":\"user\",\"text\":\"hola\"}\n\
+             {\"event\":\"delta\",\"text\":\"no\"}\n\
+             {\"event\":\"assistant\",\"text\":\"hola\"}\n\
+             {\"event\":\"done\",\"text\":\"hola\"}\n\
+             {\"event\":\"tool_result\",\"text\":\"salida\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            texts(&dir),
+            [
+                ("user".to_string(), "hola".to_string()),
+                ("assistant".to_string(), "hola".to_string()),
+                ("tool".to_string(), "salida".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_import_keeps_working_after_a_snapshot() {
+        let dir = dir("snapshot");
+        std::fs::write(
+            dir.join("transcript.jsonl"),
+            format!("{}\n", entry("user", "uno")),
+        )
+        .unwrap();
+        let mut journal = open(&dir).unwrap();
+        journal.snapshot().unwrap();
+        drop(journal);
+        let journal = open(&dir).unwrap();
+        assert_eq!(journal.entries().len(), 1);
+    }
+}

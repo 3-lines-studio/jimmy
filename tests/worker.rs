@@ -151,6 +151,16 @@ fn resumes_a_turn_that_was_cut_short() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+fn transcript(chat: &Path) -> String {
+    let records = axe::durable::Journal::load(chat).unwrap();
+    let mut out = String::new();
+    for record in records {
+        out.push_str(&serde_json::to_string(&record.entry).unwrap());
+        out.push('\n');
+    }
+    out
+}
+
 fn hold_the_turn(chat: &Path) -> std::fs::File {
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -206,7 +216,7 @@ fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
     assert_eq!(served.load(Ordering::SeqCst), 1, "solo el segundo turno");
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(!transcript.contains("primero"), "{transcript}");
     assert!(transcript.contains("segundo"), "{transcript}");
     assert!(!chat.join("inflight").exists());
@@ -214,7 +224,7 @@ fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
 }
 
 #[test]
-fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
+fn runs_a_turn_against_the_model_and_leaves_a_journal() {
     let root = scratch("prompt");
     let chat = root.join("chats/test");
     let (base, served) = model_server(vec![answer_chunk("hola desde el fake")]);
@@ -230,13 +240,27 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     assert!(events.last().unwrap().contains("hola desde el fake"));
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(
         transcript.contains("[ana] hola"),
         "el modelo tiene que saber quién le habla: {transcript}"
     );
     assert!(transcript.contains("hola desde el fake"), "{transcript}");
     assert!(!chat.join("inflight").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_failed_turn_keeps_the_input_that_was_admitted() {
+    let root = scratch("admitted");
+    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"guardá esto\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("\"error\""), "{events:?}");
+    drop(worker);
+
+    let journal = transcript(&root.join("chats/test"));
+    assert!(journal.contains("guardá esto"), "{journal}");
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -264,7 +288,7 @@ fn compacting_answers_with_what_it_summarized() {
     assert!(done.contains("compactado"), "{done}");
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(
         transcript.contains("\"type\":\"compaction\""),
         "{transcript}"
@@ -327,7 +351,7 @@ fn a_parallel_batch_lands_next_to_its_call() {
     worker.until_done();
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     let roles: Vec<String> = transcript
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())

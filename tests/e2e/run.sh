@@ -142,8 +142,8 @@ printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from"
 sleep 14
 rg -q 'compactado' "$WORK/telegram.log"
 check "el compactado respondió por Telegram" $?
-rg -q '"type":"compaction"' "$WORK/root/chats/999/transcript.jsonl"
-check "el transcript tiene la compactación" $?
+rg -q '"type":"compaction"' "$WORK/root/chats/999/journal.jsonl"
+check "el journal tiene la compactación" $?
 
 say "frenar un turno por Telegram"
 printf '%s\n' '{"update_id":4,"message":{"message_id":10,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"contame algo largo"}}' >>"$WORK/inbox.jsonl"

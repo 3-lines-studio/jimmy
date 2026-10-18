@@ -16,6 +16,7 @@ mod protocol;
 mod random;
 mod schedule;
 mod skill;
+mod store;
 mod tools;
 mod transport;
 mod vault;

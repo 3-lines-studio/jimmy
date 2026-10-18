@@ -6,8 +6,10 @@ it the machine of its own: every message it replies to is an axe agent run with
 the full `read`, `write`, `edit`, and `bash` toolset on the container
 filesystem.
 
-One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored as
-append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
+One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored
+under `$JIMMY_ROOT/chats/<chat_id>/` as a snapshot plus an append-only journal. Every
+admitted input, assistant message, and tool result is committed and fsynced before it is
+shown, so a restart resumes from the last one instead of repeating it. Telegram
 listens by long polling and Slack over Socket Mode, so there is no public URL
 and no webhook to configure. Sending a message shows one `pensando`
 placeholder, which is replaced by the reply when the agent finishes. There is no
@@ -28,7 +30,7 @@ agent:
 
 - `/status` — context used vs. the window, model, commit, workspace.
 - `/compact` — summarize the context now, without waiting for the threshold.
-- `/clear` — archive this chat's transcript so the next message starts fresh.
+- `/clear` — commit a reset so the next message starts fresh; the history stays stored.
 - `/help`, `/start` — list the commands.
 
 Anything else, including unknown `/`-commands, goes to the agent.
@@ -65,8 +67,11 @@ Jimmy creates it at startup with a fixed layout and the default prompt
 - `scratch/` — temporary, safe to delete
 - `state/` — the scheduler's task list and run state
 
-`$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl` holds each chat's history. It is
-Jimmy's own state and the agent is told to leave it alone.
+`$JIMMY_ROOT/chats/<chat_id>/` holds each chat's history: `state.json` is the
+latest snapshot and `journal.jsonl` the commits after it. Both are Jimmy's own
+state and the agent is told to leave them alone. A chat created before the
+journal existed has its `transcript.jsonl` imported on first open and renamed
+to `transcript.imported.jsonl`.
 
 ## Model, base URL, and system prompt
 

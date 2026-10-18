@@ -2498,6 +2498,12 @@ done
     fn search_looks_in_what_was_said() {
         let server = start("search");
         let cookie = login(server.port, "bob@ejemplo.com");
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(server.root.join("chats/123456789/conversation.jsonl"))
+            .unwrap();
+        log.write_all(b"{\"event\":\"user\",\"text\":\"el gato duerme\"}\n")
+            .unwrap();
 
         let found = get(server.port, "/api/search?q=gato", Some(&cookie));
         assert!(found.contains("el gato duerme"), "{found}");

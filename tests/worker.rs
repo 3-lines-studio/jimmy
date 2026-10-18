@@ -20,7 +20,6 @@ impl Worker {
             .env("OPENAI_API_KEY", "test")
             .env("JIMMY_ROOT", root)
             .env("JIMMY_WORKSPACE", root.join("workspace"))
-            .env("JIMMY_PROMPT", "jimmy")
             .env("AXE_BASE", base)
             .env("AXE_MODEL", "fake")
             .stdin(Stdio::piped())
@@ -76,9 +75,7 @@ fn scratch(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("jimmy-worker-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("chats/test")).unwrap();
-    std::fs::create_dir_all(root.join("prompts")).unwrap();
     std::fs::create_dir_all(root.join("workspace")).unwrap();
-    std::fs::write(root.join("prompts/jimmy.md"), "sos jimmy, un ayudante.").unwrap();
     root
 }
 

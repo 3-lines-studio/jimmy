@@ -83,7 +83,7 @@ print("IMAGE image/png", flush=True)
 
 escapes = [
     "/api/tree?project=%s&path=.." % PROJECT,
-    "/api/raw?project=%s&path=../../../prompts/jimmy.md" % PROJECT,
+    "/api/raw?project=%s&path=../../../secreto.txt" % PROJECT,
     "/api/raw?project=%s&path=.env" % PROJECT,
     "/api/tree?project=..",
     "/api/tree?project=no-existe",

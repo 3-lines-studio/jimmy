@@ -13,7 +13,6 @@ mod media;
 mod memo;
 mod pool;
 mod preview;
-mod prompt;
 mod protocol;
 mod random;
 mod schedule;
@@ -33,6 +32,8 @@ use transport::slack;
 use transport::telegram;
 use transport::{Event, EventSource, Idle, Null, Session, Transport};
 
+const SYSTEM: &str = include_str!("../prompts/jimmy.md");
+
 struct Config {
     api_key: String,
     transcribe_key: Option<String>,
@@ -41,8 +42,6 @@ struct Config {
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
-    prompt: String,
-    vars: String,
     allowed: Vec<String>,
 }
 
@@ -72,8 +71,6 @@ impl Config {
             ),
             root,
             workspace,
-            prompt: env("JIMMY_PROMPT").unwrap_or_else(|| prompt::DEFAULT.into()),
-            vars: env("JIMMY_VARS").unwrap_or_default(),
             allowed,
         })
     }
@@ -415,9 +412,6 @@ fn serve_web(
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {
-    let mut vars = prompt::parse_vars(&config.vars);
-    vars.push(("skills".into(), skill::index(&skills_dirs())));
-    let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
     Ok(Agent::new(
         config.base.clone(),
         config.model.clone(),
@@ -425,7 +419,7 @@ fn build_agent(config: &Config) -> Result<Agent, String> {
         config.context_window,
         config.root.clone(),
         config.workspace.clone(),
-        fragments,
+        SYSTEM.to_string(),
     ))
 }
 
@@ -931,9 +925,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_spec_assembles_with_the_vars_the_agent_gets() {
-        let vars = prompt::parse_vars("usuario=Ana,asistente=Jimmy");
-        let out = prompt::assemble(prompt::DEFAULT, &prompt::dirs(Path::new(".")), &vars).unwrap();
-        assert!(out.contains("You are Jimmy, Ana's assistant."));
+    fn the_system_prompt_carries_no_placeholders() {
+        assert!(SYSTEM.contains("Never answer in Chinese."));
+        assert!(!SYSTEM.contains("{{"));
     }
 }

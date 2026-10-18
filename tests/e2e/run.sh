@@ -29,8 +29,8 @@ check() {
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
 
 say "preparo el root"
-mkdir -p "$WORK/root/prompts" "$WORK/root/workspace/projects/ken"
-echo "sos jimmy, un ayudante." >"$WORK/root/prompts/jimmy.md"
+mkdir -p "$WORK/root/workspace/projects/ken"
+echo "no se sirve" >"$WORK/root/secreto.txt"
 
 free_port() {
     python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1])"
@@ -58,7 +58,6 @@ env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
     TELEGRAM_ALLOWED_USER_IDS=999 \
     JIMMY_ROOT="$WORK/root" \
     JIMMY_WORKSPACE="$WORK/root/workspace" \
-    JIMMY_PROMPT=jimmy \
     JIMMY_WEB_PORT="$WEB_PORT" \
     JIMMY_WEB_EMAILS=bob@ejemplo.com JIMMY_WEB_DEV=1 \
     JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \

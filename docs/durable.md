@@ -191,5 +191,16 @@ phase. `inflight`, `recover()` and `local_resume`'s history guessing disappear.
 4. Inbox and request ids; `agent`, `live`, `usage`; projection rebuild; delete
    `inflight`, `recover()`, transcript rewriting.
 
+## Status
+
+- Phase 0: journal, snapshot, lease (axe #22).
+- Phase 1: jimmy writes through the journal, legacy import, reset as an entry
+  (jimmy #246).
+- Phase 2: tool intents and interrupted results (axe #23); images in `uploads/`,
+  payloads pruned at snapshot (jimmy #247).
+- Phase 3: turn tasks with a checkpoint per model turn, restart counting and
+  parking (axe #25, jimmy #248). Not yet: sleeping schedule tasks, per-tool task
+  records, owners and waiting.
+
 Non-goals: Chord typed document ops, Cloudflare Durable Objects, a runtime
 plugin registry, code mode. We take the invariants and the shapes, not the API.

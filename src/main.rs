@@ -1,5 +1,4 @@
 mod agent;
-mod audio;
 mod auth;
 mod bus;
 mod conversations;
@@ -29,14 +28,12 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use transport::slack;
-use transport::telegram;
 use transport::{Event, EventSource, Idle, Null, Session, Transport};
 
 const SYSTEM: &str = include_str!("../prompts/jimmy.md");
 
 struct Config {
     api_key: String,
-    transcribe_key: Option<String>,
     base: String,
     model: String,
     context_window: Option<usize>,
@@ -51,7 +48,6 @@ impl Config {
         let root = root_from_env();
         let workspace = workspace_from_env().display().to_string();
         let allowed = env("JIMMY_ALLOWED_USER_IDS")
-            .or_else(|| env("TELEGRAM_ALLOWED_USER_IDS"))
             .map(|v| {
                 v.split(',')
                     .map(|id| id.trim().to_string())
@@ -61,7 +57,6 @@ impl Config {
             .unwrap_or_default();
         Ok(Self {
             api_key,
-            transcribe_key: env("TRANSCRIBE_API_KEY"),
             base: env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
             model: env("AXE_MODEL").unwrap_or_else(|| "deepseek-flash".into()),
             context_window: Some(
@@ -240,36 +235,14 @@ fn main() {
             }
             let agent = agent.clone();
             let transport = transport.clone();
-            let transcribe_key = config.transcribe_key.clone();
             std::thread::spawn(move || {
                 let Event {
                     session,
                     author,
                     text,
                     image,
-                    voice,
                     ..
                 } = event;
-                let mut text = text;
-                if let Some((file_id, duration)) = voice {
-                    match transcribe_voice(
-                        transport.as_ref(),
-                        &session,
-                        &file_id,
-                        duration,
-                        transcribe_key,
-                    ) {
-                        Ok(transcript) => {
-                            transport.note(&session, &format!("🎤 {transcript}"));
-                            text = transcript;
-                        }
-                        Err(e) => {
-                            transport
-                                .note(&session, &format!("⚠️ no pude transcribir el audio: {e}"));
-                            return;
-                        }
-                    }
-                }
                 eprintln!("jimmy: {} -> {}", session.channel, clamp(&text, 80));
                 if let Some(reply) = agent.command(&session, &text) {
                     transport.note(&session, &reply);
@@ -428,7 +401,6 @@ pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
 
 fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
     match transport_name().as_str() {
-        "telegram" => Ok(Arc::new(telegram::Telegram::new(telegram_token()?))),
         "slack" => Ok(Arc::new(slack::Slack::new(
             slack_bot_token()?,
             slack_app_token()?,
@@ -440,9 +412,6 @@ fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
 
 fn source_from_env() -> Result<Box<dyn EventSource>, String> {
     match transport_name().as_str() {
-        "telegram" => Ok(Box::new(telegram::Updates::new(telegram::Telegram::new(
-            telegram_token()?,
-        )))),
         "slack" => Ok(Box::new(slack::Events::new(slack::Slack::new(
             slack_bot_token()?,
             slack_app_token()?,
@@ -453,11 +422,14 @@ fn source_from_env() -> Result<Box<dyn EventSource>, String> {
 }
 
 fn transport_name() -> String {
-    env("JIMMY_TRANSPORT").unwrap_or_else(|| "none".into())
-}
-
-fn telegram_token() -> Result<String, String> {
-    env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado".into())
+    match env("JIMMY_TRANSPORT").unwrap_or_default().as_str() {
+        "telegram" => {
+            eprintln!("jimmy: el transporte telegram ya no existe; sigo sin transporte");
+            "none".into()
+        }
+        "" => "none".into(),
+        other => other.to_string(),
+    }
 }
 
 fn slack_bot_token() -> Result<String, String> {
@@ -599,38 +571,6 @@ fn skill_command(args: &[String]) -> i32 {
             2
         }
     }
-}
-
-fn transcribe_voice(
-    transport: &dyn Transport,
-    session: &Session,
-    file_id: &str,
-    duration: u64,
-    api_key: Option<String>,
-) -> Result<String, String> {
-    let Some(api_key) = api_key else {
-        return Err("falta TRANSCRIBE_API_KEY".into());
-    };
-    let (file_path, data) = transport.download(file_id)?;
-    let ext = audio_extension(&file_path);
-    let name = format!(
-        "jimmy-voice-{}-{}.{ext}",
-        session.channel,
-        axe::session::now_ms()
-    );
-    let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
-    let result = audio::transcribe(&api_key, &path, duration);
-    let _ = std::fs::remove_file(&path);
-    result
-}
-
-fn audio_extension(file_path: &str) -> &str {
-    Path::new(file_path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .filter(|ext| *ext != "oga")
-        .unwrap_or("ogg")
 }
 
 fn fetch_image(
@@ -829,77 +769,6 @@ mod tests {
         assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
         assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
         assert_eq!(unknown_command(&["--help".into()]), Some("--help"));
-    }
-
-    #[test]
-    fn telegram_voice_extension_is_ogg_not_oga() {
-        assert_eq!(audio_extension("voice/file_12.oga"), "ogg");
-    }
-
-    #[test]
-    fn other_audio_extensions_pass_through() {
-        assert_eq!(audio_extension("audio/song.mp3"), "mp3");
-        assert_eq!(audio_extension("audio/no-extension"), "ogg");
-    }
-
-    #[test]
-    fn session_key_round_trips() {
-        assert_eq!(
-            session_from_key("123456789").unwrap(),
-            Session::channel("123456789")
-        );
-        assert_eq!(
-            session_from_key("C1/1699.1").unwrap(),
-            Session {
-                channel: "C1".into(),
-                thread: Some("1699.1".into())
-            }
-        );
-    }
-
-    #[test]
-    fn an_image_for_a_web_conversation_is_kept_and_queued() {
-        let dir = std::env::temp_dir().join(format!("jimmy-send-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let image = dir.join("circulo.png");
-        std::fs::write(&image, b"\x89PNG\r\n\x1a\nlos bytes").unwrap();
-        let conversation = conversations::Conversation {
-            key: "web-1".into(),
-            dir: dir.join("chats/web-1"),
-            cwd: dir.clone(),
-            project: "general".into(),
-            title: None,
-            read_only: false,
-        };
-
-        let name = keep(&conversation, image.to_str().unwrap(), Some("el círculo")).unwrap();
-        assert!(name.ends_with("-circulo.png"), "{name}");
-        let kept = std::fs::read(media::dir(&conversation).join(&name)).unwrap();
-        assert_eq!(kept, b"\x89PNG\r\n\x1a\nlos bytes");
-
-        let queued = media::drain(&conversation);
-        assert_eq!(queued.len(), 1);
-        assert!(
-            matches!(&queued[0], protocol::Event::Image { name: kept, caption } if kept == &name && caption == "el círculo")
-        );
-
-        let other = dir.join("informe.pdf");
-        assert!(keep(&conversation, other.to_str().unwrap(), None).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn inflight_chats_lists_only_the_ones_with_a_marker() {
-        let root = std::env::temp_dir().join(format!("jimmy-inflight-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("chats/123")).unwrap();
-        std::fs::create_dir_all(root.join("chats/456")).unwrap();
-        std::fs::write(root.join("chats/123/inflight"), b"").unwrap();
-        assert_eq!(inflight_chats(&root), ["123"]);
-        std::fs::write(root.join("chats/456/inflight"), b"").unwrap();
-        assert_eq!(inflight_chats(&root), ["123", "456"]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

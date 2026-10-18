@@ -1,5 +1,4 @@
 pub mod slack;
-pub mod telegram;
 
 use std::path::Path;
 
@@ -36,7 +35,6 @@ pub struct Event {
     pub stop: bool,
     pub text: String,
     pub image: Option<String>,
-    pub voice: Option<(String, u64)>,
 }
 
 pub trait Transport: Send + Sync {

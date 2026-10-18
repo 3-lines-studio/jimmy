@@ -1,27 +1,19 @@
 # Jimmy
 
-A personal assistant that lives in a web frontend, with Telegram and Slack as
-optional channels. It embeds axe as a library and gives
+A personal assistant that lives in a web frontend, with Slack as an optional
+channel. It embeds axe as a library and gives
 it the machine of its own: every message it replies to is an axe agent run with
 the full `read`, `write`, `edit`, and `bash` toolset on the container
 filesystem.
 
-One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored
+One session per chat — a web conversation or a Slack thread — stored
 under `$JIMMY_ROOT/chats/<chat_id>/` as a snapshot plus an append-only journal. Every
 admitted input, assistant message, and tool result is committed and fsynced before it is
-shown, so a restart resumes from the last one instead of repeating it. Telegram
-listens by long polling and Slack over Socket Mode, so there is no public URL
-and no webhook to configure. Sending a message shows one `pensando`
-placeholder, which is replaced by the reply when the agent finishes. There is no
-per-token streaming, so the chat does not flicker. That placeholder carries a
-stop button: pressing it cancels the turn in progress. On a turn that runs long,
-the same message says what the agent is doing — `leyendo src/web.rs` — and
-refreshes itself at most every two minutes.
-
-Replies are converted from Markdown to Telegram HTML: bold and italic, inline
-code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
-rejects the markup, the message falls back to plain text. Long replies are split
-on line boundaries, with code fences closed and reopened across chunks.
+shown, so a restart resumes from the last one instead of repeating it. The web
+follows the turn over an event stream; Slack listens over Socket Mode, so there
+is no public URL and no webhook to configure. A running turn can be cancelled
+from the web, and after two minutes the stream says what the agent is doing —
+`leyendo src/web.rs`.
 
 ## Commands
 
@@ -37,15 +29,9 @@ Anything else, including unknown `/`-commands, goes to the agent.
 
 ## Attachments
 
-Sending a photo, or an image sent as a file, attaches it to the prompt: the
-file is downloaded from Telegram and passed to the agent as an inline image, so
-the model can look at it. A caption becomes the prompt text; without a caption
-the image goes on its own. Non-image documents are ignored.
-
-Voice notes are transcribed with Groq (`whisper-large-v3`) when
-`TRANSCRIBE_API_KEY` is set, up to 300 seconds. The transcript is echoed back
-and used as the prompt. Without the key, voice notes are rejected. Only
-Telegram voice notes are handled; audio sent as a document is ignored.
+An image uploaded from the web or sent to Slack is passed to the agent as an
+inline image, so the model can look at it. A caption becomes the prompt text;
+without a caption the image goes on its own. Non-image documents are ignored.
 
 ## Memory
 
@@ -158,7 +144,7 @@ Guardrails:
 ## Build and run
 
 ```sh
-cp .env.example .env   # fill in the token, key, and your user id
+cp .env.example .env   # fill in the key and your user id
 make build
 make run
 ```
@@ -204,12 +190,11 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 
 ```
 src/main.rs       config, event loop, per-session locking, send/skill CLIs
-src/transport/    the transport seam, with the Telegram and Slack adapters
+src/transport/    the transport seam, with the Slack adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
-src/audio.rs      voice transcription via Groq
 src/schedule.rs   scheduled tasks, clean-context runs
 src/skill.rs      the skills directory: list and load
-src/markdown.rs   Markdown to Telegram HTML, message splitting
+src/markdown.rs   splitting long messages, closing and reopening code fences
 bin/              the CLIs the agent gets: browse, gen-image, stats
 web/              the browser frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image

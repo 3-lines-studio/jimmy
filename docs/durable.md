@@ -137,12 +137,11 @@ queued → placed → done { answer } | unanswered { reason }
 ```
 
 `{id, request_id, input, status}`. The same `request_id` returns the existing
-submission instead of admitting twice. The Telegram `update_id` and the web POST
-id become request ids.
+submission instead of admitting twice. A web POST carries the id its client
+generated for that send.
 
-Measured today: `Telegram::offset` starts at 0 on every boot and is never
-persisted, so a restart re-delivers unconfirmed updates and reruns committed
-prompts. Nothing in the code makes a retried input idempotent.
+Measured today: nothing in the code makes a retried input idempotent; a POST
+retried after a timeout admits the prompt twice.
 
 ## Documents
 

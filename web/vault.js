@@ -29,6 +29,21 @@ function vaultScope(token) {
   return `${token.project}/${token.env}`;
 }
 
+function vaultProjects(environments) {
+  const groups = new Map();
+  for (const environment of environments || []) {
+    if (!groups.has(environment.project)) groups.set(environment.project, []);
+    groups.get(environment.project).push(environment);
+  }
+  const weight = (project) => (project === "general" ? 0 : 1);
+  return [...groups.entries()]
+    .map(([project, list]) => ({
+      project,
+      environments: list.slice().sort((a, b) => a.env.localeCompare(b.env)),
+    }))
+    .sort((a, b) => weight(a.project) - weight(b.project) || a.project.localeCompare(b.project));
+}
+
 function vaultCount(keys) {
   return keys === 1 ? "1 clave" : `${keys} claves`;
 }
@@ -112,24 +127,33 @@ function vaultSection(title, actions = []) {
 
 function vaultEnvsEl() {
   const section = vaultSection("Entornos");
-  const list = document.createElement("div");
-  list.className = "vault-envs";
-  for (const environment of vaultPanel.environments || []) {
-    const key = vaultKey(environment);
-    const button = document.createElement("button");
-    button.className = "vault-env" + (key === vaultOpen ? " open" : "");
-    const name = document.createElement("span");
-    name.className = "vault-env-name";
-    name.textContent = key;
-    const count = document.createElement("span");
-    count.className = "vault-env-count";
-    count.textContent = vaultCount(environment.keys);
-    button.append(name, count);
-    button.onclick = () => openVaultEnv(environment);
-    list.append(button);
+  const groups = vaultProjects(vaultPanel.environments);
+  for (const group of groups) {
+    const block = document.createElement("div");
+    block.className = "vault-project";
+    const name = document.createElement("h3");
+    name.className = "vault-project-name";
+    name.textContent = group.project;
+    const list = document.createElement("div");
+    list.className = "vault-envs";
+    for (const environment of group.environments) {
+      const key = vaultKey(environment);
+      const button = document.createElement("button");
+      button.className = "vault-env" + (key === vaultOpen ? " open" : "");
+      const label = document.createElement("span");
+      label.className = "vault-env-name";
+      label.textContent = environment.env;
+      const count = document.createElement("span");
+      count.className = "vault-env-count";
+      count.textContent = vaultCount(environment.keys);
+      button.append(label, count);
+      button.onclick = () => openVaultEnv(environment);
+      list.append(button);
+    }
+    block.append(name, list);
+    section.append(block);
   }
-  if (!list.children.length) list.append(vaultNote("Todavía no hay entornos."));
-  section.append(list);
+  if (!groups.length) section.append(vaultNote("Todavía no hay entornos."));
   section.append(
     vaultForm([{ placeholder: "proyecto" }, { placeholder: "entorno" }], "Crear entorno", (values) =>
       vaultOrder("/api/vault/environment", { op: "create", project: values[0], env: values[1] }),
@@ -332,5 +356,5 @@ async function vaultRevoke(token) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { vaultKey, vaultScope, vaultCount, vaultMask, vaultAction, vaultClock };
+  module.exports = { vaultKey, vaultScope, vaultProjects, vaultCount, vaultMask, vaultAction, vaultClock };
 }

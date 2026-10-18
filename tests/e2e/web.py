@@ -59,7 +59,12 @@ elif COMMAND == "create":
 elif COMMAND == "send":
     call(
         "/api/send",
-        {"conversation": ARGS[0], "text": ARGS[1], "images": ARGS[2:]},
+        {
+            "conversation": ARGS[0],
+            "text": ARGS[1],
+            "images": ARGS[2:],
+            "request_id": os.environ.get("REQUEST", ""),
+        },
     )
     print("SEND 202", flush=True)
 elif COMMAND == "photo":

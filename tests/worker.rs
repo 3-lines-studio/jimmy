@@ -321,6 +321,38 @@ fn a_cut_tool_call_comes_back_interrupted_and_the_turn_continues() {
 }
 
 #[test]
+fn a_request_id_is_admitted_once() {
+    let root = scratch("dedup");
+    let (base, served) = model_server(vec![answer_chunk("hola")]);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"uno\",\"request\":\"r1\"}");
+    let first = worker.until_done();
+    assert!(first.last().unwrap().contains("hola"), "{first:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"uno\",\"request\":\"r1\"}");
+    let second = worker.until_done();
+    assert!(second.last().unwrap().contains("hola"), "{second:?}");
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        1,
+        "no llamó de nuevo al modelo"
+    );
+    drop(worker);
+
+    let journal = transcript(&root.join("chats/test"));
+    assert_eq!(
+        journal
+            .lines()
+            .filter(|line| line.contains("\"Content\":\"uno\""))
+            .count(),
+        1,
+        "{journal}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn a_failed_turn_keeps_the_input_that_was_admitted() {
     let root = scratch("admitted");
     let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));

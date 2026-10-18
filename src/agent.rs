@@ -416,15 +416,6 @@ impl Agent {
         system.push_str(
             "Si un mensaje empieza con un nombre entre corchetes, es quien lo escribió.\n",
         );
-        let memory = crate::memo::render(
-            Path::new(&self.workspace),
-            &self.conversation(session).project,
-        );
-        if !memory.is_empty() {
-            system.push_str("\n## Memoria en contexto\n");
-            system.push_str(&memory);
-            system.push('\n');
-        }
         let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
         let opts = RunOptions {
             model: &self.model,

@@ -12,7 +12,7 @@ A Rust binary, a worker for Telegram or Slack, with axe embedded. Source `3-line
 
 ## Tools
 
-Own CLIs: `jimmy` (memo, send, conversations, skill, preview), `recall`, `stats`, `browse`, `gen-image`. `jimmy send` takes photos up to 10 MB and videos up to 50 MB.
+Own CLIs: `jimmy` (send, conversations, skill, preview), `stats`, `browse`, `gen-image`. `jimmy send` takes photos up to 10 MB and videos up to 50 MB.
 
 ## Code
 
@@ -24,4 +24,4 @@ Fetch and reset to `origin/dev` before each branch. One logical change per branc
 
 ## Workspace
 
-The one in the environment block: `notes/`, `projects/`, `files/`, `scratch/`, `state/`. Never write to `../chats/`, never leave secrets on the volume.
+The one in the environment block: `notes/`, `projects/`, `files/`, `scratch/`, `state/`. `notes/` is your memory: markdown you write, edit and delete freely, searched with `rg`. Never write to `../chats/`, never leave secrets on the volume.

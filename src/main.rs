@@ -10,7 +10,6 @@ mod machine;
 mod mail;
 mod markdown;
 mod media;
-mod memo;
 mod pool;
 mod preview;
 mod protocol;
@@ -114,14 +113,7 @@ fn workspace_from_env() -> PathBuf {
     )
 }
 
-const SUBCOMMANDS: [&str; 6] = [
-    "memo",
-    "send",
-    "conversations",
-    "skill",
-    "preview",
-    "worker",
-];
+const SUBCOMMANDS: [&str; 5] = ["send", "conversations", "skill", "preview", "worker"];
 
 fn unknown_command(args: &[String]) -> Option<&str> {
     let first = args.first()?;
@@ -134,9 +126,6 @@ fn main() {
         std::process::exit(heimdall_command(&name));
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("memo") {
-        std::process::exit(memo_command(&args[1..]));
-    }
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
     }
@@ -608,47 +597,6 @@ fn skill_command(args: &[String]) -> i32 {
     }
 }
 
-fn memo_command(args: &[String]) -> i32 {
-    let workspace = workspace_from_env();
-    let result = match args.first().map(String::as_str) {
-        Some("sync") => memo::sync(&workspace),
-        Some("migrate") => memo::migrate(&workspace),
-        Some("list") => Ok(memo::list(&workspace)),
-        Some("render") => Ok(memo::render(
-            &workspace,
-            args.get(1).map(String::as_str).unwrap_or(""),
-        )),
-        Some("add") => match (args.get(1), args.get(2), args.get(3..)) {
-            (Some(key), Some(kind), Some(rest)) if !rest.is_empty() => {
-                memo::add(&workspace, key, kind, &rest.join(" "))
-            }
-            _ => Err("memo add: uso `jimmy memo add <clave> <tipo> <texto>`".into()),
-        },
-        Some("miss") => match args[1..].join(" ").trim() {
-            "" => Err("memo miss: falta el texto".into()),
-            text => memo::miss(&workspace, text),
-        },
-        Some("show") => match args[1..].join(" ").trim() {
-            "" => Err("memo show: falta la clave".into()),
-            key => memo::show(&workspace, key),
-        },
-        _ => Err(
-            "uso: jimmy memo <sync|migrate|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
-                .into(),
-        ),
-    };
-    match result {
-        Ok(report) => {
-            println!("{report}");
-            0
-        }
-        Err(e) => {
-            eprintln!("jimmy memo: {e}");
-            1
-        }
-    }
-}
-
 fn transcribe_voice(
     transport: &dyn Transport,
     session: &Session,
@@ -847,7 +795,7 @@ mod tests {
     #[test]
     fn an_unknown_command_never_starts_the_bot() {
         assert_eq!(unknown_command(&[]), None);
-        assert_eq!(unknown_command(&["memo".into(), "sync".into()]), None);
+        assert_eq!(unknown_command(&["send".into(), "x".into()]), None);
         assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
         assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
         assert_eq!(unknown_command(&["--help".into()]), Some("--help"));

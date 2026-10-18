@@ -79,6 +79,14 @@ AXE_BASE=https://openrouter.ai/api/v1 AXE_MODEL=x-ai/grok-4.6
 AXE_BASE=https://api.z.ai/api/coding/paas/v4 AXE_MODEL=glm-5.3-flash
 ```
 
+`AXE_REASONING_EFFORT` sets `reasoning_effort` (`none`, `low`, `high`, `max`;
+`none` turns thinking mode off). It defaults to `max`, the most reasoning DeepSeek
+serves. `AXE_MAX_TOKENS` sets `max_tokens`, which counts reasoning tokens too;
+`0`, the default, leaves it to the server (8K without thinking, 64K with it,
+128K at `max`, which is what runs here). Every request carries the chat as
+`user_id`, so context cache, content safety and scheduling stay isolated per
+chat.
+
 Axe contributes the tool list; Jimmy appends one system prompt of its own, and
 then the runtime context. That prompt is
 [`prompts/jimmy.md`](prompts/jimmy.md), compiled in with `include_str!`: there is

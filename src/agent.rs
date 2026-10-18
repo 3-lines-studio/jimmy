@@ -29,6 +29,8 @@ pub struct Agent {
     base: String,
     model: String,
     api_key: String,
+    effort: String,
+    max_tokens: usize,
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
@@ -62,6 +64,10 @@ impl Agent {
             base,
             model,
             api_key,
+            effort: env("AXE_REASONING_EFFORT").unwrap_or_else(|| "max".into()),
+            max_tokens: env("AXE_MAX_TOKENS")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             context_window,
             root,
             cwd: workspace.clone(),
@@ -74,6 +80,13 @@ impl Agent {
             pipe: None,
             cancel: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn provider(&self, key: &str) -> OpenAI {
+        OpenAI::new(self.base.clone(), self.api_key.clone())
+            .effort(&self.effort)
+            .max_tokens(self.max_tokens)
+            .user_id(&user_id(key))
     }
 
     pub(crate) fn set_cancel(&mut self, cancel: Arc<AtomicBool>) {
@@ -313,7 +326,7 @@ impl Agent {
     ) -> Result<(), String> {
         let dir = self.conversation(session).dir;
         let mut entries = load_entries(&dir);
-        let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
+        let provider = self.provider(&session.key());
         match compact(&provider, &self.model, &mut entries) {
             Ok(_) => {
                 save_entries(&dir, &mut entries)?;
@@ -416,7 +429,7 @@ impl Agent {
         system.push_str(
             "Si un mensaje empieza con un nombre entre corchetes, es quien lo escribió.\n",
         );
-        let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
+        let provider = self.provider(&session.key());
         let opts = RunOptions {
             model: &self.model,
             system: &system,
@@ -862,7 +875,22 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &
 }
 
 fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn user_id(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(512)
+        .collect()
 }
 
 fn compact(
@@ -1052,6 +1080,17 @@ mod tests {
             name: "bash".into(),
             arguments: "{}".into(),
         }
+    }
+
+    #[test]
+    fn a_chat_key_becomes_a_spec_compliant_user_id() {
+        assert_eq!(user_id("telegram:123456"), "telegram-123456");
+        assert_eq!(
+            user_id("web-1792285574758-d12bc10c"),
+            "web-1792285574758-d12bc10c"
+        );
+        assert_eq!(user_id("slack/C01 2"), "slack-C01-2");
+        assert_eq!(user_id(&"a".repeat(600)).len(), 512);
     }
 
     #[test]

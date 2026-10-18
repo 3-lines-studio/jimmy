@@ -74,8 +74,9 @@ Context is derived, never stored:
 - entries without model messages (`tool_intent`, `usage`) never reach the model.
 
 `reset` (today's `/clear`) and `compaction` are appended, not applied by
-rewriting `transcript.jsonl`. Images stop being inline blobs: entries reference
-`uploads/`, and a reachability pass collects the rest.
+rewriting `transcript.jsonl`. Images live in `uploads/`: entries keep the path,
+and a snapshot clears the inline payload of every image a compaction or reset
+superseded.
 
 ## Tasks
 
@@ -185,7 +186,7 @@ phase. `inflight`, `recover()` and `local_resume`'s history guessing disappear.
    tool entries committed as they finish, no whole-file rewrite. Test: SIGKILL
    mid-tool, reopen, no duplicated side effect, same answer.
 2. Tool intents and interrupted results; `reset` and `compaction` as entries;
-   uploads reachability GC.
+   image payloads pruned at snapshot.
 3. Tasks and scheduler in the pool; parked tasks; schedule as sleeping tasks.
 4. Inbox and request ids; `agent`, `live`, `usage`; projection rebuild; delete
    `inflight`, `recover()`, transcript rewriting.

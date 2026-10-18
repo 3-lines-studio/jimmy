@@ -38,6 +38,28 @@ impl Log {
         }
     }
 
+    pub fn last_answer(&self) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&self.path).ok()?;
+        let length = file.metadata().ok()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(16 * 1024)))
+            .ok()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .rev()
+            .find_map(|line| {
+                let event: Event = serde_json::from_str(line).ok()?;
+                match event {
+                    Event::Done { text } | Event::Assistant { text } if !text.trim().is_empty() => {
+                        Some(text)
+                    }
+                    _ => None,
+                }
+            })
+    }
+
     pub fn append(&self, event: &Event) {
         let Ok(mut line) = serde_json::to_string(event) else {
             return;

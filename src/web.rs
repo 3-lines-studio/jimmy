@@ -763,7 +763,9 @@ fn read_attachments(
         .iter()
         .map(|name| {
             let name = media::safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
-            axe::image::attach(&uploads.join(name).display().to_string())
+            let mut image = axe::image::attach(&uploads.join(name).display().to_string())?;
+            image.path = format!("{}/{name}", media::UPLOADS);
+            Ok(image)
         })
         .collect()
 }
@@ -907,10 +909,12 @@ fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
+    let durable = schedule::states(&agenda_dir(web));
     let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web))
         .into_iter()
         .map(|entry| {
             let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
+            let (blocked, attempts) = durable.get(&entry.name).copied().unwrap_or((false, 0));
             serde_json::json!({
                 "name": entry.name,
                 "when": entry.task.when,
@@ -920,6 +924,8 @@ fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
                 "silent": entry.task.silent,
                 "paused": entry.task.paused,
                 "unread": entry.unread,
+                "blocked": blocked,
+                "attempts": attempts,
                 "runs": shown,
             })
         })
@@ -2022,6 +2028,25 @@ done
     }
 
     #[test]
+    fn an_attachment_is_recorded_relative_to_the_conversation() {
+        let base = std::env::temp_dir().join(format!("jimmy-attach-{}", std::process::id()));
+        let dir = base.join("chats/x");
+        std::fs::create_dir_all(dir.join("uploads")).unwrap();
+        std::fs::write(dir.join("uploads/foto.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let conversation = conversations::Conversation {
+            key: "x".into(),
+            dir: dir.clone(),
+            cwd: dir.clone(),
+            project: "x".into(),
+            title: None,
+            read_only: false,
+        };
+        let images = read_attachments(&conversation, &["foto.png".to_string()]).unwrap();
+        assert_eq!(images[0].path, "uploads/foto.png");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn an_upload_only_touches_its_own_conversation() {
         let server = start("traversal");
         let cookie = login(server.port, "bob@ejemplo.com");
@@ -2853,6 +2878,25 @@ done
             })
             .collect();
         std::fs::write(server.workspace.join("state/schedule/memoria.jsonl"), runs).unwrap();
+        {
+            let durable = server.workspace.join("state/schedule/durable");
+            let mut journal = axe::durable::Journal::open(&durable).unwrap();
+            let id = journal.new_task();
+            journal
+                .commit(
+                    Vec::new(),
+                    vec![axe::durable::TaskRecord {
+                        id,
+                        kind: "agenda".into(),
+                        state: axe::durable::TaskState::Blocked,
+                        phase: "blocked".into(),
+                        checkpoint: serde_json::json!({ "name": "memoria", "last": 0 }),
+                        attempts: 5,
+                        updated: 0,
+                    }],
+                )
+                .unwrap();
+        }
 
         let response = get(server.port, "/api/agenda", Some(&cookie));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -2870,6 +2914,9 @@ done
         assert_eq!(tasks[1]["paused"], true);
         assert!(tasks[1]["runs"].as_array().unwrap().is_empty());
         assert_eq!(tasks[0]["unread"], 7, "nada leído todavía");
+        assert_eq!(tasks[0]["blocked"], true);
+        assert_eq!(tasks[0]["attempts"], 5);
+        assert_eq!(tasks[1]["blocked"], false);
 
         let read = post_with(
             server.port,

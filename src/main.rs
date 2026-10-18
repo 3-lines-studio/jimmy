@@ -601,6 +601,9 @@ fn save_image(dir: &Path, name: &str, data: &[u8]) -> Result<axe::Image, String>
 }
 
 fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
+    for key in conversations::chats(root) {
+        heal_projection(&conversations::chat_dir(root, &key));
+    }
     for key in inflight_chats(root) {
         let Some(session) = session_from_key(&key) else {
             continue;
@@ -633,6 +636,58 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
             Err(e) => eprintln!("jimmy: no pude recuperar {key}: {e}"),
         }
     }
+}
+
+fn heal_projection(dir: &Path) {
+    use axe::durable::{Journal, TaskState};
+    use axe::session::Entry;
+
+    let stamp = |name: &str| {
+        std::fs::metadata(dir.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    let Some(durable) = [stamp("journal.jsonl"), stamp("state.json")]
+        .into_iter()
+        .flatten()
+        .max()
+    else {
+        return;
+    };
+    if stamp("conversation.jsonl").is_some_and(|log| log >= durable) {
+        return;
+    }
+    let Ok(tasks) = Journal::load_tasks(dir) else {
+        return;
+    };
+    let Some(turn) = tasks
+        .iter()
+        .filter(|task| task.kind == "turn")
+        .max_by_key(|task| task.id)
+    else {
+        return;
+    };
+    if turn.state != TaskState::Done {
+        return;
+    }
+    let Ok(records) = Journal::load(dir) else {
+        return;
+    };
+    let Some(answer) = records.iter().rev().find_map(|record| match &record.entry {
+        Entry::Message { message }
+            if message.role == "assistant" && !message.content.trim().is_empty() =>
+        {
+            Some(message.content.clone())
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    let log = crate::log::Log::in_dir(dir);
+    if log.last_answer().as_deref() == Some(answer.as_str()) {
+        return;
+    }
+    log.append(&crate::protocol::Event::Done { text: answer });
 }
 
 fn inflight_chats(root: &Path) -> Vec<String> {
@@ -791,6 +846,47 @@ mod tests {
         assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
         assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
         assert_eq!(unknown_command(&["--help".into()]), Some("--help"));
+    }
+
+    #[test]
+    fn a_turn_missing_from_the_log_is_healed() {
+        let root = std::env::temp_dir().join(format!("jimmy-heal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("chats/x");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::log::Log::in_dir(&dir).append(&crate::protocol::Event::User {
+            text: "hola".into(),
+            author: String::new(),
+            images: Vec::new(),
+        });
+        {
+            let mut journal = crate::store::open(&dir).unwrap();
+            let mut task = crate::store::new_turn(&mut journal, "");
+            task.state = axe::durable::TaskState::Done;
+            let message = axe::Message {
+                role: "assistant".into(),
+                content: "listo".into(),
+                tool_calls: Vec::new(),
+                tool_call_id: String::new(),
+                reasoning: String::new(),
+                images: Vec::new(),
+            };
+            journal
+                .commit(vec![axe::session::Entry::Message { message }], vec![task])
+                .unwrap();
+        }
+
+        heal_projection(&dir);
+        heal_projection(&dir);
+
+        assert_eq!(
+            crate::log::Log::in_dir(&dir).last_answer().as_deref(),
+            Some("listo")
+        );
+        assert_eq!(conversations::last_message(&dir).as_deref(), Some("listo"));
+        let log = std::fs::read_to_string(dir.join("conversation.jsonl")).unwrap();
+        assert_eq!(log.matches("\"done\"").count(), 1, "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

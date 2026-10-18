@@ -1,14 +1,16 @@
 use crate::log::Log;
 use crate::protocol::Event;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+
+const QUEUE: usize = 128;
 
 struct Connection {
     id: u64,
     user: String,
     topic: Option<String>,
-    sender: Sender<Event>,
+    sender: SyncSender<Event>,
 }
 
 pub struct Bus {
@@ -28,7 +30,7 @@ impl Bus {
 
     pub fn attach(&self, key: &str, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(QUEUE);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         connections.push(Connection {
             id,
@@ -43,7 +45,7 @@ impl Bus {
 
     pub fn watch(&self, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(QUEUE);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         connections.push(Connection {
             id,
@@ -95,8 +97,16 @@ impl Bus {
 }
 
 fn send(connections: &mut Vec<Connection>, key: &str, event: &Event) {
+    let cosmetic = matches!(event, Event::Delta { .. } | Event::ToolDelta { .. });
     connections.retain(|watch| {
-        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+        if watch.topic.as_deref() != Some(key) {
+            return true;
+        }
+        match watch.sender.try_send(event.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => cosmetic,
+            Err(TrySendError::Disconnected(_)) => false,
+        }
     });
 }
 
@@ -108,14 +118,14 @@ fn tell_who_is_watching(connections: &mut Vec<Connection>, key: &str) {
     );
     let event = Event::Presence { users };
     connections.retain(|watch| {
-        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+        watch.topic.as_deref() != Some(key) || watch.sender.try_send(event.clone()).is_ok()
     });
 }
 
 fn tell_who_is_online(connections: &mut Vec<Connection>) {
     let users = names(connections.iter());
     let event = Event::Online { users };
-    connections.retain(|watch| watch.sender.send(event.clone()).is_ok());
+    connections.retain(|watch| watch.sender.try_send(event.clone()).is_ok());
 }
 
 fn names<'a>(connections: impl Iterator<Item = &'a Connection>) -> Vec<String> {

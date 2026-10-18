@@ -4,7 +4,7 @@ use crate::bus::Bus;
 use crate::conversations;
 use crate::files;
 use crate::http::{self, Request};
-use crate::log::{Log, Window};
+use crate::log::Log;
 use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
@@ -1168,9 +1168,12 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         .param("since")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let window = Log::in_dir(&conversation.dir).window(usize::MAX);
+    let log = Log::in_dir(&conversation.dir);
     let (id, live) = web.bus.attach(key, &user);
-    let result = follow(stream, &window, since, &live);
+    let result = follow(stream, &live, &mut |out| {
+        let span = log.replay(since, &mut |line| http::sse_json(out, line))?;
+        Ok((span.total, span.first))
+    });
     web.bus.detach(key, id);
     result
 }
@@ -1203,28 +1206,19 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let (id, live) = web.bus.watch(&user);
-    let result = follow(stream, &Window::default(), 0, &live);
+    let result = follow(stream, &live, &mut |_| Ok((0, 0)));
     web.bus.detach_watch(id);
     result
 }
 
 fn follow(
     stream: &mut TcpStream,
-    window: &Window,
-    since: usize,
     live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
+    replay: &mut dyn FnMut(&mut TcpStream) -> std::io::Result<(usize, usize)>,
 ) -> std::io::Result<()> {
     http::sse_open(stream)?;
-    for event in window
-        .events
-        .iter()
-        .skip(since.saturating_sub(window.first))
-    {
-        if let Ok(json) = serde_json::to_string(event) {
-            http::sse_data(stream, &json)?;
-        }
-    }
-    http::sse_data(stream, &synced(window.total, window.first))?;
+    let (total, first) = replay(stream)?;
+    http::sse_data(stream, &synced(total, first))?;
     loop {
         match live.recv_timeout(Duration::from_secs(25)) {
             Ok(event) => {

@@ -70,6 +70,7 @@ function agendaAgo(ts, now) {
 
 function agendaState(task) {
   if (task.paused) return "";
+  if (task.blocked) return "error";
   if (agendaPending.has(task.name)) return "running";
   const last = task.runs[0];
   if (!last) return "";
@@ -193,6 +194,12 @@ function agendaTaskEl(task, now) {
     pill.textContent = "pausada";
     title.append(pill);
   }
+  if (task.blocked) {
+    const pill = document.createElement("span");
+    pill.className = "pill blocked";
+    pill.textContent = `bloqueada (${task.attempts})`;
+    title.append(pill);
+  }
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
@@ -285,5 +292,6 @@ if (typeof module !== "undefined") {
     agendaUnread,
     agendaFailed,
     agendaMark,
+    agendaState,
   };
 }

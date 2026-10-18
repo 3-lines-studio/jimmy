@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { agendaWhen, agendaDuration, agendaMoment, agendaAgo, agendaEvery, agendaUnread, agendaFailed, agendaMark } =
+const { agendaWhen, agendaDuration, agendaMoment, agendaAgo, agendaEvery, agendaUnread, agendaFailed, agendaMark, agendaState } =
   require("./agenda.js");
 
 test("el horario se lee de un vistazo", () => {
@@ -50,4 +50,10 @@ test("el contador suma lo que todavía no se miró", () => {
   assert.equal(agendaMark(tasks), "error", "si algo falló, el punto avisa en rojo");
   assert.equal(agendaMark([{ unread: 1, runs: [{ ok: true }] }]), "unread");
   assert.equal(agendaMark([{ unread: 0, runs: [{ ok: false }] }]), "unread");
+});
+
+test("una tarea bloqueada se ve como error", () => {
+  assert.equal(agendaState({ blocked: true, runs: [] }), "error");
+  assert.equal(agendaState({ blocked: true, paused: true, runs: [] }), "");
+  assert.equal(agendaState({ runs: [{ ok: true }] }), "done");
 });

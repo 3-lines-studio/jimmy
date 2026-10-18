@@ -211,6 +211,21 @@ fn durable_path(dir: &Path) -> PathBuf {
     dir.join(DURABLE)
 }
 
+pub fn states(dir: &Path) -> HashMap<String, (bool, u32)> {
+    let Ok(tasks) = Journal::load_tasks(&durable_path(dir)) else {
+        return HashMap::new();
+    };
+    tasks
+        .into_iter()
+        .filter(|task| task.kind == "agenda")
+        .filter_map(|task| {
+            let name = task.checkpoint.get("name")?.as_str()?.to_string();
+            let blocked = task.state == TaskState::Blocked;
+            Some((name, (blocked, task.attempts)))
+        })
+        .collect()
+}
+
 fn agenda_task<'a>(journal: &'a Journal, name: &str) -> Option<&'a TaskRecord> {
     journal.tasks().find(|task| {
         task.kind == "agenda"

@@ -360,6 +360,13 @@ pub(crate) fn is_conversation(path: &Path) -> bool {
     .any(|name| path.join(name).exists())
 }
 
+pub(crate) fn chats(root: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    walk(&root.join("chats"), "", &mut keys);
+    keys.sort();
+    keys
+}
+
 fn walk(dir: &Path, prefix: &str, keys: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

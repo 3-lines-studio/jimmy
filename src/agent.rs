@@ -1319,9 +1319,15 @@ fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
     let uploads = dir.join(media::UPLOADS);
     images
         .iter()
-        .filter(|image| Path::new(&image.path).parent() == Some(uploads.as_path()))
-        .filter_map(|image| Path::new(&image.path).file_name())
-        .map(|name| name.to_string_lossy().into_owned())
+        .filter_map(|image| {
+            let path = Path::new(&image.path);
+            let parent = path.parent()?;
+            if parent != uploads.as_path() && parent != Path::new(media::UPLOADS) {
+                return None;
+            }
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect()
 }
 
@@ -1457,11 +1463,18 @@ mod tests {
             path: "/data/chats/web-1/uploads/17-foto.png".into(),
             url: "data:image/png;base64,QUJD".into(),
         };
+        let relative = Image {
+            path: "uploads/18-foto.png".into(),
+            url: "data:image/png;base64,QUJD".into(),
+        };
         let temporary = Image {
             path: "/tmp/jimmy-image-17.png".into(),
             url: "data:image/png;base64,QUJD".into(),
         };
-        assert_eq!(attachments(dir, &[uploaded, temporary]), ["17-foto.png"]);
+        assert_eq!(
+            attachments(dir, &[uploaded, relative, temporary]),
+            ["17-foto.png", "18-foto.png"]
+        );
     }
 
     #[test]

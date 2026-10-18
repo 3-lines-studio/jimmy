@@ -124,9 +124,12 @@ checkpoint. At `restart_limit` (5) the task is parked, shows as blocked, and can
 be retried by hand.
 
 Sleep is stored state, not a timer: `until`, no invocation, wake at the earliest
-deadline. Today's schedule thread polls every 60 s from TOML and a run log; as
-tasks, a due prompt survives a deploy mid-wait and a run resumes from its
-checkpoint instead of vanishing.
+deadline. The schedule still polls every 60 s and reads due times from TOML and
+the run log, but a run is now tracked in its own journal
+(`state/schedule/durable/`): one `agenda` task per entry, `running` while it
+runs, `pending` when it ends. A restart counts an interrupted run; at five the
+task is `blocked` and skipped, and the Agenda shows it with its attempts. A
+manual run from the tab resets the count and runs it.
 
 ## Submissions
 
@@ -140,8 +143,17 @@ queued → placed → done { answer } | unanswered { reason }
 submission instead of admitting twice. A web POST carries the id its client
 generated for that send.
 
-Measured today: nothing in the code makes a retried input idempotent; a POST
-retried after a timeout admits the prompt twice.
+What landed is smaller: the turn task keeps `request_id` in its checkpoint, and
+`respond_with` checks for it under the per-chat turn lock before announcing the
+message. A retried POST returns without running, announcing or admitting again.
+The worker repeats the check after opening the journal as a backstop. The web
+composer generates one id per attempt and reuses it after a failure; editing
+the text clears it.
+
+The check reads the task table on every send that carries an id. Finished turns
+are pruned to the newest 32, which is the dedup window: a retry lands far
+inside it. The full `queued → placed → done | unanswered` submission document
+is still not implemented.
 
 ## Documents
 
@@ -159,6 +171,12 @@ Whole documents per commit; split into ops only when their size demands it.
 
 `conversation.jsonl` (UI events) and search hits are caches over entries. Keep
 them for the web, but make them rebuildable from the journal.
+
+Today the log is written live and never rebuilt. One gap is closed at boot: if
+the newest turn is `Done` and the journal's last assistant entry is not the log's
+last answer, `heal_projection` appends the missing `Done` before the web starts.
+It only looks at chats whose journal or snapshot is newer than the log, so a
+clean boot costs a few `stat` calls.
 
 ## Process model
 
@@ -200,6 +218,13 @@ phase. `inflight`, `recover()` and `local_resume`'s history guessing disappear.
 - Phase 3: turn tasks with a checkpoint per model turn, restart counting and
   parking (axe #25, jimmy #248). Not yet: sleeping schedule tasks, per-tool task
   records, owners and waiting.
+- Phase 4: durable agenda in its own journal with restart counting and blocking
+  (jimmy #251); one admission per web `request_id` (jimmy #252); finished turns
+  pruned to the newest 32 at snapshot (axe #27, jimmy #253); boot heal of a
+  `Done` answer missing from the event log. Attachments are recorded as
+  `uploads/<name>` instead of an absolute path, so moving the volume keeps them.
+  Not yet: submissions as a document, `live` and `usage` documents, projection
+  rebuild for search, sleeping schedule tasks.
 
 Non-goals: Chord typed document ops, Cloudflare Durable Objects, a runtime
 plugin registry, code mode. We take the invariants and the shapes, not the API.

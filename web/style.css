@@ -1884,6 +1884,10 @@ main {
   color: var(--bg);
 }
 
+.task .pill.blocked {
+  color: var(--err);
+}
+
 .task-runs {
   display: flex;
   flex-direction: column;

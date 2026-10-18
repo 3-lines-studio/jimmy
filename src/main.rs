@@ -10,20 +10,17 @@ mod machine;
 mod mail;
 mod markdown;
 mod media;
-mod memlog;
 mod memo;
 mod pool;
 mod preview;
 mod prompt;
 mod protocol;
 mod random;
-mod reap;
 mod schedule;
 mod skill;
 mod tools;
 mod transport;
 mod vault;
-mod watch;
 mod web;
 mod worker;
 
@@ -214,9 +211,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
-    let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    let agenda = schedule::spawn(
+        transport.clone(),
+        agent.clone(),
+        PathBuf::from(config.workspace.clone()),
+    );
     vault::open(&config.root);
     serve_web(
         &config,
@@ -225,23 +225,6 @@ fn main() {
         agenda,
         previews.clone(),
     );
-    let mut reaper = reap::Reaper::default();
-    let mut watch = watch::Watch::default();
-    let root = config.root.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(watch::TICK);
-        reaper.reap(std::time::Instant::now());
-        memlog::sample(&workspace);
-        let memory = machine::usage(&root).memory;
-        let quiet = !pool::busy() && previews.list().is_empty();
-        if watch.overdue(memory.used, memory.total, quiet) {
-            eprintln!(
-                "jimmy: {} MB en el cgroup sin nadie corriendo: salgo para que me levanten",
-                memory.used / 1024 / 1024
-            );
-            std::process::exit(1);
-        }
-    });
     install_sigterm();
     recover(&agent, transport.clone(), &config.root);
     eprintln!(

@@ -2,9 +2,9 @@
 //! /preview/<name>/ by the web frontend.
 //!
 //! The registry lives in memory because the owner is this process: a preview
-//! that answered an order over a socket is never an orphan, which is what keeps
-//! the reaper's hands off it. The orders come in over a unix socket, so the CLI
-//! is a thin client and the process that spawns is always the same one.
+//! that answered an order over a socket is a child, never an orphan. The orders
+//! come in over a unix socket, so the CLI is a thin client and the process that
+//! spawns is always the same one.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

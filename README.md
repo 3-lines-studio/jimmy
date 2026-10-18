@@ -212,10 +212,9 @@ each result opens its transcript with the matches marked.
 `jimmy preview start <name> --cmd 'command' [--cwd dir]` runs a project as a
 child of the main process and serves it at `/preview/<name>/` on the web port,
 behind the same session as the rest of the UI: no extra domain, no second
-certificate. A preview is never an orphan, which is what keeps the reaper's
-hands off it. The command gets `PORT` and `PREVIEW_NAME` in its environment, and
-the last lines of its output land in
-`$JIMMY_WORKSPACE/state/previews/<name>.log`.
+certificate. A preview is a child of the main process, never an orphan. The
+command gets `PORT` and `PREVIEW_NAME` in its environment, and the last lines of
+its output land in `$JIMMY_WORKSPACE/state/previews/<name>.log`.
 
 A preview runs bare, the way it would on your machine. The proxy strips the
 prefix on the way in and puts it back on everything that comes out pointing at

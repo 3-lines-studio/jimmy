@@ -172,6 +172,13 @@ pub fn sse_data(stream: &mut TcpStream, data: &str) -> std::io::Result<()> {
     stream.flush()
 }
 
+pub fn sse_json(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
+    stream.write_all(b"data: ")?;
+    stream.write_all(data)?;
+    stream.write_all(b"\n\n")?;
+    stream.flush()
+}
+
 pub fn sse_ping(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(b": ping\n\n")?;
     stream.flush()

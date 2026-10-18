@@ -413,7 +413,10 @@ impl Agent {
     ) -> Result<String, String> {
         let mut tools = axe::tools::build_tools_with(
             Arc::new(axe::machine::Local::new(&self.cwd)),
-            Some(axe::web::Web::new(self.api_key.clone())),
+            Some(axe::web::Web::at(
+                search_base(&self.base),
+                self.api_key.clone(),
+            )),
         );
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
@@ -880,6 +883,17 @@ fn env(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn search_base(base: &str) -> &str {
+    let Some((scheme, rest)) = base.split_once("://") else {
+        return base;
+    };
+    let origin = scheme.len() + 3;
+    match rest.find('/') {
+        Some(path) => &base[..origin + path],
+        None => base,
+    }
+}
+
 fn user_id(key: &str) -> String {
     key.chars()
         .map(|c| {
@@ -1080,6 +1094,27 @@ mod tests {
             name: "bash".into(),
             arguments: "{}".into(),
         }
+    }
+
+    #[test]
+    fn the_search_base_drops_every_path() {
+        assert_eq!(
+            search_base("https://api.deepseek.com"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            search_base("https://api.deepseek.com/"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            search_base("https://api.deepseek.com/beta"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            search_base("http://127.0.0.1:8787"),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(search_base("nonsense"), "nonsense");
     }
 
     #[test]

@@ -112,10 +112,10 @@ Two built-ins: `generation` (`prepare → request → tools → settle`) and `to
 call in the same commit, waits for them, and hands the next turn to a new
 generation.
 
-A tool intent without a result means the process died mid-call. On reopen, tools
-declared `replay: safe` run again; the rest get an `interrupted` result. Here
-`read`, `search`, `fetch` and `browse` are safe; `write`, `edit` and `bash` are
-not.
+A tool intent without a result means the process died mid-call. On reopen, every
+such intent becomes one `interrupted` tool result and nothing runs again: a
+completed `bash` is never repeated, and the model sees what did not finish.
+Re-running safe reads belongs with the task scheduler, once a phase can resume.
 
 Ownership: a generation owns its tools; aborting a conversation aborts the tree.
 `attempts` grows when a `Running` task is found at open and resets on every new
@@ -184,8 +184,8 @@ phase. `inflight`, `recover()` and `local_resume`'s history guessing disappear.
 1. jimmy writes through it: input committed before generation, assistant and
    tool entries committed as they finish, no whole-file rewrite. Test: SIGKILL
    mid-tool, reopen, no duplicated side effect, same answer.
-2. Tool intents and replay policy; `reset` and `compaction` as entries; uploads
-   reachability GC.
+2. Tool intents and interrupted results; `reset` and `compaction` as entries;
+   uploads reachability GC.
 3. Tasks and scheduler in the pool; parked tasks; schedule as sleeping tasks.
 4. Inbox and request ids; `agent`, `live`, `usage`; projection rebuild; delete
    `inflight`, `recover()`, transcript rewriting.

@@ -1,11 +1,68 @@
-use axe::durable::Journal;
+use axe::durable::{Journal, TaskRecord, TaskState};
 use axe::session::Entry;
 use axe::Message;
+use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
 
 pub const INTERRUPTED: &str =
     "error: interrupted, the process died before this call returned; it was not run again";
+
+pub const RESTART_LIMIT: u32 = 5;
+
+pub enum Recovered {
+    Resume,
+    Blocked(u32),
+    Nothing,
+}
+
+pub fn live_turn(journal: &Journal) -> Option<&TaskRecord> {
+    journal
+        .tasks()
+        .filter(|task| {
+            task.kind == "turn" && matches!(task.state, TaskState::Pending | TaskState::Running)
+        })
+        .max_by_key(|task| task.id)
+}
+
+pub fn new_turn(journal: &mut Journal) -> TaskRecord {
+    TaskRecord {
+        id: journal.new_task(),
+        kind: "turn".into(),
+        state: TaskState::Running,
+        phase: "request".into(),
+        checkpoint: Value::Null,
+        attempts: 0,
+        updated: 0,
+    }
+}
+
+pub fn recover_turn(dir: &Path) -> Result<Recovered, String> {
+    if !dir.join("state.json").exists() && !dir.join("journal.jsonl").exists() {
+        if dir.join("transcript.jsonl").exists() {
+            return Ok(Recovered::Resume);
+        }
+        return Ok(Recovered::Nothing);
+    }
+    let mut journal = Journal::open(dir).map_err(|error| error.to_string())?;
+    let Some(mut task) = live_turn(&journal).cloned() else {
+        return Ok(Recovered::Nothing);
+    };
+    task.attempts += 1;
+    task.state = TaskState::Running;
+    task.phase = "restart".into();
+    if task.attempts >= RESTART_LIMIT {
+        task.state = TaskState::Blocked;
+        journal
+            .commit(Vec::new(), vec![task])
+            .map_err(|error| error.to_string())?;
+        return Ok(Recovered::Blocked(RESTART_LIMIT));
+    }
+    journal
+        .commit(Vec::new(), vec![task])
+        .map_err(|error| error.to_string())?;
+    Ok(Recovered::Resume)
+}
 
 pub fn open(dir: &Path) -> Result<Journal, String> {
     import(dir)?;
@@ -142,6 +199,30 @@ mod tests {
             ..Message::default()
         };
         serde_json::to_string(&Entry::Message { message }).unwrap()
+    }
+
+    #[test]
+    fn a_running_turn_counts_restarts_and_parks() {
+        let dir = dir("restart");
+        let mut journal = open(&dir).unwrap();
+        let task = new_turn(&mut journal);
+        journal.commit(Vec::new(), vec![task.clone()]).unwrap();
+        drop(journal);
+
+        for attempt in 1..RESTART_LIMIT {
+            assert!(matches!(recover_turn(&dir).unwrap(), Recovered::Resume));
+            let journal = Journal::open(&dir).unwrap();
+            assert_eq!(journal.task(task.id).unwrap().attempts, attempt);
+        }
+        match recover_turn(&dir).unwrap() {
+            Recovered::Blocked(limit) => assert_eq!(limit, RESTART_LIMIT),
+            _ => panic!("esperaba bloqueado"),
+        }
+        let journal = Journal::open(&dir).unwrap();
+        assert_eq!(journal.task(task.id).unwrap().state, TaskState::Blocked);
+        drop(journal);
+        assert!(matches!(recover_turn(&dir).unwrap(), Recovered::Nothing));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

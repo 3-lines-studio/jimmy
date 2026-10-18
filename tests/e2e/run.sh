@@ -52,23 +52,27 @@ if [ -z "$TG_PORT" ] || [ -z "$MODEL_PORT" ]; then
 fi
 
 say "levanto jimmy (transport=telegram, con la web adentro)"
-env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
-    JIMMY_TRANSPORT=telegram \
-    TELEGRAM_API_BASE="http://127.0.0.1:$TG_PORT" \
-    TELEGRAM_BOT_TOKEN=test \
-    TELEGRAM_ALLOWED_USER_IDS=999 \
-    JIMMY_ROOT="$WORK/root" \
-    JIMMY_WORKSPACE="$WORK/root/workspace" \
-    JIMMY_WEB_PORT="$WEB_PORT" \
-    JIMMY_WEB_EMAILS=bob@ejemplo.com JIMMY_WEB_DEV=1 \
-    JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \
-    AXE_BASE="http://127.0.0.1:$MODEL_PORT/v1" \
-    AXE_MODEL=fake \
-    OPENAI_API_KEY=test \
-    "$BIN" >"$WORK/jimmy.log" 2>&1 &
-JIMMY_PID=$!
-PIDS+=($JIMMY_PID)
-sleep 3
+start_jimmy() {
+    env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
+        JIMMY_TRANSPORT=telegram \
+        TELEGRAM_API_BASE="http://127.0.0.1:$TG_PORT" \
+        TELEGRAM_BOT_TOKEN=[REDACTED] \
+        TELEGRAM_ALLOWED_USER_IDS=999 \
+        JIMMY_ROOT="$WORK/root" \
+        JIMMY_WORKSPACE="$WORK/root/workspace" \
+        JIMMY_WEB_PORT="$WEB_PORT" \
+        JIMMY_WEB_EMAILS=bob@ejemplo.com JIMMY_WEB_DEV=1 \
+        JIMMY_WEB_URL="http://127.0.0.1:$WEB_PORT" \
+        AXE_BASE="http://127.0.0.1:$MODEL_PORT/v1" \
+        AXE_MODEL=fake \
+        OPENAI_API_KEY=[REDACTED] \
+        "$BIN" >>"$WORK/jimmy.log" 2>&1 &
+    JIMMY_PID=$!
+    PIDS+=($JIMMY_PID)
+    sleep 3
+}
+
+start_jimmy
 
 say "primer mensaje, sin nadie mirando"
 printf '%s\n' '{"update_id":1,"message":{"message_id":7,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"decime hola"}}' >"$WORK/inbox.jsonl"
@@ -163,6 +167,23 @@ rg -q 'SEND .*Frenar' "$WORK/telegram.log"
 check "el mensaje de espera trae el botón de frenar" $?
 rg -q 'EDIT .*interrumpido' "$WORK/telegram.log"
 check "el botón frena el turno que está corriendo" $?
+
+say "un corte a mitad de turno"
+BEFORE=$(rg -c '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log" 2>/dev/null || echo 0)
+printf '%s\n' '{"update_id":6,"message":{"message_id":12,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"quedate a mitad"}}' >>"$WORK/inbox.jsonl"
+sleep 1
+kill -TERM $JIMMY_PID
+sleep 2
+
+say "la vuelta, como en un redeploy"
+start_jimmy
+sleep 10
+AFTER=$(rg -c '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log" 2>/dev/null || echo 0)
+[ "$AFTER" -gt "$BEFORE" ] && check "el turno cortado volvió solo" 0 || check "el turno cortado volvió solo" 1
+rg -q '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log"
+check "la respuesta llegó por Telegram" $?
+COUNT=$(rg -o 'quedate a mitad' "$WORK/root/chats/999/journal.jsonl" "$WORK/root/chats/999/state.json" 2>/dev/null | wc -l)
+[ "$COUNT" = "1" ] && check "el mensaje no se duplicó" 0 || check "el mensaje no se duplicó" 1
 
 say "el apagado, como en un redeploy"
 kill -TERM $JIMMY_PID

@@ -10,6 +10,8 @@ pub enum Command {
         images: Vec<Image>,
         #[serde(default)]
         author: String,
+        #[serde(default)]
+        request: String,
     },
     Resume,
     Compact,

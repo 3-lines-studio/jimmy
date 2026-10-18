@@ -25,13 +25,17 @@ pub fn live_turn(journal: &Journal) -> Option<&TaskRecord> {
         .max_by_key(|task| task.id)
 }
 
-pub fn new_turn(journal: &mut Journal) -> TaskRecord {
+pub fn new_turn(journal: &mut Journal, request: &str) -> TaskRecord {
     TaskRecord {
         id: journal.new_task(),
         kind: "turn".into(),
         state: TaskState::Running,
         phase: "request".into(),
-        checkpoint: Value::Null,
+        checkpoint: if request.is_empty() {
+            Value::Null
+        } else {
+            serde_json::json!({ "request": request })
+        },
         attempts: 0,
         updated: 0,
     }
@@ -205,7 +209,7 @@ mod tests {
     fn a_running_turn_counts_restarts_and_parks() {
         let dir = dir("restart");
         let mut journal = open(&dir).unwrap();
-        let task = new_turn(&mut journal);
+        let task = new_turn(&mut journal, "");
         journal.commit(Vec::new(), vec![task.clone()]).unwrap();
         drop(journal);
 

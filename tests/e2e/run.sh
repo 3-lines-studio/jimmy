@@ -107,6 +107,14 @@ check "el stream marca dónde termina el backlog" $?
 rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
+say "un pedido repetido no corre dos veces"
+REQUEST=dup-1 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "repetido una vez"
+sleep 8
+REQUEST=dup-1 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "repetido una vez"
+sleep 8
+COUNT=$(rg -o 'repetido una vez' "$CHAT/journal.jsonl" "$CHAT/state.json" 2>/dev/null | wc -l)
+[ "$COUNT" = "1" ] && check "el pedido quedó una sola vez" 0 || check "el pedido quedó una sola vez" 1
+
 say "una foto por la web"
 NAME=$(python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" photo "$KEY")
 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "" "$NAME"

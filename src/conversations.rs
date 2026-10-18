@@ -26,11 +26,17 @@ pub struct Conversation {
 
 impl Conversation {
     pub fn updated(&self) -> SystemTime {
-        ["conversation.jsonl", "transcript.jsonl", "meta.json"]
-            .iter()
-            .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok()?.modified().ok())
-            .max()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
+        [
+            "conversation.jsonl",
+            "transcript.jsonl",
+            "journal.jsonl",
+            "state.json",
+            "meta.json",
+        ]
+        .iter()
+        .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok()?.modified().ok())
+        .max()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
     }
 }
 
@@ -214,6 +220,23 @@ const TAIL: u64 = 16 * 1024;
 const SNIPPET: usize = 140;
 
 pub fn last_message(dir: &Path) -> Option<String> {
+    last_event(dir).or_else(|| last_transcript(dir))
+}
+
+fn last_event(dir: &Path) -> Option<String> {
+    let text = tail(&dir.join("conversation.jsonl"), TAIL)?;
+    text.lines().rev().find_map(|line| {
+        let event: serde_json::Value = serde_json::from_str(line).ok()?;
+        let kind = event.get("event")?.as_str()?;
+        if !matches!(kind, "done" | "assistant") {
+            return None;
+        }
+        let content = event.get("text")?.as_str()?.trim();
+        (!content.is_empty()).then(|| cut(&flatten(content), SNIPPET))
+    })
+}
+
+fn last_transcript(dir: &Path) -> Option<String> {
     let text = tail(&dir.join("transcript.jsonl"), TAIL)?;
     text.lines()
         .rev()
@@ -326,9 +349,15 @@ fn discovered(root: &Path) -> Vec<String> {
 }
 
 fn is_conversation(path: &Path) -> bool {
-    ["transcript.jsonl", "conversation.jsonl", "meta.json"]
-        .iter()
-        .any(|name| path.join(name).exists())
+    [
+        "transcript.jsonl",
+        "conversation.jsonl",
+        "journal.jsonl",
+        "state.json",
+        "meta.json",
+    ]
+    .iter()
+    .any(|name| path.join(name).exists())
 }
 
 fn walk(dir: &Path, prefix: &str, keys: &mut Vec<String>) {

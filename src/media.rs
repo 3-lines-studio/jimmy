@@ -35,7 +35,7 @@ pub fn dir(conversation: &Conversation) -> PathBuf {
 pub fn store(dir: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let name = unique_name(name);
-    std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+    axe::atomic_write(&dir.join(&name), bytes).map_err(|e| e.to_string())?;
     Ok(name)
 }
 

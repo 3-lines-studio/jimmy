@@ -5,7 +5,7 @@ mensaje) y anota en stdout lo que jimmy manda con sendMessage y
 editMessageText. Lo levanta run.sh; no sirve para nada más.
 """
 
-import http.server, json, os, sys, time
+import base64, http.server, json, os, sys, time
 
 PORT = int(sys.argv[1])
 INBOX = sys.argv[2]
@@ -41,7 +41,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             print("EDIT " + json.dumps(body, ensure_ascii=False), flush=True)
             result = {"message_id": 1}
         elif method == "getFile":
-            result = {"file_path": "x"}
+            result = {"file_path": "foto.png"}
         else:
             result = True
         payload = json.dumps({"ok": True, "result": result}).encode()
@@ -50,6 +50,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_GET(self):
+        if "/file/" not in self.path:
+            self.send_error(404)
+            return
+        data = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3r9wAAAABJRU5ErkJggg=="
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, *args):
         pass

@@ -35,9 +35,14 @@ function paintAvatar(el, state) {
 let pointerX = 0;
 let pointerY = 0;
 let queued = 0;
+let boxes = [];
+let measured = 0;
 
-function follow() {
-  queued = 0;
+const GAZE_REACH = 240;
+const MEASURE_EVERY = 400;
+
+function measure() {
+  boxes = [];
   for (const el of avatars) {
     if (!el.isConnected) {
       avatars.delete(el);
@@ -45,13 +50,31 @@ function follow() {
     }
     const box = el.getBoundingClientRect();
     if (!box.width) continue;
-    const dx = pointerX - (box.left + box.width / 2);
-    const dy = pointerY - (box.top + box.height / 2);
-    const distance = Math.hypot(dx, dy) || 1;
-    const reach = Math.min(1, distance / 320);
-    const shift = box.width * (el.classList.contains("focused") ? 0.3 : 0.17) * reach;
-    el.style.setProperty("--dx", ((dx / distance) * shift).toFixed(2) + "px");
-    el.style.setProperty("--dy", ((dy / distance) * shift * 0.7).toFixed(2) + "px");
+    boxes.push({ el, x: box.left + box.width / 2, y: box.top + box.height / 2, w: box.width });
+  }
+  measured = performance.now();
+}
+
+function aim(el, width, dx, dy, distance) {
+  const reach = Math.min(1, distance / 320);
+  const shift = width * (el.classList.contains("focused") ? 0.3 : 0.17) * reach;
+  return [
+    ((dx / (distance || 1)) * shift).toFixed(1) + "px",
+    ((dy / (distance || 1)) * shift * 0.7).toFixed(1) + "px",
+  ];
+}
+
+function follow() {
+  queued = 0;
+  if (boxes.length !== avatars.size || performance.now() - measured > MEASURE_EVERY) measure();
+  for (const box of boxes) {
+    const dx = pointerX - box.x;
+    const dy = pointerY - box.y;
+    const distance = Math.hypot(dx, dy);
+    const [x, y] = distance > GAZE_REACH ? ["0px", "0px"] : aim(box.el, box.w, dx, dy, distance);
+    if (box.el.style.getPropertyValue("--dx") === x) continue;
+    box.el.style.setProperty("--dx", x);
+    box.el.style.setProperty("--dy", y);
   }
 }
 
@@ -66,6 +89,8 @@ function watchPointer() {
     },
     { passive: true },
   );
+  addEventListener("scroll", measure, { passive: true, capture: true });
+  addEventListener("resize", measure, { passive: true });
 }
 
 if (typeof module !== "undefined")

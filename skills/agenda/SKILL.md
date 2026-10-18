@@ -9,6 +9,8 @@ description: Scheduled tasks in state/schedule, one TOML per task, run by the sc
 
 When the user asks you to schedule something, write a new file; the tick rereads it on every turn, with no restart. To stop running it, delete the file. To silence it without deleting it, add `paused = true`.
 
+`state/schedule/durable/` is Jimmy's journal: it remembers a run that a deploy cut off, retries it, and parks it after five restarts. Leave it alone.
+
 ```toml
 # state/schedule/record-tests.toml
 at = "15:00"

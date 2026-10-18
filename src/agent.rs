@@ -64,7 +64,7 @@ impl Agent {
             base,
             model,
             api_key,
-            effort: env("AXE_REASONING_EFFORT").unwrap_or_else(|| "high".into()),
+            effort: env("AXE_REASONING_EFFORT").unwrap_or_else(|| "max".into()),
             max_tokens: env("AXE_MAX_TOKENS")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),

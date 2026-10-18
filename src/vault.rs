@@ -106,16 +106,28 @@ fn declare(held: &Mutex<Store>, project: &str, env: &str) {
     }
 }
 
+/// Sin yaml ni variable de entorno, el proyecto sale del workspace: lo que está
+/// adentro de `projects/<nombre>` es el proyecto `<nombre>`.
+fn project_of(cwd: &Path) -> Option<String> {
+    let parts: Vec<&str> = cwd.iter().filter_map(|part| part.to_str()).collect();
+    let name = parts.get(parts.iter().position(|part| *part == "projects")? + 1)?;
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    valid.then(|| name.to_string())
+}
+
 fn scope(cwd: &Path) -> (String, String) {
-    let (project, env) = cli::setup_at(cwd).unwrap_or_default();
-    let project = crate::env("HEIMDALL_PROJECT").unwrap_or(project);
-    let env = crate::env("HEIMDALL_ENV").unwrap_or_else(|| {
-        if env.is_empty() {
-            "dev".to_string()
-        } else {
-            env
-        }
-    });
+    let (yaml_project, yaml_env) = cli::setup_at(cwd).unwrap_or_default();
+    let project = crate::env("HEIMDALL_PROJECT")
+        .or_else(|| Some(yaml_project).filter(|project| !project.is_empty()))
+        .or_else(|| project_of(cwd))
+        .unwrap_or_default();
+    let env = crate::env("HEIMDALL_ENV")
+        .or_else(|| Some(yaml_env).filter(|env| !env.is_empty()))
+        .unwrap_or_else(|| "dev".to_string());
     (project, env)
 }
 
@@ -201,6 +213,31 @@ mod tests {
         assert!(!seen.contains("solo acá"), "{seen}");
 
         put(&BTreeMap::new());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn el_proyecto_sale_del_workspace_sin_yaml() {
+        assert_eq!(
+            scope(Path::new("/data/workspace/projects/jimmy")).0,
+            "jimmy"
+        );
+        assert_eq!(
+            scope(Path::new("/data/workspace/projects/jimmy/src")).0,
+            "jimmy"
+        );
+        assert_eq!(scope(Path::new("/data/workspace/files")).0, "");
+        assert_eq!(scope(Path::new("/data/workspace/projects/Malo")).0, "");
+        assert_eq!(scope(Path::new("/tmp/projects/heimdall")).0, "heimdall");
+    }
+
+    #[test]
+    fn el_yaml_le_gana_al_workspace() {
+        let _env = ENV.lock().unwrap();
+        let dir = temp("yaml-gana");
+        let repo = repo(&dir, "otro");
+
+        assert_eq!(scope(&repo), ("otro".to_string(), "dev".to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

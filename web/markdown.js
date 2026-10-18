@@ -1,6 +1,9 @@
 const PUNCTUATION = "\\`*_{}[]()#+-.!<>~|";
 
+const SPECIALS = /[\\`*_~\[]/;
+
 function escapeHtml(text) {
+  if (!/[&<>"']/.test(text)) return text;
   return text.replace(
     /[&<>"']/g,
     (char) =>
@@ -140,6 +143,7 @@ function bareUrl(chars, index) {
 }
 
 function inline(text) {
+  if (!SPECIALS.test(text) && !text.includes("http")) return escapeHtml(text);
   const chars = Array.from(text);
   let out = "";
   let index = 0;

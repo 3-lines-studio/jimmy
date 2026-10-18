@@ -6,6 +6,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock /build/jimmy/
 COPY src /build/jimmy/src
 COPY web /build/jimmy/web
+COPY prompts /build/jimmy/prompts
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 
@@ -59,7 +60,6 @@ RUN ln -sf /usr/local/bin/jimmy /usr/local/bin/heimdall \
     && doppler help > /dev/null
 
 ENV XDG_CONFIG_HOME=/root/.config
-COPY prompts /usr/local/share/jimmy/prompts
 COPY skills /usr/local/share/jimmy/skills
 COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse

@@ -33,7 +33,7 @@ pub struct Agent {
     root: PathBuf,
     workspace: String,
     cwd: String,
-    fragments: String,
+    system: String,
     context: String,
     pool: Arc<Pool>,
     bus: Arc<Bus>,
@@ -51,7 +51,7 @@ impl Agent {
         context_window: Option<usize>,
         root: PathBuf,
         workspace: String,
-        fragments: String,
+        system: String,
     ) -> Self {
         let cwd = workspace.clone();
         let context = runtime_context(&model, &base, &root, &workspace, &cwd);
@@ -67,7 +67,7 @@ impl Agent {
             root,
             cwd: workspace.clone(),
             workspace,
-            fragments,
+            system,
             context,
             pool,
             bus: Bus::new(),
@@ -428,10 +428,8 @@ impl Agent {
         );
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
-        if !self.fragments.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&self.fragments);
-        }
+        system.push_str("\n\n");
+        system.push_str(&self.system);
         system.push('\n');
         system.push_str(&self.context);
         system.push_str(&format!(

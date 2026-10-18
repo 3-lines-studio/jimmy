@@ -16,14 +16,6 @@ pub fn list(dirs: &[PathBuf]) -> String {
     lines(skills)
 }
 
-pub fn index(dirs: &[PathBuf]) -> String {
-    let skills = scan(dirs);
-    if skills.is_empty() {
-        return "No hay ninguna instalada.".to_string();
-    }
-    lines(skills)
-}
-
 pub fn load(dirs: &[PathBuf], name: &str) -> Result<String, String> {
     if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
         return Err(format!("nombre de skill inválido: {name}"));
@@ -230,18 +222,10 @@ mod tests {
         )
         .unwrap();
         let dirs = vec![over.clone(), under.clone()];
-        assert_eq!(index(&dirs), "charts — Mía\notra — Sólo del builtin");
+        assert_eq!(list(&dirs), "charts — Mía\notra — Sólo del builtin");
         let loaded = load(&dirs, "otra").unwrap();
         assert!(loaded.starts_with(&format!("Skill otra — {}", under.join("otra").display())));
         std::fs::remove_dir_all(&over).unwrap();
         std::fs::remove_dir_all(&under).unwrap();
-    }
-
-    #[test]
-    fn the_index_says_so_when_there_is_nothing() {
-        assert_eq!(
-            index(&[PathBuf::from("/nope/nope/skills")]),
-            "No hay ninguna instalada."
-        );
     }
 }

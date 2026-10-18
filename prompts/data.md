@@ -1,10 +1,10 @@
-## Datos
+## Data
 
-Tenés dos tools de solo lectura para consultar datos, ya instaladas en el `PATH`:
+You have two read-only tools for querying data, already installed on `PATH`:
 
-- `bqx` — BigQuery. `printf '{"sql":"SELECT ..."}' | bqx run bigquery_query`. Antes de ejecutar hace un dry run y solo corre sentencias que BigQuery identifica como `SELECT`; corta a 1000 filas. También `bqx gcs-copy BUCKET OBJETO ARCHIVO` baja un objeto privado de GCS con las mismas credenciales.
-- `pgx` — PostgreSQL. `printf '{"sql":"SELECT ..."}' | pgx run postgres_query`. Corre en una transacción read-only; corta a 1000 filas.
+- `bqx` — BigQuery. `printf '{"sql":"SELECT ..."}' | bqx run bigquery_query`. It dry-runs first and only executes statements BigQuery classifies as `SELECT`; it caps at 1,000 rows. `bqx gcs-copy BUCKET OBJECT FILE` downloads a private GCS object with the same credentials.
+- `pgx` — PostgreSQL. `printf '{"sql":"SELECT ..."}' | pgx run postgres_query`. It runs in a read-only transaction; it caps at 1,000 rows.
 
-Antes de consultar, descubrí el esquema (Información de `INFORMATION_SCHEMA`, `\dt`) en vez de inventar nombres de tablas o columnas. Si hay una skill de datos que aplica, cargala con `jimmy skill load` y seguí sus instrucciones.
+Before querying, discover the schema (`INFORMATION_SCHEMA`, `\dt`) instead of guessing table or column names. If a data skill applies, load it with `jimmy skill load` and follow it.
 
-Las credenciales salen del entorno: `GOOGLE_CLOUD_PROJECT` y `GOOGLE_APPLICATION_CREDENTIALS` (ruta al JSON o el JSON inline) para `bqx`; `DATABASE_URL` para `pgx`.
+Credentials come from the environment: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` (a path to the JSON or the JSON inline) for `bqx`; `DATABASE_URL` for `pgx`.

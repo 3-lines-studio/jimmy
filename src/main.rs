@@ -934,6 +934,6 @@ mod tests {
     fn the_default_spec_assembles_with_the_vars_the_agent_gets() {
         let vars = prompt::parse_vars("usuario=Ana,asistente=Jimmy");
         let out = prompt::assemble(prompt::DEFAULT, &prompt::dirs(Path::new(".")), &vars).unwrap();
-        assert!(out.contains("Sos Jimmy, el asistente de Ana."));
+        assert!(out.contains("You are Jimmy, Ana's assistant."));
     }
 }

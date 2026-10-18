@@ -174,6 +174,7 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         return http::send_error(stream, 400, "esa conversación no existe");
     }
     match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/health") => http::send_text(stream, 200, "text/plain", "ok"),
         ("GET", "/") => app_page(web, &request, stream),
         ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
         ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
@@ -1403,6 +1404,14 @@ done
             .next()
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn health_answers_without_a_session() {
+        let server = start("assets");
+        let health = get(server.port, "/health", None);
+        assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+        assert!(health.ends_with("ok"), "{health}");
     }
 
     #[test]

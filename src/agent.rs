@@ -7,7 +7,7 @@ use crate::protocol::{self, Event};
 use crate::store;
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
-use axe::durable::Journal;
+use axe::durable::{Journal, Record, TaskState};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -311,13 +311,28 @@ impl Agent {
         };
         history.push(user.clone());
         let entry = Entry::Message { message: user };
+        let mut tasks = Vec::new();
+        if let Some(mut old) = store::live_turn(&journal).cloned() {
+            old.state = TaskState::Cancelled;
+            old.phase = "superseded".into();
+            tasks.push(old);
+        }
+        let task = store::new_turn(&mut journal);
+        tasks.push(task.clone());
         journal
-            .append(vec![entry.clone()])
+            .commit(vec![entry.clone()], tasks)
             .map_err(|e| e.to_string())?;
         entries.push(entry);
 
-        self.execute(transport, session, history, entries, Some(journal), false)
-            .map(|_| ())
+        self.execute(
+            transport,
+            session,
+            history,
+            entries,
+            Some((journal, task.id)),
+            false,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn local_compact(
@@ -340,7 +355,7 @@ impl Agent {
                     _ => 0,
                 };
                 journal.append(vec![entry]).map_err(|e| e.to_string())?;
-                let _ = journal.maybe_snapshot();
+                let _ = journal.snapshot_with(drop_superseded_images);
                 let report = format!("🧹 compactado: {}K tokens", before / 1000);
                 transport.answer(session, None, &report);
             }
@@ -362,17 +377,47 @@ impl Agent {
         let entries = store::entries(&mut journal)?;
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
+        let mut task = match store::live_turn(&journal).cloned() {
+            Some(task) => task,
+            None => store::new_turn(&mut journal),
+        };
+        task.state = TaskState::Running;
+        task.phase = "request".into();
+        journal
+            .commit(Vec::new(), vec![task.clone()])
+            .map_err(|e| e.to_string())?;
         if let Some(reply) = final_answer(&history) {
+            settle(
+                &mut journal,
+                task.id,
+                TaskState::Done,
+                "done",
+                serde_json::json!({}),
+            );
             transport.answer(session, None, reply);
             let _ = std::fs::remove_file(dir.join("inflight"));
             return Ok(());
         }
         if history.is_empty() {
+            settle(
+                &mut journal,
+                task.id,
+                TaskState::Cancelled,
+                "empty",
+                serde_json::json!({}),
+            );
             let _ = std::fs::remove_file(dir.join("inflight"));
             return Ok(());
         }
-        self.execute(transport, session, history, entries, Some(journal), false)
-            .map(|_| ())
+        self.execute(
+            transport,
+            session,
+            history,
+            entries,
+            Some((journal, task.id)),
+            false,
+        )
+        .map(|_| ())
     }
 
     pub fn run_task(
@@ -405,9 +450,13 @@ impl Agent {
         session: &Session,
         mut history: Vec<Message>,
         mut entries: Vec<Entry>,
-        mut journal: Option<Journal>,
+        run: Option<(Journal, u64)>,
         silent: bool,
     ) -> Result<String, String> {
+        let (mut journal, task) = match run {
+            Some((journal, task)) => (Some(journal), Some(task)),
+            None => (None, None),
+        };
         let dir = journal.as_ref().map(|journal| journal.dir().to_path_buf());
         let mut tools = axe::tools::build_tools_with(
             Arc::new(axe::machine::Local::new(&self.cwd)),
@@ -435,7 +484,7 @@ impl Agent {
             model: &self.model,
             system: &system,
             tools: &tools,
-            max_turns: usize::MAX,
+            max_turns: 1,
         };
         let threshold = self
             .context_window
@@ -449,8 +498,11 @@ impl Agent {
         };
 
         let mut overflow_retried = false;
+        let mut turns = 0;
         loop {
+            turns += 1;
             let started = Instant::now();
+            let start = history.len();
             let mut sink = EventSink {
                 threshold,
                 events: dir.clone(),
@@ -480,41 +532,79 @@ impl Agent {
                     }),
                 );
             }
-            let fresh = end.messages.len().saturating_sub(history.len());
+            let axe::run::RunEnd {
+                messages,
+                usage,
+                context,
+                outcome,
+            } = end;
+            let fresh = messages.len().saturating_sub(start);
             let committed = sink.committed.min(fresh);
-            for message in &end.messages[history.len()..history.len() + committed] {
+            for message in &messages[start..start + committed] {
                 entries.push(Entry::Message {
                     message: message.clone(),
                 });
             }
-            if end.usage.input > 0 || end.usage.output > 0 {
-                let usage = Entry::Usage {
-                    input: end.usage.input,
-                    output: end.usage.output,
-                    cached_input: end.context.cached_input,
-                    context_input: end.context.input,
-                    context_output: end.context.output,
+            let mut usage_entry = Vec::new();
+            if usage.input > 0 || usage.output > 0 {
+                let entry = Entry::Usage {
+                    input: usage.input,
+                    output: usage.output,
+                    cached_input: context.cached_input,
+                    context_input: context.input,
+                    context_output: context.output,
                 };
-                commit(&mut journal, usage.clone()).map_err(|error| {
-                    transport.fail(session, status.take(), &format!("⚠️ {error}"));
-                    error
-                })?;
-                entries.push(usage);
+                entries.push(entry.clone());
+                usage_entry.push(entry);
             }
-            match end.outcome {
-                Outcome::Done | Outcome::MaxTurns => {
+            match outcome {
+                Outcome::Done => {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Done,
+                        "done",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
                     snapshot(&mut journal);
                     let fallback = if silent { None } else { Some("✅ listo") };
-                    let reply = answer(&end.messages[history.len()..], fallback);
+                    let reply = answer(&messages[start..], fallback);
                     transport.answer(session, status.take(), &reply);
                     return Ok(reply);
                 }
-                Outcome::Cancelled => {
-                    snapshot(&mut journal);
-                    transport.fail(session, status.take(), "⚠️ interrumpido");
-                    return Err("interrumpido".into());
+                Outcome::MaxTurns => {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Running,
+                        "turn",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
+                    history = messages;
                 }
                 Outcome::Compact => {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Running,
+                        "turn",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
                     history = match compacted(&mut journal, &mut entries, &provider, &self.model) {
                         Ok(history) => history,
                         Err(e) => {
@@ -524,9 +614,32 @@ impl Agent {
                         }
                     };
                 }
+                Outcome::Cancelled => {
+                    let value = serde_json::json!({ "turn": turns });
+                    let _ = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Cancelled,
+                        "cancelled",
+                        value,
+                    );
+                    snapshot(&mut journal);
+                    transport.fail(session, status.take(), "⚠️ interrumpido");
+                    return Err("interrumpido".into());
+                }
                 Outcome::Failed(e) => {
                     if !overflow_retried && session::is_overflow_error(&e) {
                         overflow_retried = true;
+                        let value = serde_json::json!({ "turn": turns });
+                        let _ = checkpoint(
+                            &mut journal,
+                            task,
+                            usage_entry,
+                            TaskState::Running,
+                            "compacting",
+                            value,
+                        );
                         history =
                             match compacted(&mut journal, &mut entries, &provider, &self.model) {
                                 Ok(history) => history,
@@ -538,6 +651,15 @@ impl Agent {
                             };
                         continue;
                     }
+                    let value = serde_json::json!({ "turn": turns, "error": e });
+                    let _ = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Failed,
+                        "failed",
+                        value,
+                    );
                     snapshot(&mut journal);
                     transport.fail(session, status.take(), &format!("⚠️ error: {e}"));
                     return Err(e);
@@ -593,7 +715,7 @@ impl Agent {
         }
         match journal.append(vec![Entry::Reset]) {
             Ok(_) => {
-                let _ = journal.maybe_snapshot();
+                let _ = journal.snapshot_with(drop_superseded_images);
                 "🧹 contexto borrado".into()
             }
             Err(e) => format!("⚠️ no pude borrar: {e}"),
@@ -986,10 +1108,76 @@ fn commit(journal: &mut Option<Journal>, entry: Entry) -> Result<(), String> {
     }
 }
 
+fn checkpoint(
+    journal: &mut Option<Journal>,
+    task: Option<u64>,
+    entries: Vec<Entry>,
+    state: TaskState,
+    phase: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let Some(journal) = journal else {
+        return Ok(());
+    };
+    let tasks = match task {
+        Some(id) => match journal.task(id).cloned() {
+            Some(mut record) => {
+                record.state = state;
+                record.phase = phase.into();
+                record.checkpoint = value;
+                if !matches!(state, TaskState::Failed | TaskState::Blocked) {
+                    record.attempts = 0;
+                }
+                vec![record]
+            }
+            None => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    if entries.is_empty() && tasks.is_empty() {
+        return Ok(());
+    }
+    journal
+        .commit(entries, tasks)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn settle(
+    journal: &mut Journal,
+    task: u64,
+    state: TaskState,
+    phase: &str,
+    value: serde_json::Value,
+) {
+    if let Some(mut record) = journal.task(task).cloned() {
+        record.state = state;
+        record.phase = phase.into();
+        record.checkpoint = value;
+        let _ = journal.commit(Vec::new(), vec![record]);
+    }
+}
+
 fn snapshot(journal: &mut Option<Journal>) {
     if let Some(journal) = journal {
-        if let Err(error) = journal.maybe_snapshot() {
+        if let Err(error) = journal.maybe_snapshot_with(drop_superseded_images) {
             eprintln!("jimmy: no pude guardar el snapshot: {error}");
+        }
+    }
+}
+
+fn drop_superseded_images(records: &mut [Record]) {
+    let Some(boundary) = records
+        .iter()
+        .rposition(|record| matches!(record.entry, Entry::Compaction { .. } | Entry::Reset))
+    else {
+        return;
+    };
+    for record in &mut records[..boundary] {
+        if let Entry::Message { message } = &mut record.entry {
+            for image in &mut message.images {
+                image.url.clear();
+            }
         }
     }
 }
@@ -1552,6 +1740,87 @@ done
         live.started = Instant::now() - Duration::from_secs(600);
         live.on(&tool_start("bash", r#"{"command":"make"}"#));
         assert!(fake.statuses.lock().unwrap().is_empty());
+    }
+
+    fn image(name: &str, url: &str) -> Image {
+        Image {
+            path: format!("/chats/x/uploads/{name}"),
+            url: url.into(),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_drops_the_images_before_a_compaction() {
+        let dir = resume_dir("prune");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        let mut kept = assistant("nuevo", Vec::new());
+        kept.images = vec![image("b.png", "data:image/png;base64,REVG")];
+        journal
+            .append(vec![
+                Entry::Message { message: old },
+                Entry::Compaction {
+                    summary: "resumen".into(),
+                    tokens_before: 0,
+                    timestamp: 0,
+                    retained: vec![kept],
+                },
+            ])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => {
+                assert!(message.images[0].url.is_empty());
+                assert!(message.images[0].path.ends_with("a.png"));
+            }
+            _ => panic!("esperaba un mensaje"),
+        }
+        match &records[1].entry {
+            Entry::Compaction { retained, .. } => {
+                assert_eq!(retained[0].images[0].url, "data:image/png;base64,REVG");
+            }
+            _ => panic!("esperaba una compactación"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reset_drops_every_image() {
+        let dir = resume_dir("prune-reset");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        journal
+            .append(vec![Entry::Message { message: old }, Entry::Reset])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => assert!(message.images[0].url.is_empty()),
+            _ => panic!("esperaba un mensaje"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_lands_in_uploads_with_its_bytes() {
+        let dir = resume_dir("image");
+        let image = crate::save_image(&dir, "foto.png", b"\x89PNG").unwrap();
+        let name = Path::new(&image.path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(name.ends_with("foto.png"), "{name}");
+        assert!(dir.join(name).is_file());
+        assert!(image.url.starts_with("data:image/png;base64,"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

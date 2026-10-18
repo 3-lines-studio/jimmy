@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 pub const GENERAL: &str = "general";
@@ -15,6 +16,7 @@ struct Meta {
     title: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Conversation {
     pub key: String,
     pub dir: PathBuf,
@@ -110,6 +112,71 @@ pub fn projects(root: &Path, workspace: &Path) -> Vec<Project> {
             }
         })
         .collect()
+}
+
+#[derive(Clone, PartialEq)]
+struct Stamp {
+    conversation: Option<(u64, Option<SystemTime>)>,
+    transcript: Option<(u64, Option<SystemTime>)>,
+}
+
+#[derive(Default)]
+pub struct Listing {
+    projects: Mutex<Option<(u64, Arc<Vec<Project>>)>>,
+    last: Mutex<HashMap<PathBuf, (Stamp, Option<String>)>>,
+}
+
+const CACHE_LIMIT: usize = 1024;
+
+impl Listing {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn projects(&self, root: &Path, workspace: &Path, version: u64) -> Arc<Vec<Project>> {
+        let mut slot = self.projects.lock().unwrap();
+        if let Some((at, projects)) = slot.as_ref() {
+            if *at == version {
+                return projects.clone();
+            }
+        }
+        let projects = Arc::new(projects(root, workspace));
+        *slot = Some((version, projects.clone()));
+        projects
+    }
+
+    pub fn invalidate(&self) {
+        *self.projects.lock().unwrap() = None;
+    }
+
+    pub fn last(&self, dir: &Path) -> Option<String> {
+        let stamp = stamp(dir);
+        let cached = self.last.lock().unwrap().get(dir).cloned();
+        if let Some((known, value)) = cached {
+            if known == stamp {
+                return value;
+            }
+        }
+        let value = last_message(dir);
+        let mut cache = self.last.lock().unwrap();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(dir.to_path_buf(), (stamp, value.clone()));
+        value
+    }
+}
+
+fn stamp(dir: &Path) -> Stamp {
+    Stamp {
+        conversation: file_stamp(&dir.join("conversation.jsonl")),
+        transcript: file_stamp(&dir.join("transcript.jsonl")),
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
 }
 
 pub fn create(root: &Path, workspace: &Path, project: &str, title: &str) -> Result<String, String> {

@@ -7,7 +7,7 @@ use crate::protocol::{self, Event};
 use crate::store;
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
-use axe::durable::Journal;
+use axe::durable::{Journal, Record};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -340,7 +340,7 @@ impl Agent {
                     _ => 0,
                 };
                 journal.append(vec![entry]).map_err(|e| e.to_string())?;
-                let _ = journal.maybe_snapshot();
+                let _ = journal.snapshot_with(drop_superseded_images);
                 let report = format!("🧹 compactado: {}K tokens", before / 1000);
                 transport.answer(session, None, &report);
             }
@@ -593,7 +593,7 @@ impl Agent {
         }
         match journal.append(vec![Entry::Reset]) {
             Ok(_) => {
-                let _ = journal.maybe_snapshot();
+                let _ = journal.snapshot_with(drop_superseded_images);
                 "🧹 contexto borrado".into()
             }
             Err(e) => format!("⚠️ no pude borrar: {e}"),
@@ -988,8 +988,24 @@ fn commit(journal: &mut Option<Journal>, entry: Entry) -> Result<(), String> {
 
 fn snapshot(journal: &mut Option<Journal>) {
     if let Some(journal) = journal {
-        if let Err(error) = journal.maybe_snapshot() {
+        if let Err(error) = journal.maybe_snapshot_with(drop_superseded_images) {
             eprintln!("jimmy: no pude guardar el snapshot: {error}");
+        }
+    }
+}
+
+fn drop_superseded_images(records: &mut [Record]) {
+    let Some(boundary) = records
+        .iter()
+        .rposition(|record| matches!(record.entry, Entry::Compaction { .. } | Entry::Reset))
+    else {
+        return;
+    };
+    for record in &mut records[..boundary] {
+        if let Entry::Message { message } = &mut record.entry {
+            for image in &mut message.images {
+                image.url.clear();
+            }
         }
     }
 }
@@ -1552,6 +1568,87 @@ done
         live.started = Instant::now() - Duration::from_secs(600);
         live.on(&tool_start("bash", r#"{"command":"make"}"#));
         assert!(fake.statuses.lock().unwrap().is_empty());
+    }
+
+    fn image(name: &str, url: &str) -> Image {
+        Image {
+            path: format!("/chats/x/uploads/{name}"),
+            url: url.into(),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_drops_the_images_before_a_compaction() {
+        let dir = resume_dir("prune");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        let mut kept = assistant("nuevo", Vec::new());
+        kept.images = vec![image("b.png", "data:image/png;base64,REVG")];
+        journal
+            .append(vec![
+                Entry::Message { message: old },
+                Entry::Compaction {
+                    summary: "resumen".into(),
+                    tokens_before: 0,
+                    timestamp: 0,
+                    retained: vec![kept],
+                },
+            ])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => {
+                assert!(message.images[0].url.is_empty());
+                assert!(message.images[0].path.ends_with("a.png"));
+            }
+            _ => panic!("esperaba un mensaje"),
+        }
+        match &records[1].entry {
+            Entry::Compaction { retained, .. } => {
+                assert_eq!(retained[0].images[0].url, "data:image/png;base64,REVG");
+            }
+            _ => panic!("esperaba una compactación"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reset_drops_every_image() {
+        let dir = resume_dir("prune-reset");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        journal
+            .append(vec![Entry::Message { message: old }, Entry::Reset])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => assert!(message.images[0].url.is_empty()),
+            _ => panic!("esperaba un mensaje"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_lands_in_uploads_with_its_bytes() {
+        let dir = resume_dir("image");
+        let image = crate::save_image(&dir, "foto.png", b"\x89PNG").unwrap();
+        let name = Path::new(&image.path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(name.ends_with("foto.png"), "{name}");
+        assert!(dir.join(name).is_file());
+        assert!(image.url.starts_with("data:image/png;base64,"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

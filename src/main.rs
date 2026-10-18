@@ -282,13 +282,16 @@ fn main() {
                     return;
                 }
                 let images = match image {
-                    Some(file_id) => match fetch_image(transport.as_ref(), &session, &file_id) {
-                        Ok(image) => vec![image],
-                        Err(e) => {
-                            transport.note(&session, &format!("⚠️ no pude bajar la imagen: {e}"));
-                            return;
+                    Some(file_id) => {
+                        match fetch_image(&agent, transport.as_ref(), &session, &file_id) {
+                            Ok(image) => vec![image],
+                            Err(e) => {
+                                transport
+                                    .note(&session, &format!("⚠️ no pude bajar la imagen: {e}"));
+                                return;
+                            }
                         }
-                    },
+                    }
                     None => Vec::new(),
                 };
                 if let Err(e) = agent.respond(transport.as_ref(), &session, &text, images, &author)
@@ -631,6 +634,7 @@ fn audio_extension(file_path: &str) -> &str {
 }
 
 fn fetch_image(
+    agent: &Agent,
     transport: &dyn Transport,
     session: &Session,
     file_id: &str,
@@ -640,14 +644,20 @@ fn fetch_image(
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("jpg");
-    let name = format!(
-        "jimmy-image-{}-{}.{ext}",
-        session.channel,
-        axe::session::now_ms()
-    );
-    let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
-    axe::image::attach(&path.display().to_string())
+    let fallback = format!("jimmy-{}-{}.{ext}", session.channel, axe::session::now_ms());
+    let name = Path::new(&file_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or(fallback);
+    let conversation = agent.conversation(session);
+    save_image(&media::dir(&conversation), &name, &data)
+}
+
+fn save_image(dir: &Path, name: &str, data: &[u8]) -> Result<axe::Image, String> {
+    let name = media::store(dir, name, data)?;
+    let path = dir.join(&name);
+    axe::image::attach_data(&path.display().to_string(), data)
 }
 
 fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {

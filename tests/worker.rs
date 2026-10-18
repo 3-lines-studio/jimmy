@@ -6,6 +6,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use axe::durable::TaskState;
 use axe::session::Entry;
 use axe::{Message, ToolCall};
 
@@ -286,6 +287,21 @@ fn a_cut_tool_call_comes_back_interrupted_and_the_turn_continues() {
                 },
             ])
             .unwrap();
+        let id = journal.new_task();
+        journal
+            .commit(
+                Vec::new(),
+                vec![axe::durable::TaskRecord {
+                    id,
+                    kind: "turn".into(),
+                    state: TaskState::Running,
+                    phase: "request".into(),
+                    checkpoint: serde_json::Value::Null,
+                    attempts: 3,
+                    updated: 0,
+                }],
+            )
+            .unwrap();
     }
     let (base, served) = model_server(vec![answer_chunk("seguí")]);
     let mut worker = Worker::start(&root, &base, &root.join("workspace"));
@@ -298,6 +314,9 @@ fn a_cut_tool_call_comes_back_interrupted_and_the_turn_continues() {
     let journal = transcript(&chat);
     assert!(journal.contains("interrupted"), "{journal}");
     assert!(journal.contains("seguí"), "{journal}");
+    let tasks = axe::durable::Journal::load_tasks(&chat).unwrap();
+    assert_eq!(tasks[0].state, TaskState::Done);
+    assert_eq!(tasks[0].attempts, 0);
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -312,6 +331,9 @@ fn a_failed_turn_keeps_the_input_that_was_admitted() {
 
     let journal = transcript(&root.join("chats/test"));
     assert!(journal.contains("guardá esto"), "{journal}");
+    let tasks = axe::durable::Journal::load_tasks(&root.join("chats/test")).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].state, TaskState::Failed);
     std::fs::remove_dir_all(&root).unwrap();
 }
 

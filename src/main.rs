@@ -665,14 +665,33 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
         let Some(session) = session_from_key(&key) else {
             continue;
         };
-        eprintln!("jimmy: reanudando el turno de {key}");
-        let agent = agent.clone();
-        let transport = transport.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = agent.resume(transport.as_ref(), &session) {
-                eprintln!("jimmy: no pude reanudar {key}: {e}");
+        let dir = agent.conversation(&session).dir;
+        match store::recover_turn(&dir) {
+            Ok(store::Recovered::Resume) => {
+                eprintln!("jimmy: reanudando el turno de {key}");
+                let agent = agent.clone();
+                let transport = transport.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = agent.resume(transport.as_ref(), &session) {
+                        eprintln!("jimmy: no pude reanudar {key}: {e}");
+                    }
+                });
             }
-        });
+            Ok(store::Recovered::Blocked(limit)) => {
+                let _ = std::fs::remove_file(dir.join("inflight"));
+                eprintln!("jimmy: {key} quedó bloqueado tras {limit} reinicios");
+                transport.note(
+                    &session,
+                    &format!(
+                        "⚠️ el turno quedó bloqueado tras {limit} reinicios. Mandá otro mensaje."
+                    ),
+                );
+            }
+            Ok(store::Recovered::Nothing) => {
+                let _ = std::fs::remove_file(dir.join("inflight"));
+            }
+            Err(e) => eprintln!("jimmy: no pude recuperar {key}: {e}"),
+        }
     }
 }
 

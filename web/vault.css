@@ -43,6 +43,22 @@
   letter-spacing: 0.04em;
 }
 
+.vault-project {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.vault-project-name {
+  margin: 0;
+  padding: 0 var(--s1);
+  color: var(--faint);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .vault-envs {
   display: flex;
   flex-wrap: wrap;

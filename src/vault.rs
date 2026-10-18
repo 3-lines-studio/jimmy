@@ -53,6 +53,7 @@ pub fn inject(cwd: &Path) -> usize {
 
 fn apply(held: &Mutex<Store>, cwd: &Path) -> usize {
     let (project, env) = scope(cwd);
+    declare(held, &project, &env);
     let secrets = {
         let store = held.lock().unwrap_or_else(|e| e.into_inner());
         match store.resolve(&project, &env) {
@@ -86,6 +87,23 @@ fn put(secrets: &BTreeMap<String, String>) -> usize {
         injected.push(name.clone());
     }
     injected.len()
+}
+
+/// El proyecto que usa un chat queda declarado, aunque todavía no tenga ni una
+/// clave: así el panel lo muestra como vault vacío en vez de no mostrarlo.
+fn declare(held: &Mutex<Store>, project: &str, env: &str) {
+    if project.is_empty() {
+        return;
+    }
+    let key = format!("{project}/{env}");
+    let store = held.lock().unwrap_or_else(|e| e.into_inner());
+    let known = store
+        .names()
+        .map(|names| names.iter().any(|name| name == &key))
+        .unwrap_or(true);
+    if !known {
+        let _ = store.create_environment(project, env, "worker");
+    }
 }
 
 fn scope(cwd: &Path) -> (String, String) {
@@ -183,6 +201,24 @@ mod tests {
         assert!(!seen.contains("solo acá"), "{seen}");
 
         put(&BTreeMap::new());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn un_proyecto_sin_claves_queda_declarado() {
+        let _env = ENV.lock().unwrap();
+        let dir = temp("declara");
+        let store = start(&dir).unwrap();
+        let repo = repo(&dir, "nuevo");
+
+        apply(&store, &repo);
+
+        let names = store.lock().unwrap().names().unwrap();
+        assert!(names.iter().any(|name| name == "nuevo/dev"), "{names:?}");
+        assert_eq!(
+            store.lock().unwrap().secrets("nuevo", "dev").unwrap().len(),
+            0
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

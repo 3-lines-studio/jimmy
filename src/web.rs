@@ -1038,15 +1038,26 @@ fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
 }
 
 fn panel(store: &Store) -> store::Result<serde_json::Value> {
+    let mut pairs: std::collections::BTreeSet<(String, String)> = store
+        .names()?
+        .iter()
+        .filter_map(|name| name.split_once('/'))
+        .map(|(project, env)| (project.to_string(), env.to_string()))
+        .collect();
+    let envs: std::collections::BTreeSet<String> = if pairs.is_empty() {
+        ["dev".to_string()].into_iter().collect()
+    } else {
+        pairs.iter().map(|(_, env)| env.clone()).collect()
+    };
+    for env in envs {
+        pairs.insert(("general".to_string(), env));
+    }
     let mut environments = Vec::new();
-    for name in store.names()? {
-        let Some((project, env)) = name.split_once('/') else {
-            continue;
-        };
+    for (project, env) in pairs {
         environments.push(serde_json::json!({
             "project": project,
             "env": env,
-            "keys": store.secrets(project, env)?.len(),
+            "keys": store.secrets(&project, &env)?.len(),
         }));
     }
     Ok(serde_json::json!({
@@ -3054,5 +3065,43 @@ done
             false
         );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn el_panel_muestra_el_general_y_los_proyectos_vacios() {
+        use heimdall::crypto::Key;
+
+        let dir = std::env::temp_dir().join(format!("jimmy-panel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(
+            dir.join("heimdall.db"),
+            Key::from_hex(&"ab".repeat(32)).unwrap(),
+        )
+        .unwrap();
+        store.create_environment("demo", "dev", "test").unwrap();
+
+        let panel = panel(&store).unwrap();
+        let rows: Vec<(String, String, u64)> = panel["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["project"].as_str().unwrap().to_string(),
+                    row["env"].as_str().unwrap().to_string(),
+                    row["keys"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("demo".to_string(), "dev".to_string(), 0),
+                ("general".to_string(), "dev".to_string(), 0),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

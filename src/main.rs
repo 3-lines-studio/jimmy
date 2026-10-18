@@ -939,7 +939,7 @@ mod tests {
 
     #[test]
     fn the_system_prompt_carries_no_placeholders() {
-        assert!(SYSTEM.contains("Don Berti"));
+        assert!(SYSTEM.contains("Never answer in Chinese."));
         assert!(!SYSTEM.contains("{{"));
     }
 }

@@ -76,8 +76,6 @@ pub fn list(dir: &Path) -> Vec<Entry> {
     entries
 }
 
-/// Marca leída la última corrida de una tarea, o la de todas. Lo leído se
-/// guarda por tarea como el momento: todo lo que llegó después es nuevo.
 pub fn mark_read(dir: &Path, name: Option<&str>) -> Result<(), String> {
     let mut seen = read_seen(dir);
     let names: Vec<String> = match name {
@@ -190,9 +188,6 @@ fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date
     );
 }
 
-/// A dónde sale la corrida: al chat del target si el transporte lo conoce, y si
-/// no a ningún lado. Un target que no existe no se lleva puesta la corrida: se
-/// hace igual, queda en el historial y ahí dice por qué no salió.
 fn outbound<'a>(
     transport: &'a dyn Transport,
     entry: &Entry,

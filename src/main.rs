@@ -83,9 +83,6 @@ fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// El mismo binario es `heimdall` y `doppler` cuando lo llaman así: los
-/// Makefiles de los proyectos los invocan por nombre, y adentro el vault es el
-/// que corre en este proceso.
 fn invoked_as() -> Option<String> {
     let name = Path::new(&std::env::args().next()?)
         .file_name()?
@@ -120,7 +117,6 @@ fn workspace_from_env() -> PathBuf {
     )
 }
 
-/// Los nombres que jimmy atiende como orden y no como arranque del bot.
 const SUBCOMMANDS: [&str; 6] = [
     "memo",
     "send",
@@ -130,9 +126,6 @@ const SUBCOMMANDS: [&str; 6] = [
     "worker",
 ];
 
-/// Con argumentos, jimmy sólo hace lo que le pidieron. Un nombre que no conoce
-/// no puede terminar arrancando el bot entero: sería una segunda instancia
-/// escuchando el mismo puerto y robándole los mensajes a la que ya corre.
 fn unknown_command(args: &[String]) -> Option<&str> {
     let first = args.first()?;
     (!SUBCOMMANDS.contains(&first.as_str())).then_some(first.as_str())
@@ -370,8 +363,6 @@ fn usage() -> i32 {
     2
 }
 
-/// The web frontend is opt-in: without a port to listen on, jimmy is what it
-/// always was.
 fn serve_web(
     config: &Config,
     bus: Arc<bus::Bus>,
@@ -561,9 +552,6 @@ fn send_command(args: &[String]) -> i32 {
     }
 }
 
-/// Una imagen que va a una conversación de la web no sale por ningún transporte:
-/// queda en el chat, que es donde se mira. Y la que sale por Telegram también
-/// queda, porque la web muestra las mismas conversaciones.
 fn keep(
     conversation: &conversations::Conversation,
     path: &str,
@@ -735,7 +723,6 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
     }
 }
 
-/// Chats with a turn that was cut short, which is what the marker file means.
 fn inflight_chats(root: &Path) -> Vec<String> {
     let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
         return Vec::new();

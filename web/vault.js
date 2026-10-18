@@ -1,7 +1,3 @@
-/* El vault: los secretos de jimmy, con la cara de casa. El store vive en este
-   mismo proceso y el server escucha en loopback, así que acá no hay login
-   propio: entra el que ya entró a jimmy, y esa visita queda en el audit. */
-
 const VAULT = "vault";
 
 const VAULT_ACTIONS = {

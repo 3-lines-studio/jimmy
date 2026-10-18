@@ -1,9 +1,3 @@
-//! The web frontend: the same conversations the transports have, served to a
-//! browser over HTTP and SSE.
-//!
-//! What arrives through a transport is watched, not written; the conversations
-//! the web creates are its own and can be written from here.
-
 use crate::agent::Agent;
 use crate::auth::{self, Auth};
 use crate::bus::Bus;
@@ -26,9 +20,6 @@ use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// El final del backlog: lo de antes ya está en pantalla. Lleva cuántos eventos
-/// tiene el log, para que el que mira guarde el número y al volver a la
-/// conversación pida desde ahí en vez de bajar todo de nuevo.
 fn synced(total: usize, first: usize) -> String {
     format!(r#"{{"event":"synced","count":{total},"first":{first}}}"#)
 }
@@ -84,12 +75,10 @@ impl Web {
         })
     }
 
-    /// El nombre para mostrar: la parte del mail antes del arroba.
     fn user(&self, request: &Request) -> Option<String> {
         Some(user_name(self.auth.user(&request.cookie(auth::COOKIE)?)?))
     }
 
-    /// El mail del que entró, que es el actor del audit del vault.
     fn actor(&self, request: &Request) -> Option<String> {
         self.auth.user(&request.cookie(auth::COOKIE)?)
     }
@@ -111,10 +100,6 @@ pub fn listen(port: u16) -> Result<TcpListener, String> {
         .map_err(|e| format!("no pude escuchar en el puerto {port}: {e}"))
 }
 
-/// Un thread por conexión: con la web expuesta, un tope es la diferencia entre
-/// atender y quedarse sin memoria por una cola de pedidos. Con el contenedor en
-/// su tope de tareas, `spawn` falla con EAGAIN: la conexión se contesta con un
-/// 503 y la ronda sigue, porque acá arriba lo que sube es el hilo que atiende.
 const MAX_CONNECTIONS: usize = 64;
 
 pub fn serve(web: Arc<Web>, listener: TcpListener) {
@@ -124,9 +109,6 @@ pub fn serve(web: Arc<Web>, listener: TcpListener) {
             let _ = http::send_error(&mut stream, 503, "demasiados pedidos a la vez");
             continue;
         }
-        // La conexión viaja por el canal y no dentro del hilo: un `spawn` que
-        // falla deja el cierre sin dropear, así que un socket adentro se queda
-        // abierto y el cliente esperando para siempre.
         let (handoff, incoming) = std::sync::mpsc::channel();
         let web = web.clone();
         let live = live.clone();
@@ -255,8 +237,6 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
 const HTML: &str = "text/html; charset=utf-8";
 const TEXT: &str = "text/plain; charset=utf-8";
 
-/// Un preview se sirve crudo: la cabecera se reenvía sin tocarla y lo que sigue
-/// se copia tal cual, así el streaming y el WebSocket de un HMR pasan igual.
 fn preview_page(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(head) = preview::read_head(stream)? else {
         return Ok(());
@@ -305,9 +285,6 @@ const CSS: &str = "text/css; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// El HTML y los íconos se piden por su nombre pelado, así que revalidan siempre.
-/// Todo lo que sale con la versión en la URL se puede guardar para siempre: un
-/// deploy cambia la versión y con ella la URL.
 fn asset(stream: &mut TcpStream, content_type: &str, body: &[u8]) -> std::io::Result<()> {
     http::respond(
         stream,
@@ -325,8 +302,6 @@ fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
     http::send_text(stream, 200, HTML, &versioned(INDEX))
 }
 
-/// Los assets llevan la versión en la URL: cada deploy cambia la URL, así que ni
-/// un proxy ni el navegador pueden seguir sirviendo los viejos.
 fn versioned(page: &str) -> String {
     let version = crate::env("JIMMY_COMMIT_SHA")
         .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
@@ -352,8 +327,6 @@ fn versioned(page: &str) -> String {
         )
 }
 
-/// Pedir el link. La respuesta es siempre la misma, esté o no el mail en la
-/// lista: si no está, no se manda nada y desde afuera no se nota.
 fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let email = request.field("email").unwrap_or_default();
     let sent = serde_json::json!({ "sent": true });
@@ -377,7 +350,6 @@ fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     http::send_json(stream, 200, &sent)
 }
 
-/// El link del mail: sirve una vez, deja la cookie y manda al principio.
 fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(token) = request.param("token") else {
         return http::send_error(stream, 400, "falta el token");
@@ -636,9 +608,6 @@ fn delete_project(
     }
 }
 
-/// Un proyecto se borra si está vacío o si es un clon con todo commiteado y
-/// pusheado. Lo que no está en git se borra solo si el pedido se hace cargo
-/// (`force`): puede tener trabajo adentro que no existe en ningún otro lado.
 fn disposable(dir: &Path, force: bool) -> Result<(), String> {
     if empty(dir) {
         return Ok(());
@@ -664,8 +633,6 @@ fn disposable(dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Un proyecto sin git y con algo adentro: no hay copia en ningún otro lado,
-/// así que borrarlo es una decisión del que lo pide.
 fn unversioned(dir: &Path) -> bool {
     !empty(dir) && !dir.join(".git").exists()
 }
@@ -726,7 +693,6 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
-/// Un adjunto no puede pesar más que una foto de Telegram.
 const MAX_UPLOAD: usize = 10 * 1024 * 1024;
 
 fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -768,8 +734,6 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
 }
 
-/// Los adjuntos ya subidos, leídos del disco: el mensaje viaja con los bytes del
-/// archivo, no con su nombre.
 fn read_attachments(
     conversation: &conversations::Conversation,
     names: &[String],
@@ -784,8 +748,6 @@ fn read_attachments(
         .collect()
 }
 
-/// Los bytes crudos del adjunto, con el nombre aparte en la query: el cuerpo es
-/// el archivo, no lo envuelve ningún JSON.
 fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -811,8 +773,6 @@ fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
-/// Un adjunto de la conversación. Cualquiera adentro puede mirarlo: es lo que
-/// hay en el chat.
 fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -828,8 +788,6 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     http::respond(stream, 200, media::content_type(name), &[], &data)
 }
 
-/// El directorio de un proyecto, o nada si ese nombre no puede ser uno. El
-/// proyecto `general` es el workspace entero: ahí se ve todo lo que hay.
 fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {
         return None;
@@ -838,8 +796,6 @@ fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Una carpeta del proyecto, un nivel. Cada carpeta la pide el que mira cuando
-/// la abre.
 fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -870,9 +826,6 @@ fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     )
 }
 
-/// Un archivo del proyecto. Las imágenes van enteras porque el navegador las
-/// muestra; el texto va cortado en el tope y lo avisa; lo que no es texto sale
-/// como binario, para que el navegador no lo muestre como si fuera una página.
 fn raw(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -924,8 +877,6 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
-/// Cuántas corridas de cada tarea se le muestran a la web: el archivo guarda
-/// muchas más, la vista muestra las últimas.
 const SHOWN: usize = 5;
 
 fn agenda_dir(web: &Web) -> PathBuf {
@@ -985,7 +936,6 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     }
 }
 
-/// Marca leída una tarea, o todas si no viene el nombre.
 fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -997,9 +947,6 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
     }
 }
 
-/// El vault no tiene login propio: entra el mismo mail que ya entró a jimmy, y
-/// ese mail es el actor del audit. Lo que el store rechaza es un 400, porque lo
-/// pidió mal el pedido.
 const AUDIT: usize = 200;
 
 fn vault_call<F>(
@@ -1024,8 +971,6 @@ where
     }
 }
 
-/// Con el vault caído el tab no tiene a dónde entrar, y el motivo es lo que hay
-/// que mostrar: por eso esta ruta contesta 200 y no un error.
 fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.actor(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1136,8 +1081,6 @@ fn vault_token(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
     })
 }
 
-/// Una conversación sin nombre se llama como su primer mensaje, que es lo que
-/// va a buscar el ojo en la lista.
 fn title_from(text: &str) -> String {
     let line = text
         .lines()
@@ -1181,8 +1124,6 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     result
 }
 
-/// Los eventos anteriores al tramo que el cliente tiene: con eso se desplaza
-/// hacia arriba en el hilo sin volver a bajar lo que ya vio.
 fn history(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1343,7 +1284,6 @@ done
     fn whole(mut stream: TcpStream) -> String {
         let mut out = Vec::new();
         stream.read_to_end(&mut out).unwrap();
-        // Un adjunto vuelve como bytes, y para mirar el encabezado alcanza.
         String::from_utf8_lossy(&out).to_string()
     }
 
@@ -1374,7 +1314,6 @@ done
         whole(stream)
     }
 
-    /// Un cuerpo crudo, como el que manda el navegador con el archivo adjunto.
     fn post_bytes(port: u16, path: &str, body: &[u8], cookie: Option<&str>) -> String {
         let mut stream = connect(port);
         let cookie = cookie
@@ -1420,7 +1359,6 @@ done
         json_in(&created)["key"].as_str().unwrap().to_string()
     }
 
-    /// El log lo escribe el hilo del turno, así que hay que esperarlo.
     fn wait_for(root: &Path, key: &str, needle: &str) -> String {
         let path = root.join("chats").join(key).join("conversation.jsonl");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1433,8 +1371,6 @@ done
         }
     }
 
-    /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
-    /// hay proveedor, así que el link vuelve en la misma respuesta.
     fn login(port: u16, email: &str) -> String {
         let response = post(port, "/api/login", &format!(r#"{{"email":"{email}"}}"#));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");

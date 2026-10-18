@@ -52,13 +52,11 @@ CONTROLS_JS = """() => {
     }));
 }"""
 
-
 def session_name(raw):
     name = re.sub(r"[^A-Za-z0-9_-]", "", raw or "")
     if not name:
         raise SystemExit("browse: invalid session name")
     return name
-
 
 def parse_size(raw):
     match = re.fullmatch(r"(\d{2,5})x(\d{2,5})", raw.strip().lower())
@@ -68,7 +66,6 @@ def parse_size(raw):
     if width % 2 or height % 2:
         raise SystemExit("browse: --size must be even, video needs it")
     return {"width": width, "height": height}
-
 
 def selector_for(el):
     if el["id"]:
@@ -83,7 +80,6 @@ def selector_for(el):
         return f"text={el['text']}"
     return el["tag"]
 
-
 def describe(el):
     return {
         "selector": selector_for(el),
@@ -95,18 +91,15 @@ def describe(el):
         "href": el["href"],
     }
 
-
 def clip(text):
     if len(text) <= MAX_TEXT:
         return {"text": text, "truncated": False}
     return {"text": text[:MAX_TEXT], "truncated": True}
 
-
 def run_artifact_dir(session, stamp):
     path = ARTIFACT_DIR / session / stamp
     path.mkdir(parents=True, exist_ok=True)
     return path
-
 
 def purge_old():
     if not ARTIFACT_DIR.is_dir():
@@ -123,7 +116,6 @@ def purge_old():
                 continue
         if not list(session.iterdir()):
             shutil.rmtree(session, ignore_errors=True)
-
 
 def apply_step(page, step, artifacts, results):
     action = step.get("action")
@@ -207,7 +199,6 @@ def apply_step(page, step, artifacts, results):
 
     raise SystemExit(f"browse: unknown action {action!r}")
 
-
 def client_hints(user_agent):
     match = re.search(r"Chrome/(\d+)", user_agent)
     if not match:
@@ -220,7 +211,6 @@ def client_hints(user_agent):
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Linux"',
     }
-
 
 def execute(steps, session, record, viewport, slow, user_agent, locale):
     purge_old()
@@ -286,7 +276,6 @@ def execute(steps, session, record, viewport, slow, user_agent, locale):
         "artifacts": sorted(str(p) for p in artifacts.glob("*.png")) + videos,
     }
 
-
 def parse_steps(raw):
     try:
         steps = json.loads(raw)
@@ -299,12 +288,10 @@ def parse_steps(raw):
             raise SystemExit("browse: every step needs an action")
     return steps
 
-
 def read_steps(source):
     if source in (None, "-"):
         return parse_steps(sys.stdin.read())
     return parse_steps(Path(source).read_text(encoding="utf-8"))
-
 
 def list_files(session):
     root = ARTIFACT_DIR / session
@@ -315,12 +302,10 @@ def list_files(session):
                 entries.append({"path": str(path), "bytes": path.stat().st_size})
     return {"session": session, "files": entries}
 
-
 def list_sessions():
     if not STATE_DIR.is_dir():
         return {"sessions": []}
     return {"sessions": sorted(p.name for p in STATE_DIR.iterdir() if p.is_dir())}
-
 
 def run_options(parser):
     parser.add_argument("--session", default="default")
@@ -331,7 +316,6 @@ def run_options(parser):
     parser.add_argument("--slow", type=int, default=0, help="ms to pause after each step")
     parser.add_argument("--user-agent", help="override the user agent")
     parser.add_argument("--locale", default=DEFAULT_LOCALE)
-
 
 def main():
     parser = argparse.ArgumentParser(prog="browse")
@@ -385,7 +369,6 @@ def main():
     print()
     if not output["ok"]:
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

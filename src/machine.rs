@@ -1,11 +1,3 @@
-//! Lo que la máquina está usando ahora mismo: la memoria del contenedor, el
-//! volumen y cuántos procesos hay.
-//!
-//! La memoria se lee del cgroup, así que es la que ve el que mira el servicio
-//! desde afuera e incluye la page cache y el slab, no sólo el heap de los
-//! procesos. Por eso van desglosadas: para saber si lo que crece es mío o es el
-//! cache de los builds.
-
 use serde::Serialize;
 use std::path::Path;
 
@@ -56,8 +48,6 @@ fn cgroup(name: &str) -> String {
     std::fs::read_to_string(format!("{CGROUP}/{name}")).unwrap_or_default()
 }
 
-/// El volumen del workspace, que es el que se llena. `df` cuenta lo mismo: los
-/// bloques menos los libres.
 fn disk(volume: &Path) -> Disk {
     let Ok(path) = std::ffi::CString::new(volume.as_os_str().as_encoded_bytes()) else {
         return Disk { used: 0, total: 0 };
@@ -89,12 +79,10 @@ fn processes() -> usize {
         .count()
 }
 
-/// El número que hay escrito, o cero: un tope sin límite se llama `max`.
 fn number(text: &str) -> u64 {
     text.trim().parse().unwrap_or(0)
 }
 
-/// La línea del `memory.stat` que arranca con ese nombre.
 fn field(stat: &str, name: &str) -> u64 {
     stat.lines()
         .find_map(|line| {

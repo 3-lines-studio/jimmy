@@ -1,11 +1,3 @@
-//! El vault: heimdall adentro del mismo binario.
-//!
-//! El store vive en el volumen, la master key se lee del entorno (o se genera
-//! y queda en el volumen la primera vez) y el server escucha en loopback, sin
-//! salir del proceso. `HEIMDALL_URL` y `HEIMDALL_TOKEN` apuntan ahí, así
-//! `heimdall` y `doppler` le inyectan variables a un comando sin pasar por
-//! ningún servicio de afuera.
-
 use heimdall::crypto::{self, Key};
 use heimdall::server::{self, Server};
 use heimdall::store::{self, NewToken, Store};
@@ -21,7 +13,6 @@ const TOKEN: &str = "jimmy";
 const PROJECT: &str = "*";
 const ENV: &str = "dev";
 
-/// Hay un vault por proceso y arranca una sola vez, con jimmy.
 static VAULT: OnceLock<Vault> = OnceLock::new();
 
 pub struct Vault {
@@ -29,8 +20,6 @@ pub struct Vault {
     error: Option<String>,
 }
 
-/// Nunca falla: si el store no abre, el error queda guardado y la web lo
-/// muestra. Un vault roto no puede dejar a jimmy sin arrancar.
 pub fn open(root: &Path) {
     VAULT.get_or_init(|| match start(&root.join(DIR)) {
         Ok(server) => Vault {
@@ -47,12 +36,10 @@ pub fn open(root: &Path) {
     });
 }
 
-/// El server del vault de este proceso, o nada si no abrió.
 pub fn server() -> Option<&'static Arc<Server>> {
     VAULT.get()?.server.as_ref()
 }
 
-/// Por qué no hay vault, para poder decirlo.
 pub fn message() -> &'static str {
     VAULT
         .get()
@@ -86,10 +73,6 @@ fn start(dir: &Path) -> Result<Arc<Server>, String> {
     Ok(server)
 }
 
-/// La master key sale del entorno, y si no está, del volumen: la primera vez se
-/// genera y queda ahí. El entorno manda, porque es el que se puede rotar sin
-/// tocar el volumen; que las dos existan y no coincidan es un error y no un
-/// vault que no abre los secretos.
 fn master_key(dir: &Path) -> Result<Key, String> {
     let path = dir.join(KEY_FILE);
     let from_env = crate::env("HEIMDALL_MASTER_KEY");
@@ -124,9 +107,6 @@ fn persist_key(path: &Path) -> Result<String, String> {
     Ok(hex)
 }
 
-/// Un token nuevo por arranque. El valor en claro no queda en disco, así que el
-/// de la corrida anterior se revoca: los comandos que corren ahora son los
-/// únicos que lo tienen.
 fn own_token(store: &Store) -> Result<String, String> {
     for token in store.tokens().map_err(text)? {
         if token.name == TOKEN {
@@ -157,7 +137,6 @@ pub fn text(error: store::Error) -> String {
 mod tests {
     use super::*;
 
-    /// Las dos pruebas tocan HEIMDALL_MASTER_KEY, que es del proceso entero.
     static ENV: Mutex<()> = Mutex::new(());
 
     fn temp(name: &str) -> std::path::PathBuf {

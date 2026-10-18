@@ -1,5 +1,3 @@
-//! Mandar el mail con el link, por Resend.
-
 use std::time::Duration;
 
 const DEFAULT_BASE: &str = "https://api.resend.com";
@@ -12,8 +10,6 @@ pub struct Mail {
 }
 
 impl Mail {
-    /// Sin clave no hay proveedor: en ese caso el link se muestra en pantalla,
-    /// que es como se usa en desarrollo.
     pub fn from_env() -> Option<Mail> {
         let key = crate::env("RESEND_API_KEY")?;
         let from = crate::env("JIMMY_WEB_FROM")?;
@@ -73,7 +69,6 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// Un Resend de mentira: junta el pedido y contesta que sí.
     fn fake_resend() -> (String, std::sync::mpsc::Receiver<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());

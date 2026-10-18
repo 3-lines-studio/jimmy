@@ -1,21 +1,9 @@
-//! The conversation as a client sees it: one JSON event per line, in the chat
-//! directory, next to the transcript.
-//!
-//! The transcript is what the model gets back on the next turn; this is what a
-//! human reads. Both describe the same turn, and the parent is the only writer:
-//! it logs the events the worker sends it, plus the message the user sent.
-
 use crate::protocol::Event;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// How much of the backlog a client gets when it attaches. Enough to open the
-/// conversation in context, and bounded so a long one does not come down the
-/// wire whole.
 pub const REPLAY: usize = 200;
 
-/// Un tramo del log: los eventos que van de `first` a `end`, y cuántos hay en
-/// total, que es lo que el cliente necesita para pedir los anteriores.
 #[derive(Default)]
 pub struct Window {
     pub first: usize,
@@ -34,10 +22,6 @@ impl Log {
         }
     }
 
-    /// El tramo que termina en `end`, de hasta [`REPLAY`] eventos. Arranca donde
-    /// arranca un turno: un corte en el medio dejaría un grupo de tools partido.
-    /// Si el tramo no abarca ni un turno, el corte se corre hacia atrás hasta el
-    /// último, que es lo que lo deja entero.
     pub fn window(&self, end: usize) -> Window {
         let all = self.read();
         let end = end.min(all.len());

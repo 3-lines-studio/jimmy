@@ -1,12 +1,3 @@
-//! One worker process per conversation. It owns the axe session and the
-//! transcript in the chat directory, and speaks the JSONL protocol with the
-//! parent that spawned it: a prompt or a resume in, events out.
-//!
-//! The turn logic is the same code the parent used to run in process; what
-//! changes is that it now happens in a process of its own, with its own
-//! working directory and its own children. The parent talks to the chat, the
-//! worker talks to the model.
-
 use crate::agent::Inflight;
 use crate::protocol::{Command, Event};
 use crate::transport::{Msg, Session, Transport};
@@ -29,8 +20,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let pipe = Pipe::new();
     agent.set_pipe(pipe.clone());
 
-    // El turno corre en este hilo, así que alguien tiene que seguir leyendo la
-    // entrada: es lo que deja cancelar sin esperar a que termine.
     let cancel = Arc::new(AtomicBool::new(false));
     agent.set_cancel(cancel.clone());
     let (commands, incoming) = std::sync::mpsc::channel();
@@ -88,7 +77,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Una cancelación se atiende acá mismo; el resto va para el hilo del turno.
 fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
@@ -113,8 +101,6 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
     });
 }
 
-/// The worker's end of the pipe: every event it tells the parent goes through
-/// here, whether it comes from the turn or from the session machinery.
 #[derive(Default)]
 pub struct Pipe {
     answered: AtomicBool,
@@ -180,10 +166,6 @@ impl Transport for Pipe {
     }
 }
 
-/// Baja a todo lo que cuelga de este proceso: las tools que están corriendo
-/// (un bash, un Chromium) y lo que ellas hayan arrancado, nietos incluidos.
-/// Se llama desde el hilo que lee comandos, así que el turno lo nota apenas
-/// su tool desaparece.
 fn kill_descendants() {
     for pid in descendants_of(std::process::id() as i32) {
         unsafe { libc::kill(pid, libc::SIGKILL) };

@@ -4,12 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Cuántas entradas del proyecto en curso entran al prompt. El resto vive en su
-/// archivo y vuelve cuando el tema vuelve: no hay tope que desaloje nada.
 const PROJECT_ENTRIES: usize = 2;
-/// Los tipos con los que se clasifica una entrada. La lista es corta a
-/// propósito: con el vocabulario abierto cada entrada inventaba el suyo y el
-/// tipo terminaba sin servir para nada.
 const KINDS: [&str; 8] = [
     "decision",
     "estado",
@@ -53,13 +48,10 @@ fn level2_path(workspace: &Path) -> PathBuf {
     workspace.join("notes/memory.jsonl")
 }
 
-/// Los hechos transversales: uno por archivo, y todos entran al prompt.
 fn facts_dir(workspace: &Path) -> PathBuf {
     workspace.join("notes/memory")
 }
 
-/// Los hechos de cada proyecto, un archivo por proyecto. Viven fuera del clon
-/// porque un `git clean -fd` se llevaría lo que no esté commiteado.
 fn projects_dir(workspace: &Path) -> PathBuf {
     workspace.join("notes/projects")
 }
@@ -112,8 +104,6 @@ fn merge(into: &mut Level1, other: Level1) {
     into.malformed += other.malformed;
 }
 
-/// Los hechos transversales: uno por archivo, y todos entran al prompt. Mientras
-/// no exista la carpeta, el `notes/memory.md` de antes.
 fn transversal(workspace: &Path) -> Level1 {
     let dir = facts_dir(workspace);
     if !dir.is_dir() {
@@ -182,8 +172,6 @@ pub fn render(workspace: &Path, project: &str) -> String {
     if outside.is_empty() {
         return text.trim().to_string();
     }
-    // Lo que quedó afuera está en el archivo del proyecto: el aviso sirve para
-    // saber que existe, no para pedir que alguien consolide nada.
     format!(
         "{}\n\n[en `notes/projects/{project}.md` y afuera del prompt: {}]",
         text.trim(),

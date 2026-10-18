@@ -1,7 +1,3 @@
-//! The worker as a process: it boots from the environment, speaks the JSONL
-//! protocol, resumes a turn that was cut short, runs a whole turn against a
-//! model it does not know is fake, and tells every step of the way.
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
@@ -50,7 +46,6 @@ impl Worker {
             .expect("no pude leer del worker")
     }
 
-    /// Reads until the turn ends, whatever happened in between.
     fn until_done(&mut self) -> Vec<String> {
         let mut events = Vec::new();
         loop {
@@ -104,8 +99,6 @@ fn tool_chunk(command: &str) -> String {
     )
 }
 
-/// An OpenAI-compatible endpoint that answers with one body per request, in
-/// order. Returns the base URL and how many requests it served.
 fn model_server(bodies: Vec<String>) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -161,8 +154,6 @@ fn resumes_a_turn_that_was_cut_short() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// Takes the turn of that chat the way another instance would: the same
-/// `inflight` file, locked until the returned handle goes away.
 fn hold_the_turn(chat: &Path) -> std::fs::File {
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -310,8 +301,6 @@ fn a_tool_call_shows_up_as_events() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// Two tool calls in one assistant message: they run in parallel and each
-/// result lands when it is ready, not in call order.
 fn parallel_tool_chunk(first: &str, second: &str) -> String {
     let args = |command: &str| serde_json::json!({"command": command}).to_string();
     let calls = serde_json::json!({
@@ -327,8 +316,6 @@ fn parallel_tool_chunk(first: &str, second: &str) -> String {
     )
 }
 
-/// Whatever the order they finish in, the results stay with the call that
-/// asked for them: the provider rejects anything else.
 #[test]
 fn a_parallel_batch_lands_next_to_its_call() {
     let root = scratch("batch");
@@ -372,8 +359,6 @@ fn the_tools_run_in_the_project_the_conversation_belongs_to() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// El botón de pausa tiene que cortar el turno y el proceso que la tool
-/// arrancó, no esperar a que terminen solos.
 #[test]
 fn cancelling_a_running_tool_stops_it_at_once() {
     let root = scratch("cancel");

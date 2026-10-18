@@ -18,11 +18,9 @@ PNG = base64.b64decode(
 )
 NOTA = "hola desde el árbol\n"
 
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
-
 
 def call(path, cookie=None):
     headers = {"Cookie": cookie} if cookie else {}
@@ -31,7 +29,6 @@ def call(path, cookie=None):
         return urllib.request.urlopen(request)
     except urllib.error.HTTPError as error:
         return error
-
 
 body = json.dumps({"email": EMAIL}).encode()
 request = urllib.request.Request(

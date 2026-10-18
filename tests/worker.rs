@@ -1,6 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -165,16 +164,60 @@ fn transcript(chat: &Path) -> String {
     out
 }
 
-fn hold_the_turn(chat: &Path) -> std::fs::File {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(chat.join("inflight"))
-        .unwrap();
-    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    assert_eq!(taken, 0, "no pude tomar el turno");
-    file
+struct Held {
+    pid: libc::pid_t,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.pid, libc::SIGKILL);
+            libc::waitpid(self.pid, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+fn hold_the_turn(chat: &Path) -> Held {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(chat.join("inflight").as_os_str().as_bytes()).unwrap();
+    let mut pipe = [0i32; 2];
+    assert_eq!(
+        unsafe { libc::pipe(pipe.as_mut_ptr()) },
+        0,
+        "no pude abrir el pipe"
+    );
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "no pude forkear");
+    if pid == 0 {
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            libc::close(pipe[0]);
+            let file = libc::open(
+                path.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC,
+                0o644,
+            );
+            let taken = file >= 0 && libc::flock(file, libc::LOCK_EX | libc::LOCK_NB) == 0;
+            let answer = [u8::from(taken)];
+            libc::write(pipe[1], answer.as_ptr().cast(), 1);
+            if !taken {
+                libc::_exit(1);
+            }
+            loop {
+                libc::pause();
+            }
+        }
+    }
+    unsafe { libc::close(pipe[1]) };
+    let mut answer = [0u8; 1];
+    let read = unsafe { libc::read(pipe[0], answer.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(pipe[0]) };
+    if read != 1 || answer[0] != 1 {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        panic!("no pude tomar el turno");
+    }
+    Held { pid }
 }
 
 #[test]

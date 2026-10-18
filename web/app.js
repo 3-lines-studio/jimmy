@@ -874,6 +874,7 @@ function unsubscribe(tab) {
 function clearTab(tab) {
   tab.transcript.replaceChildren();
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
   tab.tools = {};
   tab.count = 0;
@@ -1079,13 +1080,40 @@ function render(tab, event) {
   }
 }
 
-function scroll(tab) {
-  if (tab.follow) {
+let frame = 0;
+const pendingText = new Map();
+
+function scheduleFrame() {
+  if (frame) return;
+  frame = requestAnimationFrame(flushFrame);
+}
+
+function pushText(node, text) {
+  let chunks = pendingText.get(node);
+  if (!chunks) pendingText.set(node, (chunks = []));
+  chunks.push(text);
+  scheduleFrame();
+}
+
+function flushFrame() {
+  frame = 0;
+  for (const [node, chunks] of pendingText) node.appendData(chunks.join(""));
+  pendingText.clear();
+  for (const tab of tabs.values()) {
+    if (!tab.toBottom) continue;
+    tab.toBottom = false;
     tab.transcript.scrollTop = tab.transcript.scrollHeight;
+  }
+}
+
+function scroll(tab) {
+  if (!tab.follow) {
+    tab.down.hidden = false;
+    renderNav(tab);
     return;
   }
-  tab.down.hidden = false;
-  renderNav(tab);
+  tab.toBottom = true;
+  scheduleFrame();
 }
 
 function append(tab, element) {
@@ -1112,6 +1140,7 @@ function renderUser(tab, event) {
   }
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1150,11 +1179,11 @@ function renderDelta(tab, event) {
   if (!tab.live) {
     tab.live = document.createElement("div");
     tab.live.className = "event assistant streaming";
-    tab.live.dataset.raw = "";
+    tab.liveText = document.createTextNode("");
+    tab.live.append(tab.liveText);
     append(tab, tab.live);
   }
-  tab.live.dataset.raw += event.text;
-  tab.live.textContent = tab.live.dataset.raw;
+  pushText(tab.liveText, event.text);
   scroll(tab);
 }
 
@@ -1168,6 +1197,7 @@ function renderAssistant(tab, event) {
   tab.live.innerHTML = markdown(event.text);
   decorate(tab.live, event.text);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
   scroll(tab);
 }
@@ -1219,6 +1249,7 @@ function renderError(tab, event) {
   element.textContent = event.message;
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1228,6 +1259,7 @@ function renderStopped(tab, event) {
   element.textContent = `${event.author} frenó el turno`;
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1260,7 +1292,7 @@ function startTool(tab, event) {
 
   const body = document.createElement("div");
   body.className = "body";
-  const entry = { details, body, meta, output: null, stat: "", group: null };
+  const entry = { details, body, meta, output: null, text: null, stat: "", group: null };
   if (event.name === "edit") {
     const diff = diffNodes(event.args);
     body.append(...diff.nodes);
@@ -1273,6 +1305,8 @@ function startTool(tab, event) {
     meta.textContent = diff.stat;
   } else {
     const output = document.createElement("pre");
+    entry.text = document.createTextNode("");
+    output.append(entry.text);
     body.append(output);
     entry.output = output;
   }
@@ -1282,6 +1316,7 @@ function startTool(tab, event) {
   group.list.append(details);
   tab.tools[event.id] = entry;
   tab.live = null;
+  tab.liveText = null;
   scroll(tab);
 }
 
@@ -1342,8 +1377,8 @@ function elapsed(ms) {
 
 function streamTool(tab, event) {
   const tool = tab.tools[event.id];
-  if (!tool || !tool.output) return;
-  tool.output.textContent += event.text;
+  if (!tool || !tool.text) return;
+  pushText(tool.text, event.text);
   scroll(tab);
 }
 

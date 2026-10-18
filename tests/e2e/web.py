@@ -59,7 +59,12 @@ elif COMMAND == "create":
 elif COMMAND == "send":
     call(
         "/api/send",
-        {"conversation": ARGS[0], "text": ARGS[1], "images": ARGS[2:]},
+        {
+            "conversation": ARGS[0],
+            "text": ARGS[1],
+            "images": ARGS[2:],
+            "request_id": os.environ.get("REQUEST", ""),
+        },
     )
     print("SEND 202", flush=True)
 elif COMMAND == "photo":
@@ -70,6 +75,9 @@ elif COMMAND == "photo":
         method="POST",
     )
     print(json.load(urllib.request.urlopen(request))["name"], flush=True)
+elif COMMAND == "agenda":
+    call("/api/agenda/run", {"name": ARGS[0]})
+    print("AGENDA 200", flush=True)
 elif COMMAND == "cancel":
     call("/api/cancel", {"conversation": ARGS[0]})
     print("CANCEL 200", flush=True)

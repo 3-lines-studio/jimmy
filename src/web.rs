@@ -730,6 +730,7 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
+    let request_id = request.field("request_id").unwrap_or_default();
 
     let web = web.clone();
     std::thread::spawn(move || {
@@ -743,7 +744,10 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
             }
             return;
         }
-        if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
+        if let Err(error) =
+            web.agent
+                .respond_with(&Null, &session, &text, images, &user, &request_id)
+        {
             eprintln!("jimmy web: {error}");
         }
     });

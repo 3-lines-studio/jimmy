@@ -1552,6 +1552,7 @@ function grow() {
 }
 
 inputEl.addEventListener("input", () => {
+  requestId = null;
   grow();
   sayTyping();
 });
@@ -1565,6 +1566,8 @@ function sayTyping() {
   api("/api/typing", { conversation: activeId });
 }
 
+let requestId = null;
+
 composerEl.onsubmit = async (formEvent) => {
   formEvent.preventDefault();
   if (!activeId) return;
@@ -1572,8 +1575,15 @@ composerEl.onsubmit = async (formEvent) => {
   const text = inputEl.value.trim();
   if (!text && !list.length) return;
   const images = list.map((item) => item.name);
-  const sent = await api("/api/send", { conversation: activeId, text, images });
+  if (!requestId) requestId = crypto.randomUUID();
+  const sent = await api("/api/send", {
+    conversation: activeId,
+    text,
+    images,
+    request_id: requestId,
+  });
   if (!sent || !sent.started) return;
+  requestId = null;
   inputEl.value = "";
   grow();
   clearPending();

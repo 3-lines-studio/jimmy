@@ -29,7 +29,12 @@ check() {
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
 
 say "preparo el root"
-mkdir -p "$WORK/root/workspace/projects/ken"
+mkdir -p "$WORK/root/workspace/projects/ken" "$WORK/root/workspace/state/schedule"
+cat >"$WORK/root/workspace/state/schedule/prueba.toml" <<'EOF'
+when = "2030-01-01 00:00"
+prompt = "decime hola"
+silent = true
+EOF
 echo "no se sirve" >"$WORK/root/secreto.txt"
 
 free_port() {
@@ -102,6 +107,14 @@ check "el stream marca dónde termina el backlog" $?
 rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
+say "un pedido repetido no corre dos veces"
+REQUEST=dup-1 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "repetido una vez"
+sleep 8
+REQUEST=dup-1 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "repetido una vez"
+sleep 8
+COUNT=$(rg -o 'repetido una vez' "$CHAT/journal.jsonl" "$CHAT/state.json" 2>/dev/null | wc -l)
+[ "$COUNT" = "1" ] && check "el pedido quedó una sola vez" 0 || check "el pedido quedó una sola vez" 1
+
 say "una foto por la web"
 NAME=$(python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" photo "$KEY")
 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "" "$NAME"
@@ -145,6 +158,14 @@ rg -q '^ESC 6 rutas rechazadas$' "$WORK/files.log"
 check "no se puede salir de la carpeta del proyecto" $?
 rg -q '^ANON 401$' "$WORK/files.log"
 check "sin sesión no hay árbol" $?
+
+say "la agenda, a mano"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" agenda prueba
+sleep 10
+rg -q '"ok":true' "$WORK/root/workspace/state/schedule/prueba.jsonl"
+check "la agenda corrió y guardó el run" $?
+rg -q '"kind":"agenda"' "$WORK/root/workspace/state/schedule/durable" 2>/dev/null
+check "la agenda tiene su task durable" $?
 
 say "el comando de compactar, por la web"
 python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "/compact"

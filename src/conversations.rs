@@ -348,7 +348,7 @@ fn discovered(root: &Path) -> Vec<String> {
     keys
 }
 
-fn is_conversation(path: &Path) -> bool {
+pub(crate) fn is_conversation(path: &Path) -> bool {
     [
         "transcript.jsonl",
         "conversation.jsonl",

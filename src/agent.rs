@@ -191,9 +191,29 @@ impl Agent {
         images: Vec<Image>,
         author: &str,
     ) -> Result<(), String> {
-        self.announce(session, text, &images, author);
+        self.respond_with(transport, session, text, images, author, "")
+    }
+
+    pub fn respond_with(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        text: &str,
+        images: Vec<Image>,
+        author: &str,
+        request: &str,
+    ) -> Result<(), String> {
+        if request.is_empty() {
+            self.announce(session, text, &images, author);
+        }
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
+        if !request.is_empty() {
+            if self.admitted(session, request) {
+                return Ok(());
+            }
+            self.announce(session, text, &images, author);
+        }
         self.relay(
             transport,
             session,
@@ -201,8 +221,28 @@ impl Agent {
                 text: text.to_string(),
                 images,
                 author: author.to_string(),
+                request: request.to_string(),
             },
         )
+    }
+
+    fn admitted(&self, session: &Session, request: &str) -> bool {
+        let dir = self.conversation(session).dir;
+        if !dir.join("state.json").exists() && !dir.join("journal.jsonl").exists() {
+            return false;
+        }
+        Journal::load_tasks(&dir)
+            .map(|tasks| {
+                tasks.iter().any(|task| {
+                    task.kind == "turn"
+                        && task
+                            .checkpoint
+                            .get("request")
+                            .and_then(|value| value.as_str())
+                            == Some(request)
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub fn resume(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
@@ -301,12 +341,29 @@ impl Agent {
         text: &str,
         images: Vec<Image>,
         author: &str,
+        request: &str,
     ) -> Result<(), String> {
         let dir = self.conversation(session).dir;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut journal = store::open(&dir)?;
         let mut entries = store::entries(&mut journal)?;
+        let duplicate = !request.is_empty()
+            && journal.tasks().any(|task| {
+                task.kind == "turn"
+                    && task
+                        .checkpoint
+                        .get("request")
+                        .and_then(|value| value.as_str())
+                        == Some(request)
+            });
+        if duplicate {
+            let history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
+            let reply = final_answer(&history).unwrap_or_default().to_string();
+            transport.answer(session, None, &reply);
+            let _ = std::fs::remove_file(dir.join("inflight"));
+            return Ok(());
+        }
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
 
@@ -326,7 +383,7 @@ impl Agent {
             old.phase = "superseded".into();
             tasks.push(old);
         }
-        let task = store::new_turn(&mut journal);
+        let task = store::new_turn(&mut journal, request);
         tasks.push(task.clone());
         journal
             .commit(vec![entry.clone()], tasks)
@@ -364,7 +421,7 @@ impl Agent {
                     _ => 0,
                 };
                 journal.append(vec![entry]).map_err(|e| e.to_string())?;
-                let _ = journal.snapshot_with(drop_superseded_images);
+                snapshot_now(&mut journal);
                 let report = format!("🧹 compactado: {}K tokens", before / 1000);
                 transport.answer(session, None, &report);
             }
@@ -388,7 +445,7 @@ impl Agent {
         session::drop_incomplete_tool_calls(&mut history);
         let mut task = match store::live_turn(&journal).cloned() {
             Some(task) => task,
-            None => store::new_turn(&mut journal),
+            None => store::new_turn(&mut journal, ""),
         };
         task.state = TaskState::Running;
         task.phase = "request".into();
@@ -724,7 +781,7 @@ impl Agent {
         }
         match journal.append(vec![Entry::Reset]) {
             Ok(_) => {
-                let _ = journal.snapshot_with(drop_superseded_images);
+                snapshot_now(&mut journal);
                 "🧹 contexto borrado".into()
             }
             Err(e) => format!("⚠️ no pude borrar: {e}"),
@@ -1133,7 +1190,7 @@ fn checkpoint(
             Some(mut record) => {
                 record.state = state;
                 record.phase = phase.into();
-                record.checkpoint = value;
+                merge(&mut record, value);
                 if !matches!(state, TaskState::Failed | TaskState::Blocked) {
                     record.attempts = 0;
                 }
@@ -1162,17 +1219,65 @@ fn settle(
     if let Some(mut record) = journal.task(task).cloned() {
         record.state = state;
         record.phase = phase.into();
-        record.checkpoint = value;
+        merge(&mut record, value);
         let _ = journal.commit(Vec::new(), vec![record]);
     }
 }
 
+fn merge(record: &mut axe::durable::TaskRecord, value: serde_json::Value) {
+    if value.is_null() {
+        return;
+    }
+    match (record.checkpoint.as_object_mut(), value.as_object()) {
+        (Some(current), Some(next)) => {
+            for (key, value) in next {
+                current.insert(key.clone(), value.clone());
+            }
+        }
+        _ => record.checkpoint = value,
+    }
+}
+
+const KEPT_TURNS: usize = 32;
+
+fn snapshot_now(journal: &mut Journal) {
+    prune_tasks(journal);
+    let _ = journal.snapshot_with(drop_superseded_images);
+}
+
 fn snapshot(journal: &mut Option<Journal>) {
     if let Some(journal) = journal {
+        prune_tasks(journal);
         if let Err(error) = journal.maybe_snapshot_with(drop_superseded_images) {
             eprintln!("jimmy: no pude guardar el snapshot: {error}");
         }
     }
+}
+
+fn prune_tasks(journal: &mut Journal) {
+    let mut finished: Vec<u64> = journal
+        .tasks()
+        .filter(|task| task.kind == "turn" && finished(task.state))
+        .map(|task| task.id)
+        .collect();
+    if finished.len() <= KEPT_TURNS {
+        return;
+    }
+    finished.sort_unstable();
+    let cut = finished[finished.len() - KEPT_TURNS];
+    journal
+        .retain_tasks(|task| task.kind != "turn" || !finished_state(task.state) || task.id >= cut);
+}
+
+fn finished(state: TaskState) -> bool {
+    finished_state(state)
+}
+
+fn finished_state(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Done | TaskState::Failed | TaskState::Cancelled
+    )
 }
 
 fn drop_superseded_images(records: &mut [Record]) {
@@ -1756,6 +1861,31 @@ done
             path: format!("/chats/x/uploads/{name}"),
             url: url.into(),
         }
+    }
+
+    #[test]
+    fn a_snapshot_keeps_only_the_newest_finished_turns() {
+        let dir = resume_dir("turns");
+        let mut journal = store::open(&dir).unwrap();
+        let mut tasks = Vec::new();
+        for _ in 0..KEPT_TURNS + 8 {
+            let mut task = store::new_turn(&mut journal, "");
+            task.state = TaskState::Done;
+            tasks.push(task);
+        }
+        let live = store::new_turn(&mut journal, "");
+        tasks.push(live.clone());
+        journal.commit(Vec::new(), tasks).unwrap();
+        snapshot_now(&mut journal);
+        drop(journal);
+
+        let kept = Journal::load_tasks(&dir).unwrap();
+        assert_eq!(kept.len(), KEPT_TURNS + 1);
+        assert!(kept.iter().any(|task| task.id == live.id));
+        assert_eq!(
+            kept.iter().map(|task| task.id).min().unwrap(),
+            live.id - KEPT_TURNS as u64
+        );
     }
 
     #[test]

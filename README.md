@@ -192,7 +192,7 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 src/main.rs       config, event loop, per-session locking, send/skill CLIs
 src/transport/    the transport seam, with the Slack adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
-src/schedule.rs   scheduled tasks, clean-context runs
+src/schedule.rs   scheduled tasks: clean-context runs, retried and parked
 src/skill.rs      the skills directory: list and load
 src/markdown.rs   splitting long messages, closing and reopening code fences
 bin/              the CLIs the agent gets: browse, gen-image, stats

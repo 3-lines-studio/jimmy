@@ -323,8 +323,8 @@ its own, usually by cloning a private repo there.
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.
-Jimmy creates it at startup with a fixed layout and `prompts/workspace.md` tells
-the agent to keep to it:
+Jimmy creates it at startup with a fixed layout and the default prompt
+(`prompts/jimmy.md`) tells the agent to keep to it:
 
 - `notes/` — long-lived notes and memory
 - `projects/` — one directory per piece of work; code or not (a repo, a document,
@@ -352,7 +352,9 @@ Jimmy appends the fragments it is told to, in order, separated by a blank line,
 then the runtime context and the memory.
 
 `JIMMY_PROMPT` is a comma-separated list of fragment names. The default is
-`identidad,estilo,codigo,jimmy,herramientas,dev,workspace,memoria,agenda,git`.
+`jimmy`: identity, language, own CLIs, git and the workspace layout. `data` and
+`contenido` ship with the image but stay opt-in. Everything else is a skill,
+loaded on demand.
 Each name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then
 under the image's `/usr/local/share/jimmy/prompts`. A name with no file is a
 startup error, so a typo fails loudly instead of dropping a fragment in silence.
@@ -362,7 +364,7 @@ same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
 `JIMMY_PROMPT`:
 
 ```sh
-JIMMY_PROMPT=identidad,estilo,herramientas,workspace,memoria,agenda
+JIMMY_PROMPT=jimmy,data
 ```
 
 A fragment may carry `{{clave}}` placeholders. `JIMMY_VARS` supplies them as

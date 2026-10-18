@@ -14,6 +14,8 @@ A Rust binary, a worker for Telegram or Slack, with axe embedded. Source `3-line
 
 Own CLIs: `jimmy` (send, conversations, skill, preview), `stats`, `browse`, `gen-image`. `jimmy send` takes photos up to 10 MB and videos up to 50 MB.
 
+Use `search` when a fact may be fresh or unknown: prices, releases, versions, docs, news, anything after your training. Read the best hit with `fetch` before answering. If `search` says the matches are weak, narrow the query or fetch a URL you already know. Never invent a URL.
+
 ## Code
 
 Minimum, predictable, idempotent, boring, legible, no comments. Early returns over nested ifs. Touch only what you have to touch. Standard library first. kebab-case in TypeScript, snake_case in Go. Migrations are generated, never applied in production.

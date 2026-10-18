@@ -159,6 +159,10 @@ impl Agent {
         self.pool.running(key)
     }
 
+    pub fn busy(&self) -> bool {
+        self.pool.busy()
+    }
+
     pub(crate) fn set_cwd(&mut self, cwd: &str) {
         self.cwd = cwd.to_string();
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);

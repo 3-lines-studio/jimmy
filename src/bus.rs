@@ -14,6 +14,7 @@ struct Connection {
 pub struct Bus {
     connections: Mutex<Vec<Connection>>,
     next: AtomicU64,
+    version: AtomicU64,
 }
 
 impl Bus {
@@ -21,6 +22,7 @@ impl Bus {
         Arc::new(Bus {
             connections: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
+            version: AtomicU64::new(0),
         })
     }
 
@@ -66,7 +68,12 @@ impl Bus {
         tell_who_is_online(&mut connections);
     }
 
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
+    }
+
     pub fn publish(&self, key: &str, log: &Log, event: &Event) {
+        self.version.fetch_add(1, Ordering::Relaxed);
         let mut connections = self.connections.lock().unwrap();
         if !matches!(
             event,

@@ -52,6 +52,7 @@ pub struct Web {
     auth: Auth,
     previews: Arc<Previews>,
     agenda: Sender<String>,
+    listing: conversations::Listing,
 }
 
 impl Web {
@@ -72,6 +73,7 @@ impl Web {
             auth,
             previews,
             agenda,
+            listing: conversations::Listing::new(),
         })
     }
 
@@ -395,8 +397,10 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let projects: Vec<serde_json::Value> = conversations::projects(&web.root, &web.workspace)
-        .into_iter()
+    let projects: Vec<serde_json::Value> = web
+        .listing
+        .projects(&web.root, &web.workspace, web.bus.version())
+        .iter()
         .map(|project| {
             let conversations: Vec<serde_json::Value> = project
                 .conversations
@@ -422,7 +426,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "last": project
                     .conversations
                     .iter()
-                    .find_map(|conversation| conversations::last_message(&conversation.dir)),
+                    .find_map(|conversation| web.listing.last(&conversation.dir)),
                 "conversations": conversations,
             })
         })
@@ -462,7 +466,10 @@ fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         .field("title")
         .unwrap_or_else(|| conversations::NEW_TITLE.to_string());
     match conversations::create(&web.root, &web.workspace, &project, &title) {
-        Ok(key) => http::send_json(stream, 200, &serde_json::json!({ "key": key })),
+        Ok(key) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "key": key }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -491,6 +498,7 @@ fn create_project(
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return http::send_error(stream, 500, &error.to_string());
     }
+    web.listing.invalidate();
     http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
@@ -504,11 +512,14 @@ fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     match conversations::rename(&web.root, &key, &title) {
-        Ok(()) => http::send_json(
-            stream,
-            200,
-            &serde_json::json!({ "key": key, "title": title }),
-        ),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(
+                stream,
+                200,
+                &serde_json::json!({ "key": key, "title": title }),
+            )
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -526,7 +537,10 @@ fn delete_conversation(
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     match web.agent.delete(&key) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "deleted": true }))
+        }
         Err(error) => http::send_error(stream, 500, &error),
     }
 }
@@ -546,7 +560,10 @@ fn rename_project(
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
     match conversations::rename_project(&web.root, &web.workspace, from.trim(), to) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "name": to }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -566,7 +583,10 @@ fn duplicate_project(
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
     match conversations::duplicate(&web.workspace, from.trim(), to) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "name": to }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -595,16 +615,21 @@ fn delete_project(
     if let Err(why) = disposable(&dir, request.flag("force")) {
         return http::send_error(stream, 400, &format!("no lo borro: {why}"));
     }
-    let conversations = conversations::projects(&web.root, &web.workspace)
-        .into_iter()
+    let conversations = web
+        .listing
+        .projects(&web.root, &web.workspace, web.bus.version())
+        .iter()
         .find(|project| project.name == name)
-        .map(|project| project.conversations)
+        .map(|project| project.conversations.clone())
         .unwrap_or_default();
     for conversation in conversations {
         let _ = web.agent.delete(&conversation.key);
     }
     match std::fs::remove_dir_all(&dir) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "deleted": true }))
+        }
         Err(error) => http::send_error(stream, 500, &error.to_string()),
     }
 }

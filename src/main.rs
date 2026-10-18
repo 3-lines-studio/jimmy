@@ -86,6 +86,9 @@ fn invoked_as() -> Option<String> {
 
 fn heimdall_command(name: &str) -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if env("HEIMDALL_DIR").is_none() {
+        std::env::set_var("HEIMDALL_DIR", vault::dir(&root_from_env()));
+    }
     match heimdall::cli::run(&args) {
         Ok(()) => 0,
         Err(e) => {

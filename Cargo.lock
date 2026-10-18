@@ -27,7 +27,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "axe"
 version = "0.1.0"
-source = "git+https://github.com/3-lines-studio/axe?rev=21674cf698a059ecd6c98d4db5fd60b77ca539d9#21674cf698a059ecd6c98d4db5fd60b77ca539d9"
+source = "git+https://github.com/3-lines-studio/axe?rev=3ae9c9793e868cc4c90908b9d345ba51fe97a5bb#3ae9c9793e868cc4c90908b9d345ba51fe97a5bb"
 dependencies = [
  "libc",
  "serde",
@@ -342,7 +342,7 @@ dependencies = [
 [[package]]
 name = "heimdall"
 version = "0.1.0"
-source = "git+https://github.com/3-lines-studio/heimdall?rev=d7d2b201aa091f022f94f6fd1653c19655738a71#d7d2b201aa091f022f94f6fd1653c19655738a71"
+source = "git+https://github.com/3-lines-studio/heimdall?rev=2e7fc8ca37c137007a0cee0338e9d35ca6d3c4dd#2e7fc8ca37c137007a0cee0338e9d35ca6d3c4dd"
 dependencies = [
  "blake3",
  "chacha20poly1305",

@@ -1012,10 +1012,10 @@ where
     let Some(actor) = web.actor(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let Some(server) = vault::server() else {
+    let Some(held) = vault::store() else {
         return http::send_error(stream, 503, vault::message());
     };
-    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = held.lock().unwrap_or_else(|e| e.into_inner());
     match run(&store, &actor) {
         Ok(body) => http::send_json(stream, 200, &body),
         Err(e) => http::send_error(stream, 400, &vault::text(e)),
@@ -1026,11 +1026,11 @@ fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
     if web.actor(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let Some(server) = vault::server() else {
+    let Some(held) = vault::store() else {
         let body = serde_json::json!({ "enabled": false, "error": vault::message() });
         return http::send_json(stream, 200, &body);
     };
-    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = held.lock().unwrap_or_else(|e| e.into_inner());
     match panel(&store) {
         Ok(body) => http::send_json(stream, 200, &body),
         Err(e) => http::send_error(stream, 400, &vault::text(e)),

@@ -12,11 +12,11 @@ use std::sync::Arc;
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
     let config = Config::from_env()?;
+    crate::vault::open(&config.root);
     let mut agent = crate::build_agent(&config)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
-    if let Some(cwd) = crate::flag(&args, "--cwd") {
-        agent.set_cwd(&cwd);
-    }
+    let cwd = crate::flag(&args, "--cwd").unwrap_or_else(|| config.workspace.clone());
+    agent.set_cwd(&cwd);
     let pipe = Pipe::new();
     agent.set_pipe(pipe.clone());
 
@@ -36,6 +36,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
         if matches!(command, Command::Cancel) {
             continue;
+        }
+        if matches!(command, Command::Prompt { .. }) {
+            crate::vault::inject(Path::new(&cwd));
         }
         let dir = agent.conversation(&session).dir;
         if let Err(e) = std::fs::create_dir_all(&dir) {

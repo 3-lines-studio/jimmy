@@ -61,7 +61,6 @@ RUN ln -sf /usr/local/bin/jimmy /usr/local/bin/heimdall \
 
 ENV XDG_CONFIG_HOME=/root/.config
 COPY skills /usr/local/share/jimmy/skills
-COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image

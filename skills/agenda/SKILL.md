@@ -16,7 +16,7 @@ target = "123456789"
 prompt = "Tell the user to run the tests before merging."
 ```
 
-- `prompt` — what it has to do. It does not see the chat: if it needs the thread, tell it to use `recall`.
+- `prompt` — what it has to do. It does not see the chat: if it needs the thread, tell it to read the chat's transcript with `rg`.
 - `target` — a backup notice: which chat the answer is sent to **as well**. It is the `Chat actual` of the environment block. The agenda lives in the web, so the run is the same without `target`, and if the chat does not exist the task still runs and the history says it did not go out.
 - `silent = true` — the task only speaks when it has something to say: it shows no progress indicator and, if the answer comes out empty, sends nothing. For watchdogs that report only failures.
 - `paused = true` — it does not run, but stays in the list.

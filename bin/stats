@@ -23,66 +23,21 @@ def events(path):
     for source in sources(path):
         yield from read_jsonl(source)
 
-def memory_events():
-    workspace = os.environ.get("JIMMY_WORKSPACE") or "/data/workspace"
-    path = os.path.join(workspace, "state", "memory-events.jsonl")
-    if not os.path.isfile(path):
-        return []
-    return list(read_jsonl(path))
-
 def median(values):
     ordered = sorted(values)
     return ordered[len(ordered) // 2]
-
-def report_memory(events):
-    def of(op):
-        return [event for event in events if event.get("op") == op]
-
-    def total(rows, field):
-        return sum(row.get(field, 0) for row in rows)
-
-    syncs = of("sync")
-    renders = of("render")
-    misses = of("miss")
-
-    if syncs:
-        last = syncs[-1]
-        print(f"memoria — {last['entries']} hechos · {last['bytes']} bytes")
-        print(
-            f"sync — {len(syncs)} corridas"
-            f" · {total(syncs, 'created')} nuevos"
-            f" · {total(syncs, 'updated')} actualizados"
-            f" · {total(syncs, 'reasserted')} reafirmados"
-            f" · {total(syncs, 'promoted')} vueltas"
-            f" · {total(syncs, 'dropped')} sacados a mano"
-        )
-    if renders:
-        last = renders[-1]
-        line = f"render — {len(renders)} corridas · último {last['bytes']} bytes"
-        if last.get("project"):
-            line += f" para {last['project']}"
-        outside = last.get("outside") or []
-        if outside:
-            line += f" · afuera: {', '.join(outside)}"
-        print(line)
-    if misses:
-        text = misses[-1]["text"]
-        if len(text) > 60:
-            text = text[:59] + "…"
-        print(f"miss — {len(misses)} · última: {text}")
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "/data/chats"
     runs = []
     tools = {}
-    memory = memory_events()
     for event in events(path):
         if event.get("kind") == "run":
             runs.append(event)
         elif event.get("kind") == "tool":
             tools.setdefault(event.get("name", "?"), []).append(event)
 
-    if not runs and not tools and not memory:
+    if not runs and not tools:
         sys.exit(f"stats: no hay eventos en {path}")
 
     if runs:
@@ -122,9 +77,6 @@ def main():
             line += f" · {failed} failed"
         print(line)
 
-    if memory:
-        print()
-        report_memory(memory)
 
 if __name__ == "__main__":
     main()

@@ -70,6 +70,9 @@ elif COMMAND == "photo":
         method="POST",
     )
     print(json.load(urllib.request.urlopen(request))["name"], flush=True)
+elif COMMAND == "agenda":
+    call("/api/agenda/run", {"name": ARGS[0]})
+    print("AGENDA 200", flush=True)
 elif COMMAND == "cancel":
     call("/api/cancel", {"conversation": ARGS[0]})
     print("CANCEL 200", flush=True)

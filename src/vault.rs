@@ -1,130 +1,41 @@
-use heimdall::crypto::{self, Key};
-use heimdall::server::{self, Server};
-use heimdall::store::{self, NewToken, Store};
-use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
+use heimdall::store::{self, Store};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 const DIR: &str = "heimdall";
-const DB: &str = "heimdall.db";
-const KEY_FILE: &str = "master.key";
-const TOKEN: &str = "jimmy";
-const PROJECT: &str = "*";
-const ENV: &str = "dev";
+const VAR: &str = "HEIMDALL_DIR";
 
-static VAULT: OnceLock<Vault> = OnceLock::new();
+static VAULT: OnceLock<Result<Mutex<Store>, String>> = OnceLock::new();
 
-pub struct Vault {
-    server: Option<Arc<Server>>,
-    error: Option<String>,
+pub fn dir(root: &Path) -> std::path::PathBuf {
+    root.join(DIR)
 }
 
 pub fn open(root: &Path) {
-    VAULT.get_or_init(|| match start(&root.join(DIR)) {
-        Ok(server) => Vault {
-            server: Some(server),
-            error: None,
-        },
-        Err(e) => {
-            eprintln!("jimmy: el vault no abrió: {e}");
-            Vault {
-                server: None,
-                error: Some(e),
-            }
-        }
-    });
+    let dir = dir(root);
+    let vault = start(&dir);
+    if vault.is_ok() {
+        std::env::set_var(VAR, &dir);
+        eprintln!("jimmy: vault en {}", dir.display());
+    } else if let Err(error) = &vault {
+        eprintln!("jimmy: el vault no abrió: {error}");
+    }
+    let _ = VAULT.set(vault);
 }
 
-pub fn server() -> Option<&'static Arc<Server>> {
-    VAULT.get()?.server.as_ref()
+pub fn store() -> Option<&'static Mutex<Store>> {
+    VAULT.get()?.as_ref().ok()
 }
 
 pub fn message() -> &'static str {
-    VAULT
-        .get()
-        .and_then(|vault| vault.error.as_deref())
-        .unwrap_or("el vault no arrancó")
-}
-
-fn start(dir: &Path) -> Result<Arc<Server>, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("no pude crear {}: {e}", dir.display()))?;
-    let store = Store::open(dir.join(DB), master_key(dir)?)?;
-    let token = own_token(&store)?;
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| format!("no pude escuchar el vault: {e}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("el vault no tiene dirección: {e}"))?
-        .port();
-    let server = Arc::new(Server {
-        store: Mutex::new(store),
-        admin: crypto::random_hex(24)?,
-        emails: Vec::new(),
-        mail: None,
-        link_base: String::new(),
-        dev: false,
-    });
-    std::env::set_var("HEIMDALL_URL", format!("http://127.0.0.1:{port}"));
-    std::env::set_var("HEIMDALL_TOKEN", &token);
-    eprintln!("jimmy: vault en http://127.0.0.1:{port} (alcance {PROJECT}/{ENV})");
-    let served = server.clone();
-    std::thread::spawn(move || server::serve(served, listener));
-    Ok(server)
-}
-
-fn master_key(dir: &Path) -> Result<Key, String> {
-    let path = dir.join(KEY_FILE);
-    let from_env = crate::env("HEIMDALL_MASTER_KEY");
-    let from_file = std::fs::read_to_string(&path)
-        .ok()
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
-    let hex = match (from_env, from_file) {
-        (Some(env), Some(file)) if env != file => {
-            return Err(format!(
-                "HEIMDALL_MASTER_KEY no es la de {}: sacá una de las dos",
-                path.display()
-            ))
-        }
-        (Some(env), _) => {
-            std::env::remove_var("HEIMDALL_MASTER_KEY");
-            env
-        }
-        (None, Some(file)) => file,
-        (None, None) => persist_key(&path)?,
-    };
-    Key::from_hex(&hex)
-}
-
-fn persist_key(path: &Path) -> Result<String, String> {
-    let hex = crypto::random_hex(32)?;
-    std::fs::write(path, format!("{hex}\n"))
-        .map_err(|e| format!("no pude escribir {}: {e}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("no pude proteger {}: {e}", path.display()))?;
-    eprintln!("jimmy: master key nueva en {}", path.display());
-    Ok(hex)
-}
-
-fn own_token(store: &Store) -> Result<String, String> {
-    for token in store.tokens().map_err(text)? {
-        if token.name == TOKEN {
-            store.revoke(&token.id, TOKEN).map_err(text)?;
-        }
+    match VAULT.get() {
+        Some(Err(error)) => error,
+        _ => "el vault no arrancó",
     }
-    let new = NewToken {
-        name: TOKEN.to_string(),
-        project: PROJECT.to_string(),
-        env: ENV.to_string(),
-        keys: None,
-        admin: false,
-        ttl: None,
-    };
-    store
-        .create_token(new, TOKEN)
-        .map(|(_, plain)| plain)
-        .map_err(text)
+}
+
+fn start(dir: &Path) -> Result<Mutex<Store>, String> {
+    Store::open_dir(dir).map(Mutex::new)
 }
 
 pub fn text(error: store::Error) -> String {
@@ -146,63 +57,35 @@ mod tests {
     }
 
     #[test]
-    fn el_vault_guarda_un_secreto_y_le_da_el_token_a_los_comandos() {
+    fn el_vault_guarda_un_secreto() {
         let _env = ENV.lock().unwrap();
-        let dir = temp("arranque");
-        std::env::set_var("HEIMDALL_MASTER_KEY", "ab".repeat(32));
-        let server = start(&dir).unwrap();
+        let dir = temp("guarda");
 
-        server
-            .store
+        let vault = start(&dir).unwrap();
+        vault
             .lock()
             .unwrap()
             .set("prueba", "dev", "CLAVE", "valor", "test")
             .unwrap();
 
-        let url = format!(
-            "{}/v1/secrets?project=prueba&env=dev",
-            crate::env("HEIMDALL_URL").unwrap()
+        assert_eq!(
+            vault.lock().unwrap().secrets("prueba", "dev").unwrap()["CLAVE"],
+            "valor"
         );
-        let answer: serde_json::Value = ureq::get(&url)
-            .set(
-                "Authorization",
-                &format!("Bearer {}", crate::env("HEIMDALL_TOKEN").unwrap()),
-            )
-            .call()
-            .unwrap()
-            .into_json()
-            .unwrap();
-        assert_eq!(answer["CLAVE"], "valor");
-
+        assert!(dir.join("master.key").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn la_master_key_del_entorno_no_queda_para_los_hijos() {
+    fn un_vault_que_no_abre_avisa_por_qué() {
         let _env = ENV.lock().unwrap();
-        let dir = temp("entorno");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("HEIMDALL_MASTER_KEY", "ab".repeat(32));
+        let dir = temp("roto");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::write(&dir, "no soy un directorio").unwrap();
 
-        master_key(&dir).unwrap();
+        let error = start(&dir).err().unwrap();
 
-        assert!(crate::env("HEIMDALL_MASTER_KEY").is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn una_master_key_que_no_es_la_del_volumen_se_avisa() {
-        let _env = ENV.lock().unwrap();
-        let dir = temp("choque");
-        let path = dir.join(DIR);
-        std::fs::create_dir_all(&path).unwrap();
-        persist_key(&path.join(KEY_FILE)).unwrap();
-        std::env::set_var("HEIMDALL_MASTER_KEY", "cd".repeat(32));
-
-        let error = master_key(&path).err().unwrap();
-        std::env::remove_var("HEIMDALL_MASTER_KEY");
-
-        assert!(error.contains("no es la de"), "{error}");
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.contains("no pude crear"), "{error}");
+        std::fs::remove_file(&dir).unwrap();
     }
 }

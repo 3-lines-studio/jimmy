@@ -6,7 +6,7 @@ license = "MIT"
 
 [dependencies]
 axe = { git = "https://github.com/3-lines-studio/axe", rev = "21674cf698a059ecd6c98d4db5fd60b77ca539d9", default-features = false }
-heimdall = { git = "https://github.com/3-lines-studio/heimdall", rev = "d7d2b201aa091f022f94f6fd1653c19655738a71" }
+heimdall = { git = "https://github.com/3-lines-studio/heimdall", rev = "1af23e1ba5161e8862b97d3080bd4b6647cb2e55" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

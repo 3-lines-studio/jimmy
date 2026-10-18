@@ -4,6 +4,7 @@ mod bus;
 mod conversations;
 mod files;
 mod http;
+mod keepalive;
 mod log;
 mod machine;
 mod mail;
@@ -172,6 +173,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    keepalive::spawn(agent.clone());
     let transport = match transport_from_env() {
         Ok(transport) => transport,
         Err(e) => {

@@ -95,6 +95,10 @@ impl Pool {
         self.workers.lock().unwrap().contains_key(key)
     }
 
+    pub fn busy(&self) -> bool {
+        !self.workers.lock().unwrap().is_empty()
+    }
+
     fn spawn(&self, session: &Session, conversation: &Conversation) -> Result<Arc<Worker>, String> {
         let key = session.key();
         let exe = match &self.exe {
@@ -281,6 +285,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_idle_pool_is_not_busy() {
+        let pool = Pool::new(Vec::new(), None);
+        assert!(!pool.busy());
+    }
+
+    #[test]
+    fn a_pool_with_a_live_turn_is_busy() {
+        let dir = scratch("live");
+        let exe = script(
+            &dir,
+            "worker.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  sleep 0.3
+  echo '{\"event\":\"done\",\"text\":\"ok\"}'
+done
+",
+        );
+        let pool = Pool::new(Vec::new(), Some(exe));
+        let session = Session::channel("test");
+        let conversation = conversation("../workspace");
+        let running = pool.clone();
+        let turn = std::thread::spawn(move || {
+            running
+                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .map(|_| ())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let busy = pool.busy();
+        let result = turn.join().unwrap();
+        assert!(result.is_ok(), "el turno falló: {:?}", result.err());
+        assert!(busy, "con un turno vivo el pool tenía que estar ocupado");
+        assert!(!pool.busy());
     }
 
     #[test]

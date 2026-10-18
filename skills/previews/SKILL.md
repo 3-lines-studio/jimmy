@@ -1,14 +1,14 @@
 ---
 name: previews
-description: Levantar un proyecto y servirlo en /preview/<nombre>/, con sus recetas y su log.
+description: Run a project and serve it at /preview/<name>/, with its recipes and its log.
 ---
 
 # previews
 
-`jimmy preview start <nombre> [--cmd 'comando'] [--cwd dir]` levanta un proyecto y lo sirve en `/preview/<nombre>/` de esta web, con tu misma sesión.
+`jimmy preview start <name> [--cmd 'command'] [--cwd dir]` runs a project and serves it at `/preview/<name>/` on this web, under your own session.
 
-- Las **recetas** de `state/previews.toml` guardan el comando de arranque de cada proyecto, así que lo normal es `jimmy preview start bifrost` a secas: `jimmy preview recipes` lista las que hay y un `--cmd` dado en el momento gana sobre la receta.
-- El comando corre con un **entorno limpio** (`PATH`, `HOME`, `LANG`, `TZ`, más `PORT` y `PREVIEW_NAME`), sin los secretos de jimmy: lo que el proyecto necesite lo declara su receta, a la vista. Su salida queda en `state/previews/<nombre>.log`.
-- **El proyecto se arranca pelado**, como en tu máquina: el proxy le saca el prefijo antes de pasarle el pedido y le devuelve puesto el prefijo a todo lo que sale apuntando a la raíz (HTML, CSS, JavaScript y los redirects). No hay que configurarle ningún base. Los límites: un JSON que devuelve paths, o un path armado en runtime, no se reescriben. Arrancalo con `--strictPort` para que no se corra al puerto que jimmy le dio.
-- **Un preview se baja solo a los 30 minutos sin visitas** (cada pedido al proxy corre ese reloj) y también se lo lleva el próximo deploy: es para mirar trabajo en curso, no para hostear. Si alguien entra y ya no está, ve un 404 con las últimas líneas de su log.
-- `jimmy preview list` muestra los que están arriba (y hace cuánto que nadie los visita) y `jimmy preview stop <nombre>` los baja.
+- **Recipes** in `state/previews.toml` keep each project's start command, so the usual call is plain `jimmy preview start bifrost`: `jimmy preview recipes` lists them, and a `--cmd` given on the spot wins over the recipe.
+- The command runs with a **clean environment** (`PATH`, `HOME`, `LANG`, `TZ`, plus `PORT` and `PREVIEW_NAME`), without jimmy's secrets: whatever the project needs is declared in its recipe, in the open. Its output lands in `state/previews/<name>.log`.
+- **The project runs bare**, the way it would on your machine: the proxy strips the prefix before handing it a request and puts the prefix back on everything that comes out pointing at the root (HTML, CSS, JavaScript and redirects). There is no base path to configure. The limits: a JSON body carrying paths, or a path built at runtime, is not rewritten. Start it with `--strictPort` so it does not drift off the port jimmy gave it.
+- **A preview goes down by itself after 30 minutes with no visits** (every request through the proxy resets that clock) and the next deploy takes it too: it is for looking at work in progress, not for hosting. Anyone who walks in after that gets a 404 with the last lines of its log.
+- `jimmy preview list` shows what is up (and how long since anyone visited) and `jimmy preview stop <name>` takes them down.

@@ -421,7 +421,7 @@ impl Agent {
                     _ => 0,
                 };
                 journal.append(vec![entry]).map_err(|e| e.to_string())?;
-                let _ = journal.snapshot_with(drop_superseded_images);
+                snapshot_now(&mut journal);
                 let report = format!("🧹 compactado: {}K tokens", before / 1000);
                 transport.answer(session, None, &report);
             }
@@ -781,7 +781,7 @@ impl Agent {
         }
         match journal.append(vec![Entry::Reset]) {
             Ok(_) => {
-                let _ = journal.snapshot_with(drop_superseded_images);
+                snapshot_now(&mut journal);
                 "🧹 contexto borrado".into()
             }
             Err(e) => format!("⚠️ no pude borrar: {e}"),
@@ -1238,12 +1238,46 @@ fn merge(record: &mut axe::durable::TaskRecord, value: serde_json::Value) {
     }
 }
 
+const KEPT_TURNS: usize = 32;
+
+fn snapshot_now(journal: &mut Journal) {
+    prune_tasks(journal);
+    let _ = journal.snapshot_with(drop_superseded_images);
+}
+
 fn snapshot(journal: &mut Option<Journal>) {
     if let Some(journal) = journal {
+        prune_tasks(journal);
         if let Err(error) = journal.maybe_snapshot_with(drop_superseded_images) {
             eprintln!("jimmy: no pude guardar el snapshot: {error}");
         }
     }
+}
+
+fn prune_tasks(journal: &mut Journal) {
+    let mut finished: Vec<u64> = journal
+        .tasks()
+        .filter(|task| task.kind == "turn" && finished(task.state))
+        .map(|task| task.id)
+        .collect();
+    if finished.len() <= KEPT_TURNS {
+        return;
+    }
+    finished.sort_unstable();
+    let cut = finished[finished.len() - KEPT_TURNS];
+    journal
+        .retain_tasks(|task| task.kind != "turn" || !finished_state(task.state) || task.id >= cut);
+}
+
+fn finished(state: TaskState) -> bool {
+    finished_state(state)
+}
+
+fn finished_state(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Done | TaskState::Failed | TaskState::Cancelled
+    )
 }
 
 fn drop_superseded_images(records: &mut [Record]) {
@@ -1827,6 +1861,31 @@ done
             path: format!("/chats/x/uploads/{name}"),
             url: url.into(),
         }
+    }
+
+    #[test]
+    fn a_snapshot_keeps_only_the_newest_finished_turns() {
+        let dir = resume_dir("turns");
+        let mut journal = store::open(&dir).unwrap();
+        let mut tasks = Vec::new();
+        for _ in 0..KEPT_TURNS + 8 {
+            let mut task = store::new_turn(&mut journal, "");
+            task.state = TaskState::Done;
+            tasks.push(task);
+        }
+        let live = store::new_turn(&mut journal, "");
+        tasks.push(live.clone());
+        journal.commit(Vec::new(), tasks).unwrap();
+        snapshot_now(&mut journal);
+        drop(journal);
+
+        let kept = Journal::load_tasks(&dir).unwrap();
+        assert_eq!(kept.len(), KEPT_TURNS + 1);
+        assert!(kept.iter().any(|task| task.id == live.id));
+        assert_eq!(
+            kept.iter().map(|task| task.id).min().unwrap(),
+            live.id - KEPT_TURNS as u64
+        );
     }
 
     #[test]

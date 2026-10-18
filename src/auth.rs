@@ -1,9 +1,3 @@
-//! Quién puede entrar: una lista de mails en el entorno, y un link que se manda
-//! una sola vez.
-//!
-//! No hay contraseñas: el mail autorizado es la identidad. La sesión sí queda
-//! en disco, así un redeploy no echa a nadie.
-
 use crate::mail::Mail;
 use crate::random;
 use serde::{Deserialize, Serialize};
@@ -39,7 +33,6 @@ pub struct Auth {
 }
 
 impl Auth {
-    /// `allowed` es la lista de mails autorizados, separados por coma.
     pub fn new(allowed: &str, root: &Path, mail: Option<Mail>, dev: bool) -> Auth {
         let allowed = allowed
             .split(',')
@@ -64,9 +57,6 @@ impl Auth {
         self.allowed.contains(&email)
     }
 
-    /// Un link nuevo para ese mail, si está autorizado y no se pidió otro hace
-    /// un segundo. Devolver el token no dice si el mail existe: eso lo decide
-    /// quien llama, que siempre contesta lo mismo.
     pub fn request_link(&self, email: &str) -> Option<String> {
         let email = email.trim().to_lowercase();
         if !self.is_allowed(&email) {
@@ -93,7 +83,6 @@ impl Auth {
         Some(token)
     }
 
-    /// El token sirve una vez y solo dentro del plazo.
     pub fn consume_link(&self, token: &str) -> Option<String> {
         let mut links = self.links.lock().unwrap();
         let link = links.remove(token)?;

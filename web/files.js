@@ -1,7 +1,3 @@
-/* El explorador de archivos de un proyecto: un tab más, de sólo lectura. El
-   árbol se pide por carpeta, cuando se abre, y el archivo se muestra al
-   tocarlo. */
-
 const FILES = "files:";
 
 function isFiles(id) {
@@ -55,7 +51,6 @@ function createFilesTab(id) {
   return tab;
 }
 
-/// Un nivel del árbol. Cada carpeta se pide una vez, cuando se abre.
 async function list(tab, parent, path) {
   const query =
     "/api/tree?project=" + encodeURIComponent(tab.project) + "&path=" + encodeURIComponent(path);
@@ -158,8 +153,6 @@ function join(path, name) {
   return path ? path + "/" + name : name;
 }
 
-/// La terminación, que es lo que el resaltador lee como lenguaje. Un archivo sin
-/// punto —`Makefile`, `LICENSE`— no tiene ninguna, y se muestra sin colores.
 function extension(name) {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";

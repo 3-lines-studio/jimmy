@@ -129,8 +129,6 @@ textarea:focus {
   height: 100%;
 }
 
-/* Sidebar */
-
 #sidebar {
   width: 260px;
   flex: none;
@@ -648,8 +646,6 @@ textarea:focus {
   color: var(--text);
 }
 
-/* Main */
-
 main {
   position: relative;
   flex: 1;
@@ -657,8 +653,6 @@ main {
   display: flex;
   flex-direction: column;
 }
-
-/* Tab bar */
 
 #tabbar {
   position: absolute;
@@ -772,8 +766,6 @@ main {
   font-size: 0.78125rem;
 }
 
-/* Panes */
-
 #panes {
   position: relative;
   flex: 1;
@@ -817,8 +809,6 @@ main {
 .transcript > *:last-child {
   margin-bottom: 0;
 }
-
-/* Mensajes */
 
 .event {
   word-break: break-word;
@@ -1072,8 +1062,6 @@ main {
   margin-top: var(--s2);
 }
 
-/* Pasos del turno, plegados en una línea */
-
 .steps {
   color: var(--muted);
   font-size: 0.8125rem;
@@ -1122,8 +1110,6 @@ main {
   padding-left: var(--s3);
   border-left: 1px solid var(--line);
 }
-
-/* Tools */
 
 .tool {
   border-radius: var(--r-md);
@@ -1259,8 +1245,6 @@ main {
   white-space: pre-wrap;
 }
 
-/* Highlight de sintaxis */
-
 .tok-comment {
   color: var(--tok-comment);
   font-style: italic;
@@ -1289,8 +1273,6 @@ main {
 .tok-meta {
   color: var(--tok-meta);
 }
-
-/* Composer */
 
 #composer:not([hidden]) {
   display: flex;
@@ -1515,8 +1497,6 @@ main {
   transform: translateX(-50%);
 }
 
-/* Mobile */
-
 @media (max-width: 760px) {
   html {
     font-size: 112.5%;
@@ -1588,8 +1568,6 @@ main {
   }
 }
 
-/* Sin mouse: los blancos de toque crecen */
-
 @media (hover: none) {
   .icon-btn {
     width: 32px;
@@ -1633,8 +1611,6 @@ main {
     height: 15px;
   }
 }
-
-/* Archivos de un proyecto */
 
 .pane.files {
   flex-direction: row;
@@ -1806,8 +1782,6 @@ main {
     display: none;
   }
 }
-
-/* Agenda */
 
 .pane.agenda {
   overflow-y: auto;

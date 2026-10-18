@@ -1,12 +1,7 @@
-//! Just enough HTTP/1.1 for a web frontend: request parsing and response
-//! writing. One request per connection, no keep-alive.
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
-/// Lo más grande que aceptamos leer. Con la web expuesta, un cuerpo sin tope es
-/// una forma de quedarse sin memoria.
 pub const MAX_BODY: usize = 24 * 1024 * 1024;
 
 pub struct Request {
@@ -15,7 +10,6 @@ pub struct Request {
     pub query: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
-    /// El cuerpo se pasó del tope y no lo leímos.
     pub too_large: bool,
 }
 

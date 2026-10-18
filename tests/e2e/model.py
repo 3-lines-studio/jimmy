@@ -21,7 +21,6 @@ ANSWER = (
 )
 rounds = 0
 
-
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -41,7 +40,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
-
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
 print("PORT %d" % server.server_address[1], flush=True)

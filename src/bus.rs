@@ -1,10 +1,3 @@
-//! Who is connected, and who is watching what.
-//!
-//! The log on disk is the backlog; the bus is what is happening while somebody
-//! is connected. Writing an event and telling the watchers happen under the
-//! same lock, so somebody who attaches in the middle never misses one nor sees
-//! it twice.
-
 use crate::log::Log;
 use crate::protocol::Event;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,7 +7,6 @@ use std::sync::{Arc, Mutex};
 struct Connection {
     id: u64,
     user: String,
-    /// La conversación que mira, o nada si sólo quiere saber quién está.
     topic: Option<String>,
     sender: Sender<Event>,
 }
@@ -32,7 +24,6 @@ impl Bus {
         })
     }
 
-    /// Everything from here on, for a reader that already read its own backlog.
     pub fn attach(&self, key: &str, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
         let (sender, receiver) = mpsc::channel();
@@ -48,7 +39,6 @@ impl Bus {
         (id, receiver)
     }
 
-    /// Una conexión que sólo espera la presencia: quién está conectado.
     pub fn watch(&self, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
         let (sender, receiver) = mpsc::channel();
@@ -63,9 +53,6 @@ impl Bus {
         (id, receiver)
     }
 
-    /// Se va esa conexión y ninguna otra: quien recarga la página se conecta de
-    /// nuevo antes de que la vieja se entere, y la vieja no se lleva puesta a la
-    /// nueva.
     pub fn detach(&self, key: &str, id: u64) {
         let mut connections = self.connections.lock().unwrap();
         connections.retain(|watch| watch.id != id);
@@ -94,7 +81,6 @@ impl Bus {
         send(&mut connections, key, event);
     }
 
-    /// Un evento que no queda guardado: lo ven los que están mirando ahora.
     pub fn show(&self, key: &str, event: &Event) {
         let mut connections = self.connections.lock().unwrap();
         send(&mut connections, key, event);

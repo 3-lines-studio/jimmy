@@ -166,8 +166,6 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
 | `JIMMY_WEB_DEV` | empty | `1` returns the link in the response instead of mailing it; development and tests only |
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
-| `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
-| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
 | `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 | `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |
@@ -288,9 +286,8 @@ skills/charts/render_chart.py
 `skills/` in the repo ships in the image at `/usr/local/share/jimmy/skills`, so
 every instance gets them from a deploy. `JIMMY_SKILLS` (default
 `$JIMMY_ROOT/skills`, on the volume) comes first and shadows the builtin ones:
-that is where an instance keeps its own. The prompt carries the index —one line
-per skill, from the frontmatter— and the agent loads one with
-`jimmy skill load <name>`. `jimmy skill list` does the same by hand.
+that is where an instance keeps its own. The agent lists them with
+`jimmy skill list` and loads one with `jimmy skill load <name>`.
 
 ## Data tools
 
@@ -305,26 +302,15 @@ printf '{"sql":"SELECT 1"}' | pgx run postgres_query
 Both stop at 1,000 rows; `bqx` dry-runs and only executes what BigQuery
 classifies as `SELECT`, `pgx` runs in a read-only transaction. `bqx gcs-copy
 BUCKET OBJECT FILE` downloads a private GCS object. They are inert until an
-instance adds the `data` prompt fragment (`JIMMY_PROMPT=...,data,...`) and its
-credentials: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` for
-`bqx`, `DATABASE_URL` for `pgx`. Versions are pinned in the `Dockerfile`
-(`BQX_VERSION`, `PGX_VERSION`).
-
-## Content
-
-The `contenido` prompt fragment, opt-in via `JIMMY_PROMPT`, expects a content
-operation under `projects/contenido/`: `marca/` (tone, product, audience,
-references), `assets/`, `templates/` (HTML publication layouts) and `semanas/`
-(one markdown per week). It tells the agent to read the brand, propose angles,
-fill a template, render it with `browse --shot` and preview it with
-`jimmy send`. The image ships no brand and no templates: each instance provides
-its own, usually by cloning a private repo there.
+instance provides their credentials: `GOOGLE_CLOUD_PROJECT` and
+`GOOGLE_APPLICATION_CREDENTIALS` for `bqx`, `DATABASE_URL` for `pgx`. Versions
+are pinned in the `Dockerfile` (`BQX_VERSION`, `PGX_VERSION`).
 
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.
-Jimmy creates it at startup with a fixed layout and `prompts/workspace.md` tells
-the agent to keep to it:
+Jimmy creates it at startup with a fixed layout and the default prompt
+(`prompts/jimmy.md`) tells the agent to keep to it:
 
 - `notes/` — long-lived notes and memory
 - `projects/` — one directory per piece of work; code or not (a repo, a document,
@@ -347,37 +333,11 @@ AXE_BASE=https://openrouter.ai/api/v1 AXE_MODEL=x-ai/grok-4.6
 AXE_BASE=https://api.z.ai/api/coding/paas/v4 AXE_MODEL=glm-5.3-flash
 ```
 
-The system prompt is assembled from fragments. Axe contributes the tool list;
-Jimmy appends the fragments it is told to, in order, separated by a blank line,
-then the runtime context and the memory.
-
-`JIMMY_PROMPT` is a comma-separated list of fragment names. The default is
-`identidad,estilo,codigo,jimmy,herramientas,dev,workspace,memoria,agenda,git`.
-Each name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then
-under the image's `/usr/local/share/jimmy/prompts`. A name with no file is a
-startup error, so a typo fails loudly instead of dropping a fragment in silence.
-
-The image ships the default fragments. Override one by dropping a file with the
-same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
-`JIMMY_PROMPT`:
-
-```sh
-JIMMY_PROMPT=identidad,estilo,herramientas,workspace,memoria,agenda
-```
-
-A fragment may carry `{{clave}}` placeholders. `JIMMY_VARS` supplies them as
-comma-separated `clave=valor` pairs. The default fragments use `{{usuario}}` and
-`{{asistente}}`:
-
-```sh
-JIMMY_VARS="usuario=Ana,asistente=Jimmy"
-```
-
-A placeholder with no value is a startup error. Single braces are left alone, so
-a fragment can carry JSON like `{"action":"goto"}`.
-
-The list and the vars are read once at startup and the assembled prompt does not
-change while the process lives, so the model's prefix cache stays warm.
+Axe contributes the tool list; Jimmy appends one system prompt of its own, and
+then the runtime context and the memory. That prompt is
+[`prompts/jimmy.md`](prompts/jimmy.md), compiled in with `include_str!`: there is
+no setting for it and nothing to override at runtime. Fork the repo to change
+it.
 
 ## Tools
 
@@ -492,11 +452,10 @@ src/schedule.rs   scheduled tasks, clean-context runs
 src/skill.rs      the skills directory: list and load
 src/markdown.rs   Markdown to Telegram HTML, message splitting
 src/memo.rs       the memory facts: render, sync, add, migrate, miss
-src/prompt.rs     assemble the system prompt from fragments
 bin/              the CLIs the agent gets: browse, gen-image, recall, stats
 web/              the browser frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
-prompts/          system prompt fragments, baked into the image
+prompts/jimmy.md  the system prompt, compiled in with include_str!
 ```
 
 ## License

@@ -23,11 +23,9 @@ PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
 )
 
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
-
 
 def call(path, body=None, cookie=None, method=None, data=None, content_type="application/json"):
     headers = {}
@@ -42,7 +40,6 @@ def call(path, body=None, cookie=None, method=None, data=None, content_type="app
         return urllib.request.urlopen(request)
     except urllib.error.HTTPError as error:
         return error
-
 
 body = json.dumps({"email": EMAIL}).encode()
 request = urllib.request.Request(

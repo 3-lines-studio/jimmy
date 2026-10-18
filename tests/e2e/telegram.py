@@ -11,7 +11,6 @@ PORT = int(sys.argv[1])
 INBOX = sys.argv[2]
 sent = 0
 
-
 def await_update():
     global sent
     deadline = time.time() + 20
@@ -25,7 +24,6 @@ def await_update():
         if time.time() > deadline:
             return []
         time.sleep(0.5)
-
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -55,7 +53,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
-
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
 print("PORT %d" % server.server_address[1], flush=True)

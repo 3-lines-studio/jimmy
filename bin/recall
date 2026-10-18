@@ -5,7 +5,6 @@ import json
 import os
 import sys
 
-
 def sources(path):
     if not os.path.isdir(path):
         return [path]
@@ -13,12 +12,10 @@ def sources(path):
     found += glob.glob(os.path.join(path, "transcript*.jsonl.gz"))
     return sorted(found, key=os.path.getmtime)
 
-
 def open_text(path):
     if path.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
     return open(path, encoding="utf-8", errors="replace")
-
 
 def read_entries(path):
     with open_text(path) as f:
@@ -30,7 +27,6 @@ def read_entries(path):
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
-
 
 def turns(path):
     for entry in read_entries(path):
@@ -46,7 +42,6 @@ def turns(path):
             if summary.strip():
                 yield "compaction", summary.strip()
 
-
 def main():
     args = sys.argv[1:]
     limit = 20
@@ -60,7 +55,6 @@ def main():
     found = [t for t in history if not query or query in t[1].lower()]
     for role, content in found[-limit:]:
         print(f"[{role}] {content}\n")
-
 
 if __name__ == "__main__":
     main()

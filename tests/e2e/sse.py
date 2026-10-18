@@ -8,11 +8,9 @@ EMAIL = sys.argv[2]
 CONVERSATION = sys.argv[3]
 SECONDS = float(sys.argv[4])
 
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
-
 
 body = json.dumps({"email": EMAIL}).encode()
 request = urllib.request.Request(

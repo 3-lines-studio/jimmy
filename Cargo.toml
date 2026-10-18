@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-axe = { git = "https://github.com/3-lines-studio/axe", rev = "ee88e7b8cff87d3ece61396eec18d5e4b019544d", default-features = false }
+axe = { git = "https://github.com/3-lines-studio/axe", rev = "2f1cc61cb0ff72605f1cf0eff35965774bf43d01", default-features = false }
 heimdall = { git = "https://github.com/3-lines-studio/heimdall", rev = "d7d2b201aa091f022f94f6fd1653c19655738a71" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

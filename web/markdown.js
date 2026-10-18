@@ -1,5 +1,3 @@
-/* Markdown */
-
 const PUNCTUATION = "\\`*_{}[]()#+-.!<>~|";
 
 function escapeHtml(text) {
@@ -453,8 +451,6 @@ function markdown(source) {
   return blocks(String(source).split("\n"));
 }
 
-/* Syntax highlighting */
-
 const KEYWORDS = {
   js: "await async break case catch class const continue default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while yield true false null undefined",
   rust: "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
@@ -516,8 +512,6 @@ function token(kind, text) {
   return `<span class="tok-${kind}">${escapeHtml(text)}</span>`;
 }
 
-/// Un `'` en Rust o Go abre un carácter —`'/'`, `'\n'`— y no un texto, así que el
-/// que cierra lejos es una vida (`'static`) y va sin color.
 function isChar(code, i) {
   return code[i + 1] === "\\" ? code[i + 3] === "'" : code[i + 2] === "'";
 }

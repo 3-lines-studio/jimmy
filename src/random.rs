@@ -1,5 +1,3 @@
-//! Random bytes, for names that must not repeat.
-
 use std::io::Read;
 
 pub fn bytes(count: usize) -> Vec<u8> {

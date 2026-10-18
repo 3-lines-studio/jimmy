@@ -265,8 +265,6 @@ async function refresh() {
   updateTitle();
 }
 
-/* Sidebar */
-
 const groupEls = new Map();
 
 async function stopPreview(name) {
@@ -697,8 +695,6 @@ async function deleteProject(project) {
   await refresh();
 }
 
-/* Tabs */
-
 const TABS_KEY = "jimmy-tabs";
 
 function readTabs() {
@@ -827,9 +823,6 @@ function subscribe(tab) {
   stream.onmessage = (message) => render(tab, JSON.parse(message.data));
 }
 
-/// Al volver del background el stream puede haber quedado muerto sin avisar: el
-/// navegador lo cierra y el server no siempre se entera. Se rearma, que el
-/// server contesta con lo que falta desde el último evento visto.
 function revive() {
   const tab = activeId ? tabs.get(activeId) : null;
   if (tab && !tab.files) subscribe(tab);
@@ -860,8 +853,6 @@ async function loadEarlier(tab) {
   renderNav(tab);
 }
 
-/// Los eventos viejos van arriba, en orden, y la vista se queda donde estaba:
-/// el alto que creció arriba es el que se suma al scroll.
 function prepend(tab, events) {
   const state = { live: tab.live, steps: tab.steps, tools: tab.tools };
   const height = tab.transcript.scrollHeight;
@@ -1001,8 +992,6 @@ function updateTitle() {
   const count = [...tabs.values()].filter((tab) => tab.attention).length;
   document.title = count ? `(${count}) Jimmy` : "Jimmy";
 }
-
-/* Rendering */
 
 const NOT_LOGGED = new Set(["delta", "tool_delta", "typing", "presence", "online", "synced"]);
 
@@ -1296,7 +1285,6 @@ function startTool(tab, event) {
   scroll(tab);
 }
 
-/** Los pasos seguidos van en la misma línea, hasta que el agente dice algo. */
 function steps(tab, name) {
   if (tab.steps) {
     tab.steps.names.push(name);
@@ -1439,8 +1427,6 @@ function plainLine(text) {
   return pre;
 }
 
-/* Attachments */
-
 function pendingFor(id) {
   return pending.get(id) || [];
 }
@@ -1551,8 +1537,6 @@ inputEl.addEventListener("paste", async (event) => {
   await attachFiles(files);
 });
 
-/* Composer */
-
 new ResizeObserver(() => {
   document.documentElement.style.setProperty("--composer-h", `${composerEl.offsetHeight}px`);
 }).observe(composerEl);
@@ -1619,8 +1603,6 @@ sendEl.onclick = (event) => {
 
 document.getElementById("cancel").onclick = cancelTurn;
 
-/* Proyectos */
-
 document.getElementById("new-project").onsubmit = async (event) => {
   event.preventDefault();
   const field = document.getElementById("project-name");
@@ -1631,8 +1613,6 @@ document.getElementById("new-project").onsubmit = async (event) => {
   field.value = "";
   await refresh();
 };
-
-/* Tema */
 
 const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
@@ -1658,8 +1638,6 @@ lightQuery.addEventListener("change", () => {
 });
 
 showTheme();
-
-/* Volver a la lista */
 
 document.getElementById("menu").onclick = deselect;
 
@@ -1708,8 +1686,6 @@ function receiveShared() {
   inputEl.value = shared;
   grow();
 }
-
-/* Tirar para recargar */
 
 const refreshEl = document.getElementById("refresh");
 const REFRESH_AT = 64;

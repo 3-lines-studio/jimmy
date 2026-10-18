@@ -1,6 +1,3 @@
-/* La agenda: un tab con las tareas programadas y lo que contestó cada corrida.
-   El estado y el horario salen del servidor, que lee `state/schedule/`. */
-
 const AGENDA = "agenda";
 
 let agendaTasks = [];

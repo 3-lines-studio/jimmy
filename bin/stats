@@ -4,14 +4,12 @@ import json
 import os
 import sys
 
-
 def sources(path):
     if os.path.isfile(path):
         return [path]
     found = glob.glob(os.path.join(path, "events.jsonl"))
     found += glob.glob(os.path.join(path, "*/events.jsonl"))
     return sorted(found)
-
 
 def read_jsonl(path):
     with open(path, encoding="utf-8", errors="replace") as f:
@@ -21,11 +19,9 @@ def read_jsonl(path):
             except json.JSONDecodeError:
                 continue
 
-
 def events(path):
     for source in sources(path):
         yield from read_jsonl(source)
-
 
 def memory_events():
     workspace = os.environ.get("JIMMY_WORKSPACE") or "/data/workspace"
@@ -34,11 +30,9 @@ def memory_events():
         return []
     return list(read_jsonl(path))
 
-
 def median(values):
     ordered = sorted(values)
     return ordered[len(ordered) // 2]
-
 
 def report_memory(events):
     def of(op):
@@ -76,7 +70,6 @@ def report_memory(events):
         if len(text) > 60:
             text = text[:59] + "…"
         print(f"miss — {len(misses)} · última: {text}")
-
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "/data/chats"
@@ -132,7 +125,6 @@ def main():
     if memory:
         print()
         report_memory(memory)
-
 
 if __name__ == "__main__":
     main()

@@ -88,7 +88,6 @@ struct User {
     username: String,
 }
 
-/// El nombre que Telegram muestra en el chat, no el que usa para filtrar.
 fn author(from: &User) -> String {
     if !from.first_name.is_empty() {
         return from.first_name.clone();
@@ -99,7 +98,6 @@ fn author(from: &User) -> String {
     from.id.to_string()
 }
 
-/// Where Telegram lives. Only a test harness changes it.
 fn api_base() -> String {
     crate::env("TELEGRAM_API_BASE").unwrap_or_else(|| "https://api.telegram.org".into())
 }
@@ -223,7 +221,6 @@ impl Telegram {
         self.edit(session, message_id, text, Some("HTML"), true)
     }
 
-    /// El mensaje que sigue trabajando: mantiene el botón de frenar.
     fn edit_status(&self, session: &Session, message_id: i64, text: &str) -> Result<(), String> {
         self.edit(session, message_id, text, Some("HTML"), false)
     }
@@ -531,7 +528,6 @@ fn push_file(body: &mut Vec<u8>, boundary: &str, name: &str, filename: &str, dat
     body.extend_from_slice(b"\r\n");
 }
 
-/// El toque en el botón de frenar, si es eso lo que fue.
 fn stop_event(callback: Callback) -> Option<Event> {
     let message = callback.message?;
     if callback.data != STOP {

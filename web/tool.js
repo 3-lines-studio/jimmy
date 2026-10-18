@@ -1,4 +1,3 @@
-
 const CD = /^cd\s+(\S+)(?:\s+2>\s*\S+)?\s*&&\s+/;
 
 function describeTool(name, raw, workspace) {

@@ -1,12 +1,4 @@
 #!/bin/bash
-# Corre la cadena entera de jimmy con dos mentiras: un Telegram falso y un
-# modelo falso. Todo lo demás es real: el binario, el transporte, el worker en
-# su proceso, el log de la conversación, el HTTP y el SSE.
-#
-#   tests/e2e/run.sh [ruta al binario]     (por defecto target/debug/jimmy)
-#
-# Necesita el override TELEGRAM_API_BASE del transporte, que existe justamente
-# para esto. Falla con exit 1 y dice qué no cuadró.
 
 set -u
 

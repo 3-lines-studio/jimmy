@@ -31,10 +31,8 @@ pub struct Msg(pub String);
 pub struct Event {
     pub session: Session,
     pub sender: String,
-    /// Cómo se llama el que escribió, para mostrar. Vacío si no se sabe.
     pub author: String,
     pub is_bot: bool,
-    /// El usuario apretó frenar: no es un mensaje, es una orden.
     pub stop: bool,
     pub text: String,
     pub image: Option<String>,
@@ -44,8 +42,6 @@ pub struct Event {
 pub trait Transport: Send + Sync {
     fn parse_target(&self, target: &str) -> Result<Session, String>;
     fn progress(&self, session: &Session) -> Option<Msg>;
-    /// Un paso del turno, para el mensaje que ya está en pantalla. El
-    /// transporte que no tiene dónde escribirlo no hace nada.
     fn status(&self, _session: &Session, _placeholder: &Msg, _text: &str) {}
     fn answer(&self, session: &Session, placeholder: Option<Msg>, markdown: &str);
     fn note(&self, session: &Session, text: &str);
@@ -63,7 +59,6 @@ pub trait EventSource: Send {
     fn recv(&mut self) -> Result<Vec<Event>, String>;
 }
 
-/// Una fuente que no escucha a nadie: el proceso vive para la web.
 pub struct Idle;
 
 impl EventSource for Idle {
@@ -73,9 +68,6 @@ impl EventSource for Idle {
     }
 }
 
-/// Un transporte que no habla con nadie: el turno corre, pero no hay dónde
-/// contestar. Lo usan las tareas de la agenda que no tienen destino y la web,
-/// que lee el log en vez de esperar un mensaje.
 pub struct Null;
 
 impl Transport for Null {

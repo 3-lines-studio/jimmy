@@ -37,7 +37,6 @@ pub struct Agent {
     context: String,
     pool: Arc<Pool>,
     bus: Arc<Bus>,
-    /// Un candado por conversación: un turno a la vez, el que llega espera.
     turns: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pipe: Option<Arc<Pipe>>,
     cancel: Arc<AtomicBool>,
@@ -77,13 +76,10 @@ impl Agent {
         }
     }
 
-    /// El worker reemplaza esto por un flag propio, que puede levantar mientras
-    /// el turno corre.
     pub(crate) fn set_cancel(&mut self, cancel: Arc<AtomicBool>) {
         self.cancel = cancel;
     }
 
-    /// Interrumpe el turno que esté corriendo, y deja dicho quién lo frenó.
     pub fn cancel(&self, session: &Session, author: &str) {
         if !author.is_empty() {
             self.say(
@@ -96,7 +92,6 @@ impl Agent {
         self.pool.cancel(&session.key());
     }
 
-    /// Corta el worker y se lleva la carpeta de la conversación.
     pub fn delete(&self, key: &str) -> Result<(), String> {
         self.pool.kill(key);
         let dir = self.conversation_dir(key);
@@ -110,8 +105,6 @@ impl Agent {
         conversations::get(&self.root, Path::new(&self.workspace), key).dir
     }
 
-    /// Busca en lo que se dijo, no en lo que se escribió en los archivos: es lo
-    /// que uno quiere de un chat.
     pub fn search(&self, needle: &str, limit: usize) -> Vec<Hit> {
         let needle = needle.trim().to_lowercase();
         if needle.chars().count() < 2 {
@@ -147,7 +140,6 @@ impl Agent {
         hits
     }
 
-    /// Who is watching the conversations, for the web frontend to attach to.
     pub fn bus(&self) -> Arc<Bus> {
         self.bus.clone()
     }
@@ -156,20 +148,15 @@ impl Agent {
         self.pool.running(key)
     }
 
-    /// Where the tools run. It is the workspace unless the conversation belongs
-    /// to a project, and the runtime context says so, so it is rebuilt here.
     pub(crate) fn set_cwd(&mut self, cwd: &str) {
         self.cwd = cwd.to_string();
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
-    /// Tell the parent what the turn is doing, event by event. Only the worker
-    /// sets this: it is the one with a pipe at the other end of the process.
     pub(crate) fn set_pipe(&mut self, pipe: Arc<Pipe>) {
         self.pipe = Some(pipe);
     }
 
-    /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
         self.pool = Pool::new(
@@ -185,10 +172,6 @@ impl Agent {
         );
     }
 
-    /// Hand the turn to this conversation's worker and relay what it answers.
-    ///
-    /// El mensaje queda en el log antes de esperar el turno, así que el que
-    /// mira lo ve aunque el turno anterior siga corriendo.
     pub fn respond(
         &self,
         transport: &dyn Transport,
@@ -223,8 +206,6 @@ impl Agent {
         self.relay(transport, session, protocol::Command::Compact)
     }
 
-    /// Deja el mensaje escrito en el log sin esperar turno: es lo que ven los
-    /// demás apenas alguien aprieta enviar.
     pub fn announce(&self, session: &Session, text: &str, images: &[Image], author: &str) {
         self.say(
             session,
@@ -243,9 +224,6 @@ impl Agent {
         self.bus.publish(&conversation.key, &log, event);
     }
 
-    /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
-    /// CLI es otro proceso y no puede escribir el log, así que las deja en la
-    /// cola de la conversación y esto las publica.
     fn flush_media(&self, session: &Session) {
         let conversation = self.conversation(session);
         for event in media::drain(&conversation) {
@@ -253,7 +231,6 @@ impl Agent {
         }
     }
 
-    /// Un turno por conversación: el que llega segundo espera.
     fn wait_turn(&self, session: &Session) -> Arc<Mutex<()>> {
         self.turns
             .lock()
@@ -297,7 +274,6 @@ impl Agent {
         }
     }
 
-    /// The turn as the worker runs it, in its own process.
     pub(crate) fn local_prompt(
         &self,
         transport: &dyn Transport,
@@ -604,9 +580,6 @@ impl Agent {
     }
 }
 
-/// El mensaje que ya está en pantalla, actualizado mientras el turno sigue. No
-/// es streaming: el transporte escucha cada dos minutos como mucho, y lo que
-/// dice es qué está haciendo, no lo que va escribiendo.
 struct Live<'a> {
     transport: &'a dyn Transport,
     session: &'a Session,
@@ -670,7 +643,6 @@ impl<'a> Live<'a> {
     }
 }
 
-/// Qué está haciendo la tool, en una línea que entre en un mensaje.
 fn step(name: &str, args: &str) -> String {
     let args: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let detail = ["path", "file_path", "command", "query", "url", "prompt"]
@@ -701,7 +673,6 @@ fn short(text: &str) -> String {
     cut
 }
 
-/// Un pedazo de conversación que contiene lo que se buscó.
 pub struct Hit {
     pub conversation: String,
     pub title: String,
@@ -710,8 +681,6 @@ pub struct Hit {
     pub snippet: String,
 }
 
-/// Busca en una entrada del transcript y devuelve quién lo dijo y el pedazo
-/// donde aparece.
 fn search_line(line: &str, needle: &str) -> Option<(String, String)> {
     let entry: serde_json::Value = serde_json::from_str(line).ok()?;
     let message = entry.get("message")?;
@@ -754,11 +723,6 @@ pub(crate) struct Inflight {
 }
 
 impl Inflight {
-    /// Toma el turno de esta conversación: mientras este guard viva, ningún
-    /// otro proceso escribe el transcript. El marcador que ya existía es el
-    /// mismo archivo; lo que suma es el lock, que ningún deploy ve, así que
-    /// una instancia que arranca no reanuda un turno que la otra está
-    /// corriendo.
     pub(crate) fn acquire(dir: &Path) -> Result<Self, String> {
         let path = dir.join("inflight");
         let file = std::fs::OpenOptions::new()
@@ -861,8 +825,6 @@ impl Sink for EventSink {
     }
 }
 
-/// What the worker needs to rebuild the same agent on the other side of the
-/// pipe. Everything else it inherits.
 fn worker_env(
     base: &str,
     model: &str,
@@ -958,10 +920,6 @@ fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
     }
 }
 
-/// Los adjuntos que el log guarda: el nombre de cada archivo subido a
-/// `uploads/` de la conversación, que es lo que la web puede servir después. Un
-/// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
-/// mostrar y se queda afuera.
 fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
     let uploads = dir.join(media::UPLOADS);
     images
@@ -999,8 +957,6 @@ fn gzip(path: &Path) -> Result<(), String> {
     Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
-/// El nombre de quien escribe, delante del mensaje: sin eso el modelo lee
-/// "hola" y no sabe a quién le está contestando.
 fn signed(text: &str, author: &str) -> String {
     if author.is_empty() {
         return text.to_string();
@@ -1323,8 +1279,6 @@ mod tests {
         )
     }
 
-    /// Cada llamada escribe un archivo nuevo: reescribir uno que otro proceso
-    /// todavía está ejecutando da «Text file busy».
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = resume_dir(name);

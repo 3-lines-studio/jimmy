@@ -217,6 +217,15 @@ impl Agent {
         self.relay(transport, session, protocol::Command::Compact)
     }
 
+    pub fn note(&self, session: &Session, text: &str) {
+        self.say(
+            session,
+            &Event::Done {
+                text: text.to_string(),
+            },
+        );
+    }
+
     pub fn announce(&self, session: &Session, text: &str, images: &[Image], author: &str) {
         self.say(
             session,
@@ -1297,7 +1306,7 @@ mod tests {
 
     #[test]
     fn a_chat_key_becomes_a_spec_compliant_user_id() {
-        assert_eq!(user_id("telegram:123456"), "telegram-123456");
+        assert_eq!(user_id("chat:123456"), "chat-123456");
         assert_eq!(
             user_id("web-1792285574758-d12bc10c"),
             "web-1792285574758-d12bc10c"

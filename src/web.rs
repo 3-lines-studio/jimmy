@@ -712,8 +712,13 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if text.trim().is_empty() && images.is_empty() {
         return http::send_error(stream, 400, "el mensaje está vacío");
     }
-    if conversation.title.is_none()
-        || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
+    let command = matches!(
+        text.split_whitespace().next(),
+        Some("/start" | "/help" | "/status" | "/clear" | "/compact")
+    );
+    if !command
+        && (conversation.title.is_none()
+            || conversation.title.as_deref() == Some(conversations::NEW_TITLE))
     {
         let title = if text.trim().is_empty() {
             "imagen".to_string()
@@ -728,6 +733,16 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
 
     let web = web.clone();
     std::thread::spawn(move || {
+        if let Some(reply) = web.agent.command(&session, &text) {
+            web.agent.note(&session, &reply);
+            return;
+        }
+        if text.split_whitespace().next() == Some("/compact") {
+            if let Err(error) = web.agent.compact(&Null, &session) {
+                eprintln!("jimmy web: {error}");
+            }
+            return;
+        }
         if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
             eprintln!("jimmy web: {error}");
         }
@@ -2092,7 +2107,7 @@ done
         std::fs::create_dir_all(ken.join("target")).unwrap();
         std::fs::create_dir_all(ken.join(".git")).unwrap();
         std::fs::write(ken.join("src/web.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(ken.join("src/transport/telegram.rs"), "// nada\n").unwrap();
+        std::fs::write(ken.join("src/transport/slack.rs"), "// nada\n").unwrap();
         std::fs::write(ken.join("target/gordo"), "no se lista").unwrap();
         std::fs::write(ken.join("README.md"), "# ken\n").unwrap();
         std::fs::write(ken.join(".env"), "SECRETO=1\n").unwrap();

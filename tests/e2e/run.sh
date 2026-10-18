@@ -36,28 +36,21 @@ free_port() {
     python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1])"
 }
 
-say "levanto el Telegram falso"
-python3 "$HERE/telegram.py" 0 "$WORK/inbox.jsonl" >"$WORK/telegram.log" 2>&1 &
-PIDS+=($!)
+say "levanto el modelo falso"
 python3 "$HERE/model.py" 0 >"$WORK/model.log" 2>&1 &
 PIDS+=($!)
 sleep 2
-TG_PORT=$(rg -o 'PORT [0-9]+' "$WORK/telegram.log" | rg -o '[0-9]+' | head -1)
 MODEL_PORT=$(rg -o 'PORT [0-9]+' "$WORK/model.log" | rg -o '[0-9]+' | head -1)
 WEB_PORT=$(free_port)
-if [ -z "$TG_PORT" ] || [ -z "$MODEL_PORT" ]; then
-    echo "no arrancaron los falsos:"
-    cat "$WORK/telegram.log" "$WORK/model.log"
+if [ -z "$MODEL_PORT" ]; then
+    echo "no arrancó el modelo:"
+    cat "$WORK/model.log"
     exit 1
 fi
 
-say "levanto jimmy (transport=telegram, con la web adentro)"
 start_jimmy() {
     env -u RESEND_API_KEY -u JIMMY_WEB_FROM \
-        JIMMY_TRANSPORT=telegram \
-        TELEGRAM_API_BASE="http://127.0.0.1:$TG_PORT" \
-        TELEGRAM_BOT_TOKEN=[REDACTED] \
-        TELEGRAM_ALLOWED_USER_IDS=999 \
+        JIMMY_TRANSPORT=none \
         JIMMY_ROOT="$WORK/root" \
         JIMMY_WORKSPACE="$WORK/root/workspace" \
         JIMMY_WEB_PORT="$WEB_PORT" \
@@ -72,47 +65,50 @@ start_jimmy() {
     sleep 3
 }
 
+say "levanto jimmy (la web, sin transporte)"
 start_jimmy
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" login bob@ejemplo.com
+KEY=$(python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" create ken)
+CHAT="$WORK/root/chats/$KEY"
+[ -n "$KEY" ] && check "la conversación se creó" 0 || check "la conversación se creó" 1
 
 say "primer mensaje, sin nadie mirando"
-printf '%s\n' '{"update_id":1,"message":{"message_id":7,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"decime hola"}}' >"$WORK/inbox.jsonl"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "decime hola"
 sleep 9
 
 say "el estado y el stream, con la conversación ya existiendo"
-python3 "$HERE/sse.py" "$WEB_PORT" bob@ejemplo.com 999 25 >"$WORK/sse.log" 2>&1 &
+python3 "$HERE/sse.py" "$WEB_PORT" bob@ejemplo.com "$KEY" 25 >"$WORK/sse.log" 2>&1 &
 SSE_PID=$!
 PIDS+=($SSE_PID)
 sleep 2
 
 say "segundo mensaje, con el stream enganchado"
-printf '%s\n' '{"update_id":2,"message":{"message_id":8,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"y ahora?"}}' >>"$WORK/inbox.jsonl"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "y ahora?"
 wait $SSE_PID 2>/dev/null
 
-say "lo que le llegó a Telegram"
-cat "$WORK/telegram.log"
-rg -q 'EDIT .*La tool devolvió hola\.' "$WORK/telegram.log"
-check "el turno terminó y la respuesta volvió a Telegram" $?
-
-rg -q '"event":"tool_start".*"name":"bash"' "$WORK/root/chats/999/conversation.jsonl"
+say "lo que quedó en el log"
+cat "$CHAT/conversation.jsonl"
+rg -q '"event":"done".*La tool devolvió hola\.' "$CHAT/conversation.jsonl"
+check "el turno terminó y la respuesta quedó en el log" $?
+rg -q '"event":"tool_start".*"name":"bash"' "$CHAT/conversation.jsonl"
 check "el log de la conversación tiene la tool" $?
-rg -q '"event":"done"' "$WORK/root/chats/999/conversation.jsonl"
-check "el log de la conversación tiene el cierre" $?
 
 say "el stream de la web"
 cat "$WORK/sse.log"
-rg -q 'STATE .*"key": "999".*"read_only": true' "$WORK/sse.log"
-check "el estado lista la conversación de Telegram como solo lectura" $?
+rg -q "STATE .*\"key\": \"$KEY\".*\"read_only\": false" "$WORK/sse.log"
+check "el estado lista la conversación como escribible" $?
 rg -q 'SSE data: .*synced' "$WORK/sse.log"
 check "el stream marca dónde termina el backlog" $?
 rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
-say "una foto por Telegram"
-printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"photo":[{"file_id":"foto"}]}}' >>"$WORK/inbox.jsonl"
+say "una foto por la web"
+NAME=$(python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" photo "$KEY")
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "" "$NAME"
 sleep 8
-ls "$WORK/root/chats/999/uploads" | rg -q 'foto.png'
+ls "$CHAT/uploads" | rg -q 'foto'
 check "la foto queda en uploads" $?
-rg -q '"Images"' "$WORK/root/chats/999/journal.jsonl" 2>/dev/null
+rg -q '"Images"' "$CHAT/journal.jsonl" 2>/dev/null
 check "el journal guarda la imagen" $?
 
 say "un adjunto por la web"
@@ -150,27 +146,25 @@ check "no se puede salir de la carpeta del proyecto" $?
 rg -q '^ANON 401$' "$WORK/files.log"
 check "sin sesión no hay árbol" $?
 
-say "el comando de compactar, por Telegram"
-printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"/compact"}}' >>"$WORK/inbox.jsonl"
+say "el comando de compactar, por la web"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "/compact"
 sleep 14
-rg -q 'compactado' "$WORK/telegram.log"
-check "el compactado respondió por Telegram" $?
-rg -q '"type":"compaction"' "$WORK/root/chats/999/journal.jsonl" "$WORK/root/chats/999/state.json"
+rg -q 'compactado' "$CHAT/conversation.jsonl"
+check "el compactado respondió por la web" $?
+rg -q '"type":"compaction"' "$CHAT/journal.jsonl" "$CHAT/state.json"
 check "el journal tiene la compactación" $?
 
-say "frenar un turno por Telegram"
-printf '%s\n' '{"update_id":4,"message":{"message_id":10,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"contame algo largo"}}' >>"$WORK/inbox.jsonl"
+say "frenar un turno por la web"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "contame algo largo"
 sleep 1
-printf '%s\n' '{"update_id":5,"callback_query":{"id":"9","data":"frenar","from":{"id":999,"is_bot":false},"message":{"message_id":11,"chat":{"id":999}}}}' >>"$WORK/inbox.jsonl"
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" cancel "$KEY"
 sleep 8
-rg -q 'SEND .*Frenar' "$WORK/telegram.log"
-check "el mensaje de espera trae el botón de frenar" $?
-rg -q 'EDIT .*interrumpido' "$WORK/telegram.log"
+rg -q 'interrumpido' "$CHAT/conversation.jsonl"
 check "el botón frena el turno que está corriendo" $?
 
 say "un corte a mitad de turno"
-BEFORE=$(rg -c '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log" 2>/dev/null || echo 0)
-printf '%s\n' '{"update_id":6,"message":{"message_id":12,"chat":{"id":999},"from":{"id":999,"is_bot":false},"text":"quedate a mitad"}}' >>"$WORK/inbox.jsonl"
+BEFORE=$(rg -c '"event":"done".*La tool devolvió hola\.' "$CHAT/conversation.jsonl" 2>/dev/null || echo 0)
+python3 "$HERE/web.py" "$WEB_PORT" "$WORK/cookie" send "$KEY" "quedate a mitad"
 sleep 1
 kill -TERM $JIMMY_PID
 sleep 2
@@ -178,11 +172,9 @@ sleep 2
 say "la vuelta, como en un redeploy"
 start_jimmy
 sleep 10
-AFTER=$(rg -c '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log" 2>/dev/null || echo 0)
+AFTER=$(rg -c '"event":"done".*La tool devolvió hola\.' "$CHAT/conversation.jsonl" 2>/dev/null || echo 0)
 [ "$AFTER" -gt "$BEFORE" ] && check "el turno cortado volvió solo" 0 || check "el turno cortado volvió solo" 1
-rg -q '(SEND|EDIT) .*La tool devolvió hola\.' "$WORK/telegram.log"
-check "la respuesta llegó por Telegram" $?
-COUNT=$(rg -o 'quedate a mitad' "$WORK/root/chats/999/journal.jsonl" "$WORK/root/chats/999/state.json" 2>/dev/null | wc -l)
+COUNT=$(rg -o 'quedate a mitad' "$CHAT/journal.jsonl" "$CHAT/state.json" 2>/dev/null | wc -l)
 [ "$COUNT" = "1" ] && check "el mensaje no se duplicó" 0 || check "el mensaje no se duplicó" 1
 
 say "el apagado, como en un redeploy"
@@ -194,9 +186,8 @@ LEFT=$(pgrep -f "^$BIN worker .*--cwd $WORK/root/workspace" | wc -l)
 [ "$LEFT" = "0" ] && check "no quedaron workers huérfanos" 0 || check "no quedaron workers huérfanos" 1
 
 say "logs para mirar si algo falló"
-echo "jimmy:    $WORK/jimmy.log"
-echo "telegram: $WORK/telegram.log"
-echo "modelo:   $WORK/model.log"
+echo "jimmy:  $WORK/jimmy.log"
+echo "modelo: $WORK/model.log"
 
 if [ "$FAIL" = "0" ]; then
     say "TODO OK"

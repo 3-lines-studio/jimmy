@@ -376,7 +376,6 @@ fn event_from_payload(value: &Value) -> Option<Event> {
         stop: false,
         text,
         image,
-        voice: None,
     })
 }
 

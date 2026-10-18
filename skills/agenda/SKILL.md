@@ -5,7 +5,7 @@ description: Scheduled tasks in state/schedule, one TOML per task, run by the sc
 
 # agenda
 
-`state/schedule/` holds your scheduled tasks: **one file per task**, and the file name is the task name. The scheduler runs them by itself, every 60 seconds, in a **clean context**: system prompt plus the task's `prompt`, nothing of the chat or the history. The agenda belongs to the web: the user sees it, runs it by hand and pauses it in the **Agenda** tab, and the answer to every run is kept there. Telegram and Slack are only a backup notice.
+`state/schedule/` holds your scheduled tasks: **one file per task**, and the file name is the task name. The scheduler runs them by itself, every 60 seconds, in a **clean context**: system prompt plus the task's `prompt`, nothing of the chat or the history. The agenda belongs to the web: the user sees it, runs it by hand and pauses it in the **Agenda** tab, and the answer to every run is kept there. Slack is only a backup notice.
 
 When the user asks you to schedule something, write a new file; the tick rereads it on every turn, with no restart. To stop running it, delete the file. To silence it without deleting it, add `paused = true`.
 

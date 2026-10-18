@@ -103,6 +103,14 @@ check "el stream marca dónde termina el backlog" $?
 rg -qF '"event":"user","text":"y ahora?"' "$WORK/sse.log"
 check "el segundo mensaje llegó en vivo por el stream" $?
 
+say "una foto por Telegram"
+printf '%s\n' '{"update_id":3,"message":{"message_id":9,"chat":{"id":999},"from":{"id":999,"is_bot":false},"photo":[{"file_id":"foto"}]}}' >>"$WORK/inbox.jsonl"
+sleep 8
+ls "$WORK/root/chats/999/uploads" | rg -q 'foto.png'
+check "la foto queda en uploads" $?
+rg -q '"Images"' "$WORK/root/chats/999/journal.jsonl" 2>/dev/null
+check "el journal guarda la imagen" $?
+
 say "un adjunto por la web"
 python3 "$HERE/attachment.py" "$WEB_PORT" bob@ejemplo.com ken "$BIN" "$WORK/root" "$WORK/asistente.png" >"$WORK/attachment.log" 2>&1
 cat "$WORK/attachment.log"

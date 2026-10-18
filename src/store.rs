@@ -1,6 +1,11 @@
 use axe::durable::Journal;
 use axe::session::Entry;
+use axe::Message;
+use std::collections::HashSet;
 use std::path::Path;
+
+pub const INTERRUPTED: &str =
+    "error: interrupted, the process died before this call returned; it was not run again";
 
 pub fn open(dir: &Path) -> Result<Journal, String> {
     import(dir)?;
@@ -8,6 +13,48 @@ pub fn open(dir: &Path) -> Result<Journal, String> {
         std::io::ErrorKind::WouldBlock => "el chat lo está corriendo otra instancia".to_string(),
         _ => error.to_string(),
     })
+}
+
+pub fn entries(journal: &mut Journal) -> Result<Vec<Entry>, String> {
+    repair(journal)?;
+    Ok(journal
+        .entries()
+        .iter()
+        .map(|record| record.entry.clone())
+        .collect())
+}
+
+fn repair(journal: &mut Journal) -> Result<(), String> {
+    let mut answered = HashSet::new();
+    let mut intents = Vec::new();
+    for record in journal.entries() {
+        match &record.entry {
+            Entry::Message { message } if message.role == "tool" => {
+                answered.insert(message.tool_call_id.clone());
+            }
+            Entry::ToolIntent { id, .. } => intents.push(id.clone()),
+            _ => {}
+        }
+    }
+    let missing: Vec<Entry> = intents
+        .into_iter()
+        .filter(|id| !answered.contains(id))
+        .map(|id| Entry::Message {
+            message: Message {
+                role: "tool".into(),
+                content: INTERRUPTED.into(),
+                tool_call_id: id,
+                ..Message::default()
+            },
+        })
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    journal
+        .append(missing)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn load(dir: &Path) -> Vec<Entry> {
@@ -95,6 +142,30 @@ mod tests {
             ..Message::default()
         };
         serde_json::to_string(&Entry::Message { message }).unwrap()
+    }
+
+    #[test]
+    fn a_dangling_intent_becomes_one_interrupted_result() {
+        let dir = dir("repair");
+        let mut journal = open(&dir).unwrap();
+        journal
+            .append(vec![Entry::ToolIntent {
+                id: "call-1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }])
+            .unwrap();
+        let got = entries(&mut journal).unwrap();
+        assert_eq!(got.len(), 2);
+        match &got[1] {
+            Entry::Message { message } => {
+                assert_eq!(message.role, "tool");
+                assert_eq!(message.tool_call_id, "call-1");
+                assert_eq!(message.content, INTERRUPTED);
+            }
+            _ => panic!("esperaba un resultado"),
+        }
+        assert_eq!(entries(&mut journal).unwrap().len(), 2);
     }
 
     #[test]

@@ -297,11 +297,7 @@ impl Agent {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
         let mut journal = store::open(&dir)?;
-        let mut entries: Vec<Entry> = journal
-            .entries()
-            .iter()
-            .map(|record| record.entry.clone())
-            .collect();
+        let mut entries = store::entries(&mut journal)?;
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
 
@@ -362,12 +358,8 @@ impl Agent {
         session: &Session,
         dir: &Path,
     ) -> Result<(), String> {
-        let journal = store::open(dir)?;
-        let entries: Vec<Entry> = journal
-            .entries()
-            .iter()
-            .map(|record| record.entry.clone())
-            .collect();
+        let mut journal = store::open(dir)?;
+        let entries = store::entries(&mut journal)?;
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
         if let Some(reply) = final_answer(&history) {
@@ -741,16 +733,19 @@ struct EventSink {
 }
 
 impl EventSink {
-    fn append(&mut self, entry: Entry) {
+    fn write(&mut self, entries: Vec<Entry>) -> bool {
         if self.error.is_some() {
-            return;
+            return false;
         }
         match &mut self.journal {
-            Some(journal) => match journal.append(vec![entry]) {
-                Ok(_) => self.committed += 1,
-                Err(error) => self.error = Some(format!("no pude guardar el turno: {error}")),
+            Some(journal) => match journal.append(entries) {
+                Ok(_) => true,
+                Err(error) => {
+                    self.error = Some(format!("no pude guardar el turno: {error}"));
+                    false
+                }
             },
-            None => self.committed += 1,
+            None => true,
         }
     }
 }
@@ -846,9 +841,19 @@ impl Sink for EventSink {
     }
 
     fn assistant(&mut self, _turn: usize, message: &Message, _usage: Usage) {
-        self.append(Entry::Message {
+        let mut entries = vec![Entry::Message {
             message: message.clone(),
-        });
+        }];
+        for call in &message.tool_calls {
+            entries.push(Entry::ToolIntent {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            });
+        }
+        if self.write(entries) {
+            self.committed += 1;
+        }
         if message.content.is_empty() {
             return;
         }
@@ -861,9 +866,11 @@ impl Sink for EventSink {
     }
 
     fn tool(&mut self, _turn: usize, message: &Message) {
-        self.append(Entry::Message {
+        if self.write(vec![Entry::Message {
             message: message.clone(),
-        });
+        }]) {
+            self.committed += 1;
+        }
     }
 }
 
@@ -1589,9 +1596,13 @@ done
         assert_eq!(sink.committed, 2);
         assert!(sink.error.is_none());
         let records = Journal::load(&dir).unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(
+        assert_eq!(records.len(), 3);
+        assert!(matches!(
             records[1].entry,
+            Entry::ToolIntent { ref id, .. } if id == "1"
+        ));
+        assert_eq!(
+            records[2].entry,
             Entry::Message {
                 message: message("tool", "dos")
             }

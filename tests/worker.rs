@@ -6,6 +6,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use axe::session::Entry;
+use axe::{Message, ToolCall};
+
 struct Worker {
     child: Child,
     stdin: ChildStdin,
@@ -247,6 +250,54 @@ fn runs_a_turn_against_the_model_and_leaves_a_journal() {
     );
     assert!(transcript.contains("hola desde el fake"), "{transcript}");
     assert!(!chat.join("inflight").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_cut_tool_call_comes_back_interrupted_and_the_turn_continues() {
+    let root = scratch("intent");
+    let chat = root.join("chats/test");
+    {
+        let mut journal = axe::durable::Journal::open(&chat).unwrap();
+        journal
+            .append(vec![
+                Entry::Message {
+                    message: Message {
+                        role: "user".into(),
+                        content: "hola".into(),
+                        ..Message::default()
+                    },
+                },
+                Entry::Message {
+                    message: Message {
+                        role: "assistant".into(),
+                        tool_calls: vec![ToolCall {
+                            id: "call_1".into(),
+                            name: "bash".into(),
+                            arguments: "{\"command\":\"echo hola\"}".into(),
+                        }],
+                        ..Message::default()
+                    },
+                },
+                Entry::ToolIntent {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    arguments: "{\"command\":\"echo hola\"}".into(),
+                },
+            ])
+            .unwrap();
+    }
+    let (base, served) = model_server(vec![answer_chunk("seguí")]);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"resume\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("seguí"), "{events:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+    drop(worker);
+
+    let journal = transcript(&chat);
+    assert!(journal.contains("interrupted"), "{journal}");
+    assert!(journal.contains("seguí"), "{journal}");
     std::fs::remove_dir_all(&root).unwrap();
 }
 

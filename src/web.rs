@@ -1216,6 +1216,18 @@ fn follow(
     live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
     replay: &mut dyn FnMut(&mut TcpStream) -> std::io::Result<(usize, usize)>,
 ) -> std::io::Result<()> {
+    let result = tail(stream, live, replay);
+    match result {
+        Err(error) if http::gone(&error) => Ok(()),
+        other => other,
+    }
+}
+
+fn tail(
+    stream: &mut TcpStream,
+    live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
+    replay: &mut dyn FnMut(&mut TcpStream) -> std::io::Result<(usize, usize)>,
+) -> std::io::Result<()> {
     http::sse_open(stream)?;
     let (total, first) = replay(stream)?;
     http::sse_data(stream, &synced(total, first))?;
@@ -2770,6 +2782,28 @@ done
         assert!(seen[0].contains("\"listo\""), "{seen:?}");
         assert!(seen[1].contains("\"count\":2"), "{seen:?}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_client_that_hangs_up_is_not_an_error() {
+        let listener = listen(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = connect(port);
+        let (mut server, _) = listener.accept().unwrap();
+        server.write_all(b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        client.read_exact(&mut [0u8; 1]).unwrap();
+        server.write_all(b"y").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100));
+
+        let (tx, live) = std::sync::mpsc::channel();
+        for text in ["uno", "dos", "tres"] {
+            tx.send(Event::Assistant { text: text.into() }).unwrap();
+        }
+        let result = follow(&mut server, &live, &mut |_| Ok((0, 0)));
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     fn variable(css: &str, name: &str) -> String {

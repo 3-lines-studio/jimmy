@@ -17,7 +17,6 @@ mod preview;
 mod prompt;
 mod protocol;
 mod random;
-mod reap;
 mod schedule;
 mod skill;
 mod tools;
@@ -225,12 +224,10 @@ fn main() {
         agenda,
         previews.clone(),
     );
-    let mut reaper = reap::Reaper::default();
     let mut watch = watch::Watch::default();
     let root = config.root.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(watch::TICK);
-        reaper.reap(std::time::Instant::now());
         memlog::sample(&workspace);
         let memory = machine::usage(&root).memory;
         let quiet = !pool::busy() && previews.list().is_empty();

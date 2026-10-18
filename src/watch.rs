@@ -8,11 +8,9 @@
 //! `memory.high` y `memory.reclaim` están montados de solo lectura, así que
 //! sólo queda nacer de nuevo.
 
-use crate::reap;
 use std::time::Duration;
 
-/// Lo que dura una vuelta: el `sleep` del hilo que mira en `main`. El TTL del
-/// reaper se cuenta con esto, así que los dos van juntos.
+/// Lo que dura una vuelta: el `sleep` del hilo que mira en `main`.
 pub const TICK: Duration = Duration::from_secs(60);
 
 /// El cgroup sin nadie corriendo se mide contra una fracción del techo y no
@@ -27,11 +25,10 @@ const SHARE: u64 = 4;
 /// el número es un piso elegido para no matar temprano, no una medida.
 const NO_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
 
-/// Una vuelta más que el reaper para bajar a un huérfano (`reap::TTL`): la que
-/// lo ve, las del TTL, y la que todavía puede leer el kill ya hecho. Se calcula
-/// y no se escribe, que el TTL ya subió de cinco minutos a treinta sin que
-/// nadie tocara esto.
-const TICKS: u32 = (reap::TTL.as_secs() / TICK.as_secs() + 2) as u32;
+/// Media hora larga por encima del techo, en vueltas de `TICK`: lo que tarda un
+/// build en crecer y en soltarse, más la vuelta que deja ver el peso ya sin
+/// nadie corriendo.
+const TICKS: u32 = 32;
 
 #[derive(Default)]
 pub struct Watch {
@@ -39,7 +36,7 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Una vuelta del reaper. `used` y `total` son los bytes del cgroup enteros
+    /// Una vuelta del vigilante. `used` y `total` son los bytes del cgroup enteros
     /// —`memory.current` y `memory.max`, cache y slab adentro— y `quiet` que no
     /// hay nadie corriendo.
     pub fn overdue(&mut self, used: u64, total: u64, quiet: bool) -> bool {
@@ -100,10 +97,9 @@ mod tests {
     }
 
     #[test]
-    fn no_sale_antes_de_que_el_reaper_llegue_al_huerfano() {
+    fn no_sale_antes_de_media_hora() {
         let mut watch = Watch::default();
-        let vueltas = (reap::TTL.as_secs() / TICK.as_secs()) as u32;
-        for vuelta in 0..vueltas {
+        for vuelta in 0..TICKS - 2 {
             assert!(
                 !watch.overdue(ALTO, TOTAL, true),
                 "salió en la vuelta {vuelta}"

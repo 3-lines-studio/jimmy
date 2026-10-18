@@ -636,16 +636,38 @@ fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
 }
 
 fn inflight_chats(root: &Path) -> Vec<String> {
-    let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
-        return Vec::new();
-    };
-    let mut keys: Vec<String> = chats
-        .flatten()
-        .filter(|entry| entry.path().join("inflight").exists())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+    let mut keys = Vec::new();
+    walk_inflight(&root.join("chats"), "", &mut keys);
     keys.sort();
     keys
+}
+
+fn walk_inflight(dir: &Path, prefix: &str, keys: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let key = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path.join("inflight").exists() {
+            keys.push(key);
+            continue;
+        }
+        if conversations::is_conversation(&path) {
+            continue;
+        }
+        walk_inflight(&path, &key, keys);
+    }
 }
 
 fn session_from_key(key: &str) -> Option<Session> {
@@ -769,6 +791,35 @@ mod tests {
         assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
         assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
         assert_eq!(unknown_command(&["--help".into()]), Some("--help"));
+    }
+
+    #[test]
+    fn inflight_chats_lists_only_the_ones_with_a_marker() {
+        let root = std::env::temp_dir().join(format!("jimmy-inflight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("chats/123")).unwrap();
+        std::fs::create_dir_all(root.join("chats/456")).unwrap();
+        std::fs::write(root.join("chats/123/inflight"), b"").unwrap();
+        assert_eq!(inflight_chats(&root), ["123"]);
+        std::fs::write(root.join("chats/456/inflight"), b"").unwrap();
+        assert_eq!(inflight_chats(&root), ["123", "456"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn inflight_chats_reaches_a_slack_thread() {
+        let root =
+            std::env::temp_dir().join(format!("jimmy-inflight-slack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("chats/C01/1726570000.123")).unwrap();
+        std::fs::create_dir_all(root.join("chats/C01/1726570000.999/uploads")).unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.123/meta.json"), "{}").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.123/inflight"), b"").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.999/meta.json"), "{}").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.999/uploads/inflight"), b"").unwrap();
+
+        assert_eq!(inflight_chats(&root), ["C01/1726570000.123"]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

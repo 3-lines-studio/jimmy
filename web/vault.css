@@ -87,6 +87,17 @@
   color: var(--accent-fg);
 }
 
+.vault-tag {
+  margin-left: var(--s1);
+  padding: 0 var(--s1);
+  border-radius: var(--r-full);
+  background: var(--hover);
+  color: var(--faint);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .vault-env-count {
   color: inherit;
   opacity: 0.7;

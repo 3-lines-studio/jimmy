@@ -1,6 +1,6 @@
 use heimdall::cli;
 use heimdall::store::{self, Store};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -54,17 +54,17 @@ pub fn inject(cwd: &Path) -> usize {
 fn apply(held: &Mutex<Store>, cwd: &Path) -> usize {
     let (project, env) = scope(cwd);
     declare(held, &project, &env);
-    let secrets = {
+    let resolved = {
         let store = held.lock().unwrap_or_else(|e| e.into_inner());
         match store.resolve(&project, &env) {
-            Ok(secrets) => secrets,
+            Ok(resolved) => resolved,
             Err(error) => {
                 eprintln!("jimmy: no pude leer el vault: {}", text(error));
                 return 0;
             }
         }
     };
-    let count = put(&secrets);
+    let count = put(&resolved.values, &resolved.plain);
     if count > 0 {
         eprintln!("jimmy: {count} variables del vault {project}/{env}");
     }
@@ -72,17 +72,19 @@ fn apply(held: &Mutex<Store>, cwd: &Path) -> usize {
 }
 
 /// Lo que estaba antes gana: solo se toca lo que puso la vuelta anterior.
-fn put(secrets: &BTreeMap<String, String>) -> usize {
+fn put(values: &BTreeMap<String, String>, plain: &BTreeSet<String>) -> usize {
     let mut injected = INJECTED.lock().unwrap_or_else(|e| e.into_inner());
     let previous = std::mem::take(&mut *injected);
     for name in previous {
         std::env::remove_var(name);
     }
-    for (name, value) in secrets {
+    for (name, value) in values {
         if std::env::var_os(name).is_some() {
             continue;
         }
-        axe::sentinel::add(value);
+        if !plain.contains(name) {
+            axe::sentinel::add(value);
+        }
         std::env::set_var(name, value);
         injected.push(name.clone());
     }
@@ -212,7 +214,30 @@ mod tests {
         let seen = axe::sentinel::redact("LINEA=solo acá");
         assert!(!seen.contains("solo acá"), "{seen}");
 
-        put(&BTreeMap::new());
+        put(&BTreeMap::new(), &BTreeSet::new());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn una_variable_se_inyecta_pero_no_se_redacta() {
+        let _env = ENV.lock().unwrap();
+        let dir = temp("variable");
+        let store = start(&dir).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .set_var("demo", "dev", "JIMMY_TEST_VAR", "Jimmy el autor", "test")
+            .unwrap();
+        let repo = repo(&dir, "demo");
+
+        apply(&store, &repo);
+
+        assert_eq!(std::env::var("JIMMY_TEST_VAR").unwrap(), "Jimmy el autor");
+        let seen = axe::sentinel::redact("autor: Jimmy el autor");
+        assert!(seen.contains("Jimmy el autor"), "{seen}");
+
+        std::env::remove_var("JIMMY_TEST_VAR");
+        put(&BTreeMap::new(), &BTreeSet::new());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -276,7 +301,7 @@ mod tests {
 
         assert_eq!(std::env::var("JIMMY_TEST_C").unwrap(), "de afuera");
         std::env::remove_var("JIMMY_TEST_C");
-        put(&BTreeMap::new());
+        put(&BTreeMap::new(), &BTreeSet::new());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

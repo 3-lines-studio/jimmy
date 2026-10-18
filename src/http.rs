@@ -47,9 +47,13 @@ impl Request {
     }
 
     pub fn flag(&self, name: &str) -> bool {
+        self.flag_or(name, false)
+    }
+
+    pub fn flag_or(&self, name: &str, fallback: bool) -> bool {
         self.json()
             .and_then(|json| json.get(name).and_then(|value| value.as_bool()))
-            .unwrap_or(false)
+            .unwrap_or(fallback)
     }
 
     pub fn list(&self, name: &str) -> Vec<String> {
@@ -260,6 +264,16 @@ mod tests {
             body: Vec::new(),
             too_large: false,
         }
+    }
+
+    #[test]
+    fn a_missing_flag_falls_back_to_the_caller_default() {
+        let mut empty = request("");
+        assert!(empty.flag_or("secret", true));
+        assert!(!empty.flag("secret"));
+        empty.body = br#"{"secret":false}"#.to_vec();
+        assert!(!empty.flag_or("secret", true));
+        assert!(!empty.flag("secret"));
     }
 
     #[test]

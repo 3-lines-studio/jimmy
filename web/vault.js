@@ -12,6 +12,7 @@ const VAULT_ACTIONS = {
 
 let vaultPanel = null;
 let vaultSecrets = null;
+let vaultPlain = new Set();
 let vaultOpen = null;
 let vaultRevealed = new Set();
 let vaultMinted = null;
@@ -96,6 +97,7 @@ async function loadSecrets(environment) {
   const key = vaultKey(environment);
   if (!data || vaultOpen !== key) return;
   vaultSecrets = data.secrets || {};
+  vaultPlain = new Set(data.plain || []);
   renderVault();
 }
 
@@ -196,7 +198,14 @@ function vaultSecretsEl() {
     row.className = "vault-row";
     const label = document.createElement("span");
     label.className = "vault-key";
-    label.textContent = name;
+    label.append(document.createTextNode(name));
+    if (vaultPlain.has(name)) {
+      const tag = document.createElement("span");
+      tag.className = "vault-tag";
+      tag.textContent = "var";
+      tag.title = "Variable: no se redacta";
+      label.append(tag);
+    }
     const shown = vaultRevealed.has(name);
     const value = document.createElement("button");
     value.className = "vault-value" + (shown ? "" : " masked");
@@ -220,9 +229,16 @@ function vaultSecretsEl() {
   section.append(list);
   section.append(
     vaultForm(
-      [{ placeholder: "CLAVE" }, { placeholder: "valor" }],
+      [{ placeholder: "CLAVE" }, { placeholder: "valor" }, { placeholder: "secreto", type: "checkbox", checked: true }],
       "Guardar",
-      (values) => vaultOrder("/api/vault/set", { project, env, name: values[0], value: values[1] }),
+      (values) =>
+        vaultOrder("/api/vault/set", {
+          project,
+          env,
+          name: values[0],
+          value: values[1],
+          secret: values[2] === "on",
+        }),
     ),
   );
   return section;
@@ -320,14 +336,29 @@ function vaultNote(text) {
   return note;
 }
 
+function vaultValue(input) {
+  if (input.type === "checkbox") return input.checked ? "on" : "";
+  return input.value.trim();
+}
+
+function vaultReset(input) {
+  if (input.type === "checkbox") input.checked = input.defaultChecked;
+  else input.value = "";
+}
+
 function vaultForm(placeholders, action, submit) {
   const form = document.createElement("form");
   form.className = "vault-form";
-  const inputs = placeholders.map(({ placeholder, type }) => {
+  const inputs = placeholders.map(({ placeholder, type, checked }) => {
     const input = document.createElement("input");
     input.placeholder = placeholder;
     input.setAttribute("aria-label", placeholder);
+    input.title = placeholder;
     input.type = type || "text";
+    if (type === "checkbox") {
+      input.checked = Boolean(checked);
+      input.defaultChecked = Boolean(checked);
+    }
     input.spellcheck = false;
     input.autocomplete = "off";
     input.autocapitalize = "off";
@@ -339,8 +370,8 @@ function vaultForm(placeholders, action, submit) {
   form.append(button);
   form.onsubmit = async (event) => {
     event.preventDefault();
-    const values = inputs.map((input) => input.value.trim());
-    if (await submit(values)) for (const input of inputs) input.value = "";
+    const values = inputs.map(vaultValue);
+    if (await submit(values)) for (const input of inputs) vaultReset(input);
   };
   return form;
 }
@@ -356,5 +387,14 @@ async function vaultRevoke(token) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { vaultKey, vaultScope, vaultProjects, vaultCount, vaultMask, vaultAction, vaultClock };
+  module.exports = {
+    vaultKey,
+    vaultScope,
+    vaultProjects,
+    vaultCount,
+    vaultMask,
+    vaultAction,
+    vaultClock,
+    vaultValue,
+  };
 }

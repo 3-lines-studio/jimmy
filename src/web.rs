@@ -1074,8 +1074,9 @@ fn vault_secrets(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> s
         let project = request.param("project").unwrap_or_default();
         let env = request.param("env").unwrap_or_default();
         let secrets = store.secrets(project, env)?;
+        let plain = store.plain(project, env)?;
         store.audit(actor, "get-secrets", project, env, None)?;
-        Ok(serde_json::json!({ "secrets": secrets }))
+        Ok(serde_json::json!({ "secrets": secrets, "plain": plain }))
     })
 }
 
@@ -1085,7 +1086,11 @@ fn vault_set(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         let env = request.field("env").unwrap_or_default();
         let name = request.field("name").unwrap_or_default();
         let value = request.field("value").unwrap_or_default();
-        store.set(&project, &env, &name, &value, actor)?;
+        if request.flag_or("secret", true) {
+            store.set(&project, &env, &name, &value, actor)?;
+        } else {
+            store.set_var(&project, &env, &name, &value, actor)?;
+        }
         Ok(serde_json::json!({ "saved": name }))
     })
 }

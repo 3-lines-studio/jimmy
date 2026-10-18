@@ -342,7 +342,7 @@ dependencies = [
 [[package]]
 name = "heimdall"
 version = "0.1.0"
-source = "git+https://github.com/3-lines-studio/heimdall?rev=2e7fc8ca37c137007a0cee0338e9d35ca6d3c4dd#2e7fc8ca37c137007a0cee0338e9d35ca6d3c4dd"
+source = "git+https://github.com/3-lines-studio/heimdall?rev=2c504ed9a6184bfa15923c8e9b1aabf5af36ab1f#2c504ed9a6184bfa15923c8e9b1aabf5af36ab1f"
 dependencies = [
  "blake3",
  "chacha20poly1305",

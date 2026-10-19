@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/avatar.css" />
     <link rel="stylesheet" href="/vault.css" />
-    <link rel="stylesheet" href="/v2/app.css" />
+    <link rel="stylesheet" href="/v2/app.css?v={{version}}" />
     <style>
       #v2-fallo {
         margin: 16px;
@@ -72,9 +72,9 @@
   <body>
     <div id="main"></div>
     <script type="module">
-      import init from "/v2/ui-v2.js";
+      import init from "/v2/ui-v2.js?v={{version}}";
       try {
-        await init();
+        await init({ module_or_path: "/v2/ui-v2_bg.wasm?v={{version}}" });
       } catch (error) {
         window.jimmyFallo("no cargó el wasm: " + (error && error.message ? error.message : error));
       }

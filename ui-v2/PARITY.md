@@ -55,6 +55,14 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   al reconectar.
 - Login: `/v2` sin sesión va a `/login?next=/v2` y el link devuelve ahí (sólo se
   aceptan rutas propias).
+- `#online`: la lista de conectados, con el mismo `EventSource` a `/api/online`, el
+  backoff de la v1 y el mismo texto (`ana, bob`; vacío si hay uno solo).
+- `visibilitychange`: al volver a la pestaña se refresca el estado, se re-suscribe el
+  stream de la pestaña activa y se reabre el de conectados.
+- Avatares: mismos estados (`sleeping`, `focused`, `working`, `waiting`, `done`,
+  `error`) calculados como `projectAvatarState`, con `--blink`/`--delay`/`--hop`/`--gaze`
+  aleatorios por proyecto y los ojos siguiendo el puntero (`--dx`/`--dy`, 240 px de
+  alcance y 0.17/0.3 del ancho según `focused`), apagado con `prefers-reduced-motion`.
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token
@@ -81,5 +89,11 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 ## Divergencias conocidas
 
 - Sin atajos de teclado ni arrastrar-y-soltar (la v1 tampoco los tiene).
+- Si `jimmy` se reinicia con la pestaña abierta, ni la v1 ni la v2 retoman el stream
+  solas: las dos necesitan recargar. El backoff queda para los cierres que sí avisan
+  (`readyState === CLOSED`).
+- Un avatar puede quedar un instante en otro estado si el `/api/state` de cada
+  cliente llega en momentos distintos; la v1 tiene la misma carrera entre dos pestañas.
+  Medido: dos receptores (una v1 y la v2) coinciden siempre.
 - El botón de copiar mensaje guarda el texto en `data-copy` (la v1 lo tiene en un
   closure): mismo texto copiado, un atributo invisible de diferencia.

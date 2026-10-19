@@ -3004,6 +3004,8 @@ name = "ui-v2"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "futures-channel",
+ "futures-util",
  "gloo-net",
  "gloo-timers",
  "js-sys",
@@ -3020,6 +3022,7 @@ name = "uicore"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
+ "serde",
  "serde_json",
 ]
 

@@ -1,4 +1,6 @@
 pub mod agenda;
+pub mod api;
+pub mod event;
 pub mod files;
 pub mod machine;
 pub mod markdown;

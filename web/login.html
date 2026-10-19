@@ -127,7 +127,9 @@
     <script>
       const error = document.getElementById("error");
       const ok = document.getElementById("ok");
-      if (new URLSearchParams(location.search).has("error")) error.hidden = false;
+      const query = new URLSearchParams(location.search);
+      if (query.has("error")) error.hidden = false;
+      const next = query.get("next") || "";
       document.getElementById("login").onsubmit = async (event) => {
         event.preventDefault();
         ok.hidden = true;
@@ -137,7 +139,7 @@
           response = await fetch("/api/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: document.getElementById("email").value }),
+            body: JSON.stringify({ email: document.getElementById("email").value, next }),
           });
         } catch {
           error.textContent = "No hay conexión";

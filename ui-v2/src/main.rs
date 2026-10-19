@@ -82,6 +82,7 @@ struct App {
     expanded: Vec<String>,
     menu: Option<String>,
     files: HashMap<String, FilesTab>,
+    share: Option<String>,
 }
 
 fn main() {
@@ -194,6 +195,114 @@ fn confirm(text: &str) -> bool {
     web_sys::window()
         .and_then(|window| window.confirm_with_message(text).ok())
         .unwrap_or(false)
+}
+
+fn load_earlier(app: Signal<App>, key: String) {
+    let before = app.read().data.get(&key).map(|tab| tab.first).unwrap_or(0);
+    if before == 0 {
+        return;
+    }
+    spawn(async move {
+        let mut app = app;
+        let Ok(history) = api::get::<api::History>(&api::history_path(&key, before)).await else {
+            return;
+        };
+        let mut state = app.write();
+        if let Some(tab) = state.data.get_mut(&key) {
+            let mut older: Vec<Event> = history.events.iter().filter_map(Event::parse).collect();
+            older.extend(tab.events.clone());
+            tab.events = older;
+            tab.first = history.first;
+        }
+    });
+}
+
+fn scroll_bottom(key: &str) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    if let Some(node) = document.get_element_by_id(&format!("transcript-{key}")) {
+        node.set_scroll_top(node.scroll_height());
+    }
+}
+
+fn rename_conversation(app: Signal<App>, key: String) {
+    let current = conversation_of(&app.read(), &key)
+        .map(|conversation| conversation.title)
+        .unwrap_or_default();
+    let Some(title) = ask("Título de la conversación", &current) else {
+        return;
+    };
+    if title == current {
+        return;
+    }
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "conversation": key, "title": title });
+        match api::post_quiet("/api/rename", &body).await {
+            Ok(()) => refresh(app),
+            Err(message) => toast(app, &message),
+        }
+    });
+}
+
+fn remove_conversation(app: Signal<App>, sources: Sources, key: String) {
+    let title = conversation_of(&app.read(), &key)
+        .map(|conversation| conversation.title)
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| key.clone());
+    if !confirm(&format!(
+        "¿Borrar la conversación \"{title}\"? Se pierde el historial."
+    )) {
+        return;
+    }
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "conversation": key });
+        match api::post_quiet("/api/delete-conversation", &body).await {
+            Ok(()) => {
+                close_tab(app, sources, &key);
+                refresh(app);
+            }
+            Err(message) => toast(app, &message),
+        }
+    });
+}
+
+fn take_share() -> Option<String> {
+    let window = web_sys::window()?;
+    let search = window.location().search().ok()?;
+    let query = search.trim_start_matches('?');
+    if query.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    let mut url = String::new();
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = js_sys::decode_uri_component(value)
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        match name {
+            "text" => text = value,
+            "url" => url = value,
+            _ => {}
+        }
+    }
+    let _ = window.history().and_then(|history| {
+        history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/v2"))
+    });
+    let text = text.trim().to_string();
+    let url = url.trim().to_string();
+    let combined = match (text.is_empty(), url.is_empty()) {
+        (true, true) => return None,
+        (_, true) => text,
+        (true, _) => url,
+        (false, false) if text.contains(&url) => text,
+        (false, false) => format!("{text}\n{url}"),
+    };
+    Some(combined)
 }
 
 fn rename_project(app: Signal<App>, from: String) {
@@ -328,15 +437,15 @@ fn unsubscribe(sources: &Sources, key: &str) {
     }
 }
 
-fn open_tab(mut app: Signal<App>, sources: Sources, key: String) {
-    {
-        let mut state = app.write();
-        if !state.tabs.contains(&key) {
-            state.tabs.push(key.clone());
-        }
-        state.data.entry(key.clone()).or_default();
-        state.active = Some(key.clone());
+fn create_tab(mut app: Signal<App>, key: &str) {
+    let mut state = app.write();
+    if !state.tabs.contains(&key.to_string()) {
+        state.tabs.push(key.to_string());
     }
+    state.data.entry(key.to_string()).or_default();
+}
+
+fn load_tab(app: Signal<App>, sources: Sources, key: String) {
     let mut app_mut = app;
     let scope = key.clone();
     let loaded = app
@@ -346,7 +455,6 @@ fn open_tab(mut app: Signal<App>, sources: Sources, key: String) {
         .map(|tab| !tab.events.is_empty())
         .unwrap_or(false);
     if loaded {
-        subscribe(app, sources, key);
         return;
     }
     spawn(async move {
@@ -371,26 +479,118 @@ fn open_tab(mut app: Signal<App>, sources: Sources, key: String) {
     });
 }
 
+fn open_tab(app: Signal<App>, sources: Sources, key: String) {
+    create_tab(app, &key);
+    activate(app, sources, &key);
+}
+
+fn remember_tabs(app: &App) {
+    let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    else {
+        return;
+    };
+    let value = serde_json::json!({ "open": app.tabs });
+    let _ = storage.set_item("jimmy-tabs", &value.to_string());
+}
+
+fn remember_hash(key: Option<&str>) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let target = match key {
+        Some(key) => format!("#{}", js_sys::encode_uri_component(key)),
+        None => window
+            .location()
+            .pathname()
+            .unwrap_or_else(|_| "/v2".to_string()),
+    };
+    let _ = window.history().and_then(|history| {
+        history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&target))
+    });
+}
+
+fn restore_tabs(app: Signal<App>, sources: Sources) {
+    let saved = stored("jimmy-tabs")
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+        .and_then(|value| value.get("open").and_then(|open| open.as_array()).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    let hash = web_sys::window()
+        .and_then(|window| window.location().hash().ok())
+        .map(|hash| hash.trim_start_matches('#').to_string())
+        .unwrap_or_default();
+    let hash = js_sys::decode_uri_component(&hash)
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    let mut wanted = saved.clone();
+    if !hash.is_empty() && !wanted.contains(&hash) {
+        wanted.push(hash.clone());
+    }
+    for key in wanted {
+        if uicore::files::is_files(&key) {
+            continue;
+        }
+        create_tab(app, &key);
+    }
+    let target = match hash.is_empty() {
+        true => saved.last().cloned(),
+        false => Some(hash),
+    };
+    if let Some(key) = target {
+        if !key.is_empty() {
+            activate(app, sources, &key);
+        }
+    }
+}
+
 fn close_tab(mut app: Signal<App>, sources: Sources, key: &str) {
     unsubscribe(&sources, key);
-    let mut state = app.write();
-    state.tabs.retain(|tab| tab != key);
-    state.data.remove(key);
-    if state.active.as_deref() == Some(key) {
-        state.active = state.tabs.last().cloned();
+    {
+        let mut state = app.write();
+        state.tabs.retain(|tab| tab != key);
+        state.data.remove(key);
+        if state.active.as_deref() == Some(key) {
+            state.active = state.tabs.last().cloned();
+        }
+        let active = state.active.clone();
+        drop(state);
+        remember_tabs(&app.read());
+        remember_hash(active.as_deref());
     }
 }
 
 fn activate(mut app: Signal<App>, sources: Sources, key: &str) {
-    {
+    let previous = app.read().active.clone();
+    if let Some(previous) = previous.filter(|previous| previous != key) {
+        unsubscribe(&sources, &previous);
+    }
+    let share = {
         let mut state = app.write();
         state.active = Some(key.to_string());
         if let Some(tab) = state.data.get_mut(key) {
             tab.done = false;
             tab.error = false;
+            if tab.draft.is_empty() {
+                let shared = state.share.take();
+                if let Some(shared) = shared {
+                    if let Some(tab) = state.data.get_mut(key) {
+                        tab.draft = shared;
+                    }
+                }
+            }
         }
+        state.share.clone()
+    };
+    if share.is_some() {
+        toast(app, "Compartiste algo: abrí una conversación y pegalo");
     }
-    subscribe(app, sources, key.to_string());
+    create_tab(app, key);
+    load_tab(app, sources, key.to_string());
+    remember_tabs(&app.read());
+    remember_hash(Some(key));
 }
 
 fn refresh(app: Signal<App>) {
@@ -658,7 +858,7 @@ fn walk(
     }
 }
 
-fn copy_hook() {
+fn events_hook(app: Signal<App>) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
@@ -692,6 +892,36 @@ fn copy_hook() {
         });
     let _ = document.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
     listener.forget();
+
+    let paste = Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(
+        move |event: web_sys::ClipboardEvent| {
+            let Some(data) = event.clipboard_data() else {
+                return;
+            };
+            let Some(files) = data.files() else {
+                return;
+            };
+            if files.length() == 0 {
+                return;
+            }
+            let Some(key) = app
+                .read()
+                .active
+                .clone()
+                .filter(|key| !uicore::files::is_files(key))
+            else {
+                return;
+            };
+            event.prevent_default();
+            for index in 0..files.length() {
+                if let Some(file) = files.get(index) {
+                    upload(app, key.clone(), file);
+                }
+            }
+        },
+    );
+    let _ = document.add_event_listener_with_callback("paste", paste.as_ref().unchecked_ref());
+    paste.forget();
 }
 
 fn set_theme(theme: &str) {
@@ -738,7 +968,7 @@ fn app() -> Element {
     let sources =
         use_hook(|| Rc::new(RefCell::new(HashMap::<String, web_sys::EventSource>::new())));
 
-    use_hook(copy_hook);
+    use_hook(move || events_hook(app));
 
     use_hook(move || {
         let theme = stored("jimmy-theme").unwrap_or_else(system_theme);
@@ -748,9 +978,47 @@ fn app() -> Element {
             state.opened = stored("jimmy-open-projects")
                 .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
                 .unwrap_or_default();
+            state.share = take_share();
         }
         set_theme(&theme);
         refresh(app);
+    });
+
+    let sources_restore = sources.clone();
+    use_hook(move || {
+        restore_tabs(app, sources_restore);
+    });
+
+    use_effect(move || {
+        let active = app.read().active.clone();
+        if let Some(key) = active.filter(|key| !uicore::files::is_files(key)) {
+            scroll_bottom(&key);
+        }
+    });
+
+    use_effect(move || {
+        let count = {
+            let state = app.read();
+            state
+                .tabs
+                .iter()
+                .filter(|key| state.active.as_deref() != Some(key.as_str()))
+                .filter(|key| {
+                    state
+                        .data
+                        .get(*key)
+                        .map(|tab| tab.done || tab.error)
+                        .unwrap_or(false)
+                })
+                .count()
+        };
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            let title = match count {
+                0 => "Jimmy".to_string(),
+                count => format!("({count}) Jimmy"),
+            };
+            document.set_title(&title);
+        }
     });
 
     use_effect(move || {
@@ -780,6 +1048,11 @@ fn app() -> Element {
         .and_then(|key| state.data.get(key))
         .map(|tab| tab.running)
         .unwrap_or(false);
+    let showing_actions = active.is_some()
+        && !active
+            .as_deref()
+            .map(uicore::files::is_files)
+            .unwrap_or(false);
 
     let open = {
         let app = app;
@@ -989,7 +1262,7 @@ fn app() -> Element {
                                                     _ => "dot",
                                                 };
                                                 rsx! {
-                                                    button {
+                                                    div {
                                                         key: "{conversation.key}",
                                                         class: if selected { "conversation active" } else { "conversation" },
                                                         onclick: {
@@ -1004,12 +1277,43 @@ fn app() -> Element {
                                                                 }
                                                             }
                                                         },
-                                                        span { class: "{status}" }
+                                                        span { class: "slot",
+                                                            span { class: "{status}" }
+                                                        }
                                                         span { class: "title",
                                                             if conversation.title.is_empty() {
                                                                 "{conversation.key}"
                                                             } else {
                                                                 "{conversation.title}"
+                                                            }
+                                                        }
+                                                        if !conversation.read_only {
+                                                            button {
+                                                                class: "icon-btn",
+                                                                title: "Renombrar",
+                                                                "aria-label": "Renombrar",
+                                                                onclick: {
+                                                                    let key = conversation.key.clone();
+                                                                    move |event: MouseEvent| {
+                                                                        event.stop_propagation();
+                                                                        rename_conversation(app, key.clone());
+                                                                    }
+                                                                },
+                                                                Icon { name: "pencil", size: 14 }
+                                                            }
+                                                            button {
+                                                                class: "icon-btn danger",
+                                                                title: "Borrar conversación",
+                                                                "aria-label": "Borrar conversación",
+                                                                onclick: {
+                                                                    let key = conversation.key.clone();
+                                                                    let sources = sources.clone();
+                                                                    move |event: MouseEvent| {
+                                                                        event.stop_propagation();
+                                                                        remove_conversation(app, sources.clone(), key.clone());
+                                                                    }
+                                                                },
+                                                                Icon { name: "close", size: 14 }
                                                             }
                                                         }
                                                     }
@@ -1078,7 +1382,10 @@ fn app() -> Element {
                         id: "menu",
                         "aria-label": "Volver",
                         title: "Volver",
-                        onclick: move |_| app.write().active = None,
+                        onclick: move |_| {
+                            app.write().active = None;
+                            remember_hash(None);
+                        },
                         Icon { name: "left", size: 16 }
                     }
                     div { id: "tabs",
@@ -1119,7 +1426,24 @@ fn app() -> Element {
                             }
                         }
                     }
-                    div { id: "tab-actions", hidden: true }
+                    div { id: "tab-actions", hidden: !showing_actions,
+                        span { id: "viewers",
+                            if let Some(tab) = active.as_ref().and_then(|key| state.data.get(key)) {
+                                if tab.viewers.len() > 1 {
+                                    "{tab.viewers.join(\", \")} Mirando"
+                                }
+                            }
+                        }
+                        button {
+                            id: "cancel",
+                            hidden: !running,
+                            onclick: {
+                                let key = active.clone().unwrap_or_default();
+                                move |_| cancel(app, key.clone())
+                            },
+                            "Cancelar"
+                        }
+                    }
                 }
                 if let Some(message) = state.error.clone() {
                     div { id: "refresh", "{message}" }
@@ -1230,9 +1554,32 @@ fn app() -> Element {
                                 rsx! {
                                     div { key: "{key}", class: "pane", hidden: !selected,
                                         Transcript {
+                                            id: format!("transcript-{key}"),
                                             conversation: key.clone(),
                                             workspace: workspace.clone(),
                                             events: tab.events.clone(),
+                                        }
+                                        div { class: "jump",
+                                            if tab.first > 0 {
+                                                button {
+                                                    class: "up",
+                                                    "aria-label": "Ver anteriores",
+                                                    onclick: {
+                                                        let key = key.clone();
+                                                        move |_| load_earlier(app, key.clone())
+                                                    },
+                                                    Icon { name: "up", size: 15 }
+                                                }
+                                            }
+                                            button {
+                                                class: "down",
+                                                "aria-label": "Ir al final",
+                                                onclick: {
+                                                    let key = key.clone();
+                                                    move |_| scroll_bottom(&key)
+                                                },
+                                                Icon { name: "arrow-down", size: 15 }
+                                            }
                                         }
                                     }
                                 }
@@ -1293,7 +1640,17 @@ fn app() -> Element {
                                             tab.draft = event.value();
                                         }
                                     }
-                                }
+                                },
+                                onkeydown: {
+                                    let conversation = key.clone();
+                                    move |event: KeyboardEvent| {
+                                        if event.key().to_string() != "Enter" || event.modifiers().shift() {
+                                            return;
+                                        }
+                                        event.prevent_default();
+                                        send(app, conversation.clone());
+                                    }
+                                },
                             }
                             label { id: "attach", title: "Adjuntar imagen",
                                 input {

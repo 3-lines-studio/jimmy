@@ -15,7 +15,7 @@ COPY src /build/jimmy/src
 COPY web /build/jimmy/web
 COPY prompts /build/jimmy/prompts
 COPY ui-v2 /build/jimmy/ui-v2
-RUN cd /build/jimmy/ui-v2 && (./build.sh || mkdir -p dist)
+RUN cd /build/jimmy/ui-v2 && ./build.sh
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 

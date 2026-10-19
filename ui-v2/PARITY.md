@@ -19,6 +19,15 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   `localStorage`), menú kebab con renombrar, duplicar y quitar proyecto, "Ver más"
   después de 10 conversaciones.
 - Pie con CPU y disco (`uicore::machine`).
+- Pestañas: se guardan en `localStorage` (`jimmy-tabs`), el `#hash` apunta a la activa,
+  al recargar se restauran, y el título lleva el contador `(n) Jimmy`.
+- Composer: Enter envía, Shift+Enter salta línea, pegar imágenes las sube.
+- Fila de conversación: lápiz para renombrar y × para borrar (`/api/rename`,
+  `/api/delete-conversation`), con `.slot` como en la v1.
+- `#tab-actions`: "Mirando" y "Cancelar" cuando el turno corre.
+- `jump`: ver anteriores (`/api/history?before=`) y bajar al final, con auto-scroll.
+- Share target: `?text=`/`?url=` de la PWA entran al borrador.
+- Al cambiar de pestaña se cierra el SSE de la anterior, como la v1 (batería).
 - Pestaña Archivos: árbol por proyecto (`/api/tree`), carpetas que se abren al hacer
   clic, imagen, markdown y texto con copiar (`/api/raw`), título "Archivos: Ken" y
   pill del proyecto.
@@ -27,22 +36,15 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 
 ## Falta (en orden de valor)
 
-1. Sidebar: chips de Agenda/Vault, buscador, puntos de no leído / atención,
-   renombrar y borrar conversación desde la fila, y el gaze de los ojos (puntero).
-2. Pestañas: persistencia en `localStorage` + `#hash`, contador en `document.title`,
-   "Mirando", botón Cancelar.
-3. Mensajes: `jump` (subir/bajar), cargar anteriores, auto-scroll con `follow`,
-   Enter envía / Shift+Enter salta línea, pegar imágenes, encoger >1 MB antes de subir.
-4. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff` de `markdown.js`),
-   `table-wrap`, checkboxes.
-5. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes.
-6. `agenda.js` y `vault.js`: pestañas y paneles completos.
-7. `machine.js`: CPU/disco al pie. `project.js` y `previews`: tarjetas de preview y stop.
-8. `secret.js`: diálogo de secretos del vault.
-9. `share_target` (texto/url de la PWA) y pull-to-refresh.
-10. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.
-11. Tests del resto: `tool` y `markdown` ya viven en `ui-v2/core` (crate `uicore`, sin
-    dioxus) y `make test` corre sus 7 tests en el host. Faltan los de `event` y `api`.
+1. Sidebar: chips de Agenda y Vault (y sus dos módulos), gaze de los ojos.
+2. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff`), `table-wrap`, checkboxes.
+3. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes (>1 MB se suben enteras).
+4. Previews: tarjetas `#previews` con stop (`/api/preview/stop` ya existe).
+5. `vault.js` + `secret.js`: panel, secretos, environment, token.
+6. Pull-to-refresh y `hashchange` (hoy el hash se escribe y se lee al recargar).
+7. El scroll sigue al final siempre: la v1 respeta si el usuario está mirando arriba.
+8. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.
+9. Tests de `event` y `api`; `uicore` tiene 22.
 
 ## Divergencias conocidas
 

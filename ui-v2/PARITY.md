@@ -14,14 +14,19 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 - Tarjetas de tool con agrupación en `steps`, `+a -d`, `describeTool` y tiempos.
 - Composer: enviar, adjuntar imágenes (`/api/upload`), quitar adjunto, cancelar el turno.
 - Tema claro/oscuro con `localStorage` y `prefers-color-scheme`.
+- Sidebar: avatares con cara y tono del nombre (`uicore::project`), nombres con la
+  primera en mayúscula, tamaño en KB/MB/GB, caret para colapsar (recordado en
+  `localStorage`), menú kebab con renombrar, duplicar y quitar proyecto, "Ver más"
+  después de 10 conversaciones.
+- Pie con CPU y disco (`uicore::machine`).
 - Mismo CSS de la v1 (`/theme.css`, `/style.css`, `/avatar.css`, `/vault.css`); la v2
   sólo agrega `#main { height: 100% }`.
 
 ## Falta (en orden de valor)
 
-1. Sidebar: avatares (`avatar.js`), nombres capitalizados, caret para colapsar,
-   menú kebab por proyecto (renombrar, duplicar, quitar), "más" después de 10,
-   buscador y puntos de no leído / atención.
+1. Sidebar: chips de Agenda/Vault, "Ver archivos" en el menú, buscador, puntos de
+   no leído / atención, renombrar y borrar conversación desde la fila, y el gaze
+   de los ojos (puntero).
 2. Pestañas: persistencia en `localStorage` + `#hash`, contador en `document.title`,
    "Mirando", botón Cancelar.
 3. Mensajes: `jump` (subir/bajar), cargar anteriores, auto-scroll con `follow`,

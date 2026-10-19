@@ -44,7 +44,9 @@ struct App {
     toast: Option<String>,
     online: String,
     new_project: String,
-    expanded: bool,
+    opened: Vec<String>,
+    expanded: Vec<String>,
+    menu: Option<String>,
 }
 
 fn main() {
@@ -91,6 +93,124 @@ fn project_of(app: &App, key: &str) -> String {
     conversation_of(app, key)
         .map(|conversation| conversation.project)
         .unwrap_or_default()
+}
+
+fn avatar_state(app: &App, project: &api::Project, active: Option<&str>) -> String {
+    let mut state = if app.opened.contains(&project.name) {
+        "idle"
+    } else {
+        "sleeping"
+    };
+    for conversation in &project.conversations {
+        if Some(conversation.key.as_str()) == active {
+            state = "focused";
+        }
+        if let Some(tab) = app.data.get(&conversation.key) {
+            if tab.error {
+                return "error".to_string();
+            }
+            if tab.done {
+                return "done".to_string();
+            }
+            if tab.running {
+                state = "working";
+            }
+        } else if conversation.running && state == "idle" {
+            state = "waiting";
+        }
+    }
+    state.to_string()
+}
+
+fn toggle(list: &mut Vec<String>, name: &str) {
+    match list.iter().position(|item| item == name) {
+        Some(index) => {
+            list.remove(index);
+        }
+        None => list.push(name.to_string()),
+    }
+}
+
+fn remember_open(opened: &[String]) {
+    let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    else {
+        return;
+    };
+    let value = serde_json::json!(opened);
+    let _ = storage.set_item("jimmy-open-projects", &value.to_string());
+}
+
+fn ask(text: &str, fallback: &str) -> Option<String> {
+    let window = web_sys::window()?;
+    let answer = window
+        .prompt_with_message_and_default(text, fallback)
+        .ok()??;
+    let answer = answer.trim().to_string();
+    (!answer.is_empty()).then_some(answer)
+}
+
+fn confirm(text: &str) -> bool {
+    web_sys::window()
+        .and_then(|window| window.confirm_with_message(text).ok())
+        .unwrap_or(false)
+}
+
+fn rename_project(app: Signal<App>, from: String) {
+    let Some(name) = ask("Nombre del proyecto", &from) else {
+        return;
+    };
+    if name == from {
+        return;
+    }
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "project": from, "name": name });
+        match api::post_quiet("/api/rename-project", &body).await {
+            Ok(()) => refresh(app),
+            Err(message) => toast(app, &message),
+        }
+    });
+}
+
+fn duplicate_project(app: Signal<App>, from: String) {
+    let Some(name) = ask("Nombre del proyecto nuevo", &format!("{from}-2")) else {
+        return;
+    };
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "project": from, "name": name });
+        match api::post_quiet("/api/duplicate-project", &body).await {
+            Ok(()) => refresh(app),
+            Err(message) => toast(app, &message),
+        }
+    });
+}
+
+fn remove_project(app: Signal<App>, project: api::Project) {
+    let text = format!("¿Quitar \"{}\" y todas sus conversaciones?", project.name);
+    if !confirm(&text) {
+        return;
+    }
+    if project.unversioned
+        && !confirm(&format!(
+            "\"{}\" no está en git. ¿Lo borro igual?",
+            project.name
+        ))
+    {
+        return;
+    }
+    spawn(async move {
+        let app = app;
+        let body = if project.unversioned {
+            serde_json::json!({ "project": project.name, "force": true })
+        } else {
+            serde_json::json!({ "project": project.name })
+        };
+        match api::post_quiet("/api/delete-project", &body).await {
+            Ok(()) => refresh(app),
+            Err(message) => toast(app, &message),
+        }
+    });
 }
 
 fn apply(app: Signal<App>, key: &str, event: Event) {
@@ -410,7 +530,13 @@ fn app() -> Element {
 
     use_hook(move || {
         let theme = stored("jimmy-theme").unwrap_or_else(system_theme);
-        app.write().theme = theme.clone();
+        {
+            let mut state = app.write();
+            state.theme = theme.clone();
+            state.opened = stored("jimmy-open-projects")
+                .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                .unwrap_or_default();
+        }
         set_theme(&theme);
         refresh(app);
     });
@@ -469,67 +595,212 @@ fn app() -> Element {
                         value: "{state.new_project}",
                         oninput: move |event| app.write().new_project = event.value(),
                     }
-                    button { "aria-label": "Agregar proyecto", title: "Agregar proyecto" }
+                    button { "aria-label": "Agregar proyecto", title: "Agregar proyecto",
+                        Icon { name: "plus", size: 14 }
+                    }
                 }
                 div { id: "online", "{state.online}" }
                 nav { id: "projects",
                     for project in state.state.as_ref().map(|state| state.projects.clone()).unwrap_or_default() {
-                        div { key: "{project.name}", class: "group",
-                            div { class: "head",
-                                div { class: "project",
-                                    span { class: "avatar" }
-                                    span { class: "text",
-                                        span { class: "name", "{project.name}" }
-                                    }
-                                    span { class: "size", "{size(&project.size)}" }
-                                    button {
-                                        class: "icon-btn",
-                                        title: "Nueva conversación",
-                                        "aria-label": "Nueva conversación",
-                                        onclick: {
-                                            let project = project.name.clone();
-                                            let sources = sources.clone();
-                                            move |_| new_conversation(app, sources.clone(), project.clone())
-                                        },
-                                        Icon { name: "plus", size: 14 }
-                                    }
-                                }
-                            }
-                            div { class: "threads",
-                                for conversation in project.conversations.iter().take(VISIBLE).cloned().collect::<Vec<_>>() {
-                                    {
-                                        let selected = active.as_deref() == Some(conversation.key.as_str());
-                                        let tab = state.data.get(&conversation.key);
-                                        let status = match tab {
-                                            Some(tab) if tab.error => "dot error",
-                                            Some(tab) if tab.done => "dot done",
-                                            _ if conversation.running => "dot running",
-                                            _ => "dot",
-                                        };
-                                        rsx! {
-                                            button {
-                                                key: "{conversation.key}",
-                                                class: if selected { "conversation active" } else { "conversation" },
-                                                onclick: {
-                                                    let key = conversation.key.clone();
-                                                    let open = open.clone();
-                                                    let sources = sources.clone();
-                                                    move |_| {
-                                                        let known = app.read().data.contains_key(&key);
-                                                        match known {
-                                                            true => activate(app, sources.clone(), &key),
-                                                            false => open(key.clone()),
+                        {
+                            let collapsed = !state.opened.contains(&project.name);
+                            let selected_here = project
+                                .conversations
+                                .iter()
+                                .any(|conversation| active.as_deref() == Some(conversation.key.as_str()));
+                            let group_class = match (collapsed, selected_here) {
+                                (true, true) => "group collapsed active",
+                                (true, false) => "group collapsed",
+                                (false, true) => "group active",
+                                (false, false) => "group",
+                            };
+                            let (body, eyes) = uicore::project::face(&project.name);
+                            let hue = uicore::project::hue(&project.name);
+                            let avatar = avatar_state(&state, &project, active.as_deref());
+                            let more = project.conversations.len() > VISIBLE;
+                            let all = state.expanded.contains(&project.name);
+                            let shown = match all {
+                                true => project.conversations.clone(),
+                                false => project.conversations.iter().take(VISIBLE).cloned().collect(),
+                            };
+                            let caret = match collapsed {
+                                true => "Mostrar los hilos",
+                                false => "Ocultar los hilos",
+                            };
+                            let name = project.name.clone();
+                            rsx! {
+                                div { key: "{project.name}", class: "{group_class}",
+                                    div { class: "head",
+                                        div {
+                                            class: "project",
+                                            onclick: {
+                                                let name = name.clone();
+                                                let sources = sources.clone();
+                                                move |_| {
+                                                    let newest = app
+                                                        .read()
+                                                        .state
+                                                        .as_ref()
+                                                        .and_then(|state| state.projects.iter().find(|project| project.name == name))
+                                                        .and_then(|project| project.conversations.first().map(|conversation| conversation.key.clone()));
+                                                    match newest {
+                                                        Some(key) => {
+                                                            let known = app.read().data.contains_key(&key);
+                                                            match known {
+                                                                true => activate(app, sources.clone(), &key),
+                                                                false => open_tab(app, sources.clone(), key),
+                                                            }
                                                         }
-                                                    }
-                                                },
-                                                span { class: "{status}" }
-                                                span { class: "title",
-                                                    if conversation.title.is_empty() {
-                                                        "{conversation.key}"
-                                                    } else {
-                                                        "{conversation.title}"
+                                                        None => new_conversation(app, sources.clone(), name.clone()),
                                                     }
                                                 }
+                                            },
+                                            span {
+                                                class: "avatar bot body-{body} eyes-{eyes} {avatar}",
+                                                style: "--h: {hue}",
+                                                span { class: "eye", i {} }
+                                                span { class: "eye", i {} }
+                                            }
+                                            span { class: "text",
+                                                span { class: "name", title: "{project.path}",
+                                                    "{uicore::project::title(&project.name)}"
+                                                }
+                                            }
+                                            if project.size > 0 {
+                                                span { class: "size", "{uicore::project::size(project.size)}" }
+                                            }
+                                            button {
+                                                class: "icon-btn caret",
+                                                title: "{caret}",
+                                                "aria-label": "{caret}",
+                                                onclick: {
+                                                    let name = name.clone();
+                                                    move |event: MouseEvent| {
+                                                        event.stop_propagation();
+                                                        let mut state = app.write();
+                                                        toggle(&mut state.opened, &name);
+                                                        let opened = state.opened.clone();
+                                                        drop(state);
+                                                        remember_open(&opened);
+                                                    }
+                                                },
+                                                Icon { name: "down", size: 15 }
+                                            }
+                                            button {
+                                                class: "icon-btn kebab",
+                                                title: "Opciones del Proyecto",
+                                                "aria-label": "Opciones del Proyecto",
+                                                onclick: {
+                                                    let name = name.clone();
+                                                    move |event: MouseEvent| {
+                                                        event.stop_propagation();
+                                                        let mut state = app.write();
+                                                        state.menu = match state.menu.as_deref() {
+                                                            Some(current) if current == name => None,
+                                                            _ => Some(name.clone()),
+                                                        };
+                                                    }
+                                                },
+                                                Icon { name: "dots", size: 15 }
+                                            }
+                                        }
+                                        div { class: "menu", hidden: state.menu.as_deref() != Some(project.name.as_str()),
+                                            button {
+                                                class: "item",
+                                                onclick: {
+                                                    let name = name.clone();
+                                                    let sources = sources.clone();
+                                                    move |_| {
+                                                        app.write().menu = None;
+                                                        new_conversation(app, sources.clone(), name.clone());
+                                                    }
+                                                },
+                                                "Nueva conversación"
+                                            }
+                                            if project.name != "general" {
+                                                button {
+                                                    class: "item",
+                                                    onclick: {
+                                                        let name = name.clone();
+                                                        move |_| {
+                                                            app.write().menu = None;
+                                                            rename_project(app, name.clone());
+                                                        }
+                                                    },
+                                                    "Renombrar proyecto"
+                                                }
+                                                button {
+                                                    class: "item",
+                                                    onclick: {
+                                                        let name = name.clone();
+                                                        move |_| {
+                                                            app.write().menu = None;
+                                                            duplicate_project(app, name.clone());
+                                                        }
+                                                    },
+                                                    "Duplicar proyecto"
+                                                }
+                                                button {
+                                                    class: "item danger",
+                                                    onclick: {
+                                                        let project = project.clone();
+                                                        move |_| {
+                                                            app.write().menu = None;
+                                                            remove_project(app, project.clone());
+                                                        }
+                                                    },
+                                                    "Quitar proyecto"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "threads",
+                                        for conversation in shown {
+                                            {
+                                                let selected = active.as_deref() == Some(conversation.key.as_str());
+                                                let tab = state.data.get(&conversation.key);
+                                                let status = match tab {
+                                                    Some(tab) if tab.error => "dot error",
+                                                    Some(tab) if tab.done => "dot done",
+                                                    _ if conversation.running => "dot running",
+                                                    _ => "dot",
+                                                };
+                                                rsx! {
+                                                    button {
+                                                        key: "{conversation.key}",
+                                                        class: if selected { "conversation active" } else { "conversation" },
+                                                        onclick: {
+                                                            let key = conversation.key.clone();
+                                                            let open = open.clone();
+                                                            let sources = sources.clone();
+                                                            move |_| {
+                                                                let known = app.read().data.contains_key(&key);
+                                                                match known {
+                                                                    true => activate(app, sources.clone(), &key),
+                                                                    false => open(key.clone()),
+                                                                }
+                                                            }
+                                                        },
+                                                        span { class: "{status}" }
+                                                        span { class: "title",
+                                                            if conversation.title.is_empty() {
+                                                                "{conversation.key}"
+                                                            } else {
+                                                                "{conversation.title}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if more {
+                                            button {
+                                                class: "more",
+                                                onclick: {
+                                                    let name = name.clone();
+                                                    move |_| toggle(&mut app.write().expanded, &name)
+                                                },
+                                                if all { "Ver menos" } else { "Ver más" }
                                             }
                                         }
                                     }
@@ -539,6 +810,22 @@ fn app() -> Element {
                     }
                 }
                 div { id: "base",
+                    div { id: "machine",
+                        if let Some(machine) = state.state.as_ref().map(|state| state.machine.clone()) {
+                            span {
+                                class: "stat",
+                                title: "{uicore::machine::ratio(machine.memory.used, machine.memory.total)} · la memoria del contenedor, cache y kernel incluidos",
+                                Icon { name: "cpu", size: 13 }
+                                span { class: "value", "{uicore::machine::size(machine.memory.used)}" }
+                            }
+                            span {
+                                class: "stat",
+                                title: "{uicore::machine::ratio(machine.disk.used, machine.disk.total)} · el volumen {workspace}",
+                                Icon { name: "disk", size: 13 }
+                                span { class: "value", "{uicore::machine::percent(machine.disk.used, machine.disk.total)}" }
+                            }
+                        }
+                    }
                     div { id: "footer",
                         button {
                             id: "theme",
@@ -744,14 +1031,5 @@ fn app() -> Element {
                 "{text}"
             }
         }
-    }
-}
-
-fn size(bytes: &u64) -> String {
-    match bytes {
-        0 => String::new(),
-        bytes if *bytes < 1024 => format!("{bytes} B"),
-        bytes if *bytes < 1024 * 1024 => format!("{:.1} KB", *bytes as f64 / 1024.0),
-        bytes => format!("{:.1} MB", *bytes as f64 / (1024.0 * 1024.0)),
     }
 }

@@ -13,15 +13,29 @@ pub struct Conversation {
 #[derive(Deserialize, Clone, PartialEq)]
 pub struct Project {
     pub name: String,
+    pub path: String,
     pub unversioned: bool,
     pub size: u64,
     pub conversations: Vec<Conversation>,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
+pub struct Amount {
+    pub used: u64,
+    pub total: u64,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Machine {
+    pub memory: Amount,
+    pub disk: Amount,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
 pub struct State {
     pub user: String,
     pub workspace: String,
+    pub machine: Machine,
     pub projects: Vec<Project>,
 }
 

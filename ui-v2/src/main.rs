@@ -825,7 +825,12 @@ fn load_tab(app: Signal<App>, sources: Sources, key: String) {
             tab.count = tab.events.iter().filter(|event| event.logged()).count();
         }
         drop(app_write);
-        subscribe(app_mut, sources, scope);
+        subscribe(app_mut, sources, scope.clone());
+        let scroller = scope.clone();
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(16).await;
+            scroll_bottom(&scroller);
+        });
     });
 }
 
@@ -1844,17 +1849,7 @@ fn app() -> Element {
                     }
                     continue;
                 }
-                let refresh_needed = matches!(
-                    event,
-                    Event::User { .. }
-                        | Event::Done { .. }
-                        | Event::Error { .. }
-                        | Event::Stopped { .. }
-                );
                 apply(app, &key, event);
-                if refresh_needed {
-                    refresh(app);
-                }
             }
         });
     });
@@ -1896,6 +1891,7 @@ fn app() -> Element {
         restore_tabs(app, sources_restore);
     });
 
+    let scrolled = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new((String::new(), 0usize))));
     use_effect(move || {
         let state = app.read();
         let active = state.active.clone();
@@ -1903,11 +1899,21 @@ fn app() -> Element {
             .as_ref()
             .and_then(|key| state.data.get(key))
             .map(|tab| tab.follow)
-            .unwrap_or(true);
+            .unwrap_or(false);
+        let len = active
+            .as_ref()
+            .and_then(|key| state.data.get(key))
+            .map(|tab| tab.events.len())
+            .unwrap_or(0);
         drop(state);
-        if let Some(key) = active.filter(|key| follow && !uicore::files::is_files(key)) {
+        let Some(key) = active else {
+            return;
+        };
+        let (last_key, last_len) = scrolled.borrow().clone();
+        if last_key == key && len > last_len && follow {
             scroll_bottom(&key);
         }
+        *scrolled.borrow_mut() = (key, len);
     });
 
     use_effect(move || {
@@ -2398,12 +2404,13 @@ fn app() -> Element {
                                 };
                                 let title = title_of(&state, &key);
                                 let project = project_of(&state, &key);
+                                let color = uicore::project::color(&project);
                                 rsx! {
                                     div { key: "{key}", class: if selected { "tab active" } else { "tab" },
-                                        span { class: "pill",
-                                            if !project.is_empty() && project != "general" {
-                                                "{uicore::project::initials(&project)}"
-                                            }
+                                        span {
+                                            class: "pill",
+                                            style: "background: {color};",
+                                            "{uicore::project::initials(&project)}"
                                         }
                                         span { class: "{status}" }
                                         span { class: "title", "{title}" }

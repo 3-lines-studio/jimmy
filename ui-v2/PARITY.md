@@ -66,6 +66,15 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   `error`) calculados como `projectAvatarState`, con `--blink`/`--delay`/`--hop`/`--gaze`
   aleatorios por proyecto y los ojos siguiendo el puntero (`--dx`/`--dy`, 240 px de
   alcance y 0.17/0.3 del ancho según `focused`), apagado con `prefers-reduced-motion`.
+- Iconos: 161 `svg` con las mismas rutas, clases y tamaños que la v1 (chips, adjuntar,
+  tema con sol y luna, navegación de hilos, copiar/renombrar/borrar, pie y avatares).
+  El de enviar va como `svg` hijo directo del botón, centrado (un `span` de por medio
+  lo corría 3,2 px para arriba).
+- Pills de las pestañas: mismas iniciales y `background: rgb(…)` que
+  `projectColor` (`hsl(h 55% 42%)` convertido a rgb), también para `general`.
+- Scroll: se pega al fondo sólo cuando llega contenido y seguís abajo; al alejarte
+  más de 120 px se despega y no te vuelve a tirar. El scroll al abrir una pestaña
+  ocurre después del render, como el `scroll(tab)` de la v1.
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token

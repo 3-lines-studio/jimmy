@@ -10,7 +10,23 @@ pub fn hue(name: &str) -> u32 {
 }
 
 pub fn color(name: &str) -> String {
-    format!("hsl({} 55% 42%)", hue(name))
+    let hue = hue(name) as f64;
+    let saturation = 0.55_f64;
+    let lightness = 0.42_f64;
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue / 60.0;
+    let second = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
+    let (red, green, blue) = match sector as u32 {
+        0 => (chroma, second, 0.0),
+        1 => (second, chroma, 0.0),
+        2 => (0.0, chroma, second),
+        3 => (0.0, second, chroma),
+        4 => (second, 0.0, chroma),
+        _ => (chroma, 0.0, second),
+    };
+    let offset = lightness - chroma / 2.0;
+    let byte = |value: f64| ((value + offset) * 255.0).round() as u32;
+    format!("rgb({}, {}, {})", byte(red), byte(green), byte(blue))
 }
 
 fn hash(name: &str, seed: u32) -> u32 {
@@ -76,6 +92,12 @@ mod tests {
         let eyes: std::collections::HashSet<&str> = names.iter().map(|name| face(name).1).collect();
         assert_eq!(bodies.len(), BODIES.len());
         assert_eq!(eyes.len(), EYES.len());
+    }
+
+    #[test]
+    fn the_color_is_the_v1_hsl_rounded_to_rgb() {
+        assert_eq!(color("ken"), "rgb(48, 72, 166)");
+        assert_eq!(color("general"), "rgb(48, 80, 166)");
     }
 
     #[test]

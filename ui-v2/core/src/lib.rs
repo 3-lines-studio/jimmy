@@ -4,3 +4,4 @@ pub mod machine;
 pub mod markdown;
 pub mod project;
 pub mod tool;
+pub mod vault;

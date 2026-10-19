@@ -28,6 +28,11 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 - `jump`: ver anteriores (`/api/history?before=`) y bajar al final, con auto-scroll.
 - Share target: `?text=`/`?url=` de la PWA entran al borrador.
 - Al cambiar de pestaña se cierra el SSE de la anterior, como la v1 (batería).
+- Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
+  crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
+  variables, copiar como `.env`, tokens con alcance, último uso, revocar y token
+  recién creado mostrado una vez, y audit en castellano (`leyó`, `escribió`, …).
+  `uicore::vault` con los 8 tests de `vault.test.js`.
 - Agenda: chip con badge y punto de error, panel con tareas, horario (`agendaWhen`),
   última corrida, pills de no leído/pausada/bloqueada, desplegar corridas con markdown,
   correr ahora, pausar/reanudar y "Marcar todo leído" (`/api/agenda*`). Se recarga cada
@@ -40,11 +45,11 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 
 ## Falta (en orden de valor)
 
-1. Sidebar: chip de Vault y su módulo (`vault.js` + `secret.js`), gaze de los ojos.
+1. Sidebar: gaze de los ojos, y la tarjeta de `secret.js` en el composer (pegar un
+   secreto o escribir `/secret` para guardarlo en el vault).
 2. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff`), `table-wrap`, checkboxes.
 3. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes (>1 MB se suben enteras).
 4. Previews: tarjetas `#previews` con stop (`/api/preview/stop` ya existe).
-5. `vault.js` + `secret.js`: panel, secretos, environment, token.
 6. Pull-to-refresh y `hashchange` (hoy el hash se escribe y se lee al recargar).
 7. El scroll sigue al final siempre: la v1 respeta si el usuario está mirando arriba.
 8. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.

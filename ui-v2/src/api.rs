@@ -202,3 +202,61 @@ pub struct Task {
 pub struct Agenda {
     pub tasks: Vec<Task>,
 }
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct VaultEnvironment {
+    pub project: String,
+    pub env: String,
+    pub keys: u64,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct VaultToken {
+    pub id: String,
+    pub name: String,
+    pub project: String,
+    pub env: String,
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
+    pub keys: Option<Vec<String>>,
+    #[serde(default)]
+    pub last_used: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Audit {
+    pub at: i64,
+    pub actor: String,
+    pub action: String,
+    pub project: String,
+    pub env: String,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct VaultPanel {
+    pub enabled: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub environments: Vec<VaultEnvironment>,
+    #[serde(default)]
+    pub tokens: Vec<VaultToken>,
+    #[serde(default)]
+    pub audit: Vec<Audit>,
+}
+
+#[derive(Deserialize)]
+pub struct VaultSecrets {
+    pub secrets: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub plain: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct Minted {
+    #[serde(default)]
+    pub plain: String,
+}

@@ -1041,8 +1041,17 @@ pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
             let Ok(Some(button)) = target.closest("button.copy") else {
                 return;
             };
-            let Some(text) = button.get_attribute("data-copy") else {
-                return;
+            let text = match button.get_attribute("data-copy") {
+                Some(text) => text,
+                None => {
+                    let Some(pre) = button
+                        .parent_element()
+                        .and_then(|parent| parent.query_selector("pre").ok().flatten())
+                    else {
+                        return;
+                    };
+                    pre.text_content().unwrap_or_default()
+                }
             };
             let Some(window) = web_sys::window() else {
                 return;
@@ -1952,9 +1961,14 @@ fn app() -> Element {
                                                             div { dangerous_inner_html: uicore::markdown::render(&text) }
                                                         }
                                                     },
-                                                    Content::Text(text) => rsx! {
+                                                    Content::Text(text) => {
+                                                        let code = uicore::markdown::highlight(
+                                                            &text,
+                                                            &uicore::files::extension(&file),
+                                                        );
+                                                        rsx! {
                                                         div { class: "files-code",
-                                                            pre { "{text}" }
+                                                            pre { code { dangerous_inner_html: "{code}" } }
                                                             button {
                                                                 class: "copy",
                                                                 "data-copy": "{text}",
@@ -1962,6 +1976,7 @@ fn app() -> Element {
                                                                 "aria-label": "Copiar el archivo",
                                                                 Icon { name: "copy", size: 14 }
                                                             }
+                                                        }
                                                         }
                                                     },
                                                 }

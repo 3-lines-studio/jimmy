@@ -171,9 +171,10 @@ pub fn blocks(events: &[Event]) -> Vec<Block> {
             Event::Assistant { text } => match blocks.last_mut() {
                 Some(Block::Assistant {
                     text: body,
-                    streaming: _,
+                    streaming,
                 }) => {
                     *body = text.clone();
+                    *streaming = false;
                 }
                 _ => blocks.push(Block::Assistant {
                     text: text.clone(),
@@ -288,6 +289,27 @@ mod tests {
         assert!(!Event::Ready.logged());
         assert!(Event::Assistant { text: "hola".to_string() }.logged());
         assert!(Event::User { text: "hola".to_string(), author: "bob".to_string(), images: vec![] }.logged());
+    }
+
+    #[test]
+    fn the_final_answer_stops_streaming_so_it_gets_rendered() {
+        let events = vec![
+            Event::Delta { text: "Mirá: ```ru".to_string() },
+            Event::Assistant {
+                text: "Mirá: ```rust\nfn main() {}\n```".to_string(),
+            },
+        ];
+        let list = blocks(&events);
+        match &list[0] {
+            Block::Assistant { streaming, .. } => assert!(!streaming, "{list:?}"),
+            other => panic!("esperaba la respuesta, vino {other:?}"),
+        }
+        let later = blocks(&[
+            events[0].clone(),
+            events[1].clone(),
+            Event::Delta { text: "más".to_string() },
+        ]);
+        assert_eq!(later.len(), 2, "{later:?}");
     }
 
     #[test]

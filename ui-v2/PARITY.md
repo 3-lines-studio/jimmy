@@ -75,6 +75,8 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 - Scroll: se pega al fondo sólo cuando llega contenido y seguís abajo; al alejarte
   más de 120 px se despega y no te vuelve a tirar. El scroll al abrir una pestaña
   ocurre después del render, como el `scroll(tab)` de la v1.
+- Clic en una pestaña de arriba: activa la conversación (faltaba el handler). Y al
+  volver a una pestaña abierta se re-suscribe el stream, como el `activate` de la v1.
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token

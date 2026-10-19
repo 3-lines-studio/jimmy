@@ -83,6 +83,9 @@ struct App {
     menu: Option<String>,
     files: HashMap<String, FilesTab>,
     share: Option<String>,
+    agenda: Option<Vec<api::Task>>,
+    agenda_open: Vec<String>,
+    agenda_pending: Vec<(String, i64)>,
 }
 
 fn main() {
@@ -118,6 +121,9 @@ fn conversation_of(app: &App, key: &str) -> Option<api::Conversation> {
 }
 
 fn title_of(app: &App, key: &str) -> String {
+    if key == "agenda" {
+        return "Agenda".to_string();
+    }
     if let Some(title) = uicore::files::title(key) {
         return title;
     }
@@ -224,6 +230,131 @@ fn scroll_bottom(key: &str) {
     if let Some(node) = document.get_element_by_id(&format!("transcript-{key}")) {
         node.set_scroll_top(node.scroll_height());
     }
+}
+
+fn date_of(date: &js_sys::Date) -> String {
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.get_full_year(),
+        date.get_month() + 1,
+        date.get_date()
+    )
+}
+
+fn today() -> String {
+    date_of(&js_sys::Date::new(&wasm_bindgen::JsValue::from(
+        js_sys::Date::now(),
+    )))
+}
+
+fn yesterday() -> String {
+    date_of(&js_sys::Date::new(&wasm_bindgen::JsValue::from(
+        js_sys::Date::now() - 86_400_000.0,
+    )))
+}
+
+fn clock_of(ts: i64) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from(ts as f64 * 1000.0));
+    format!("{:02}:{:02}", date.get_hours(), date.get_minutes())
+}
+
+fn ago_of(ts: i64) -> String {
+    let now = (js_sys::Date::now() / 1000.0).round() as i64;
+    uicore::agenda::ago(now - ts)
+}
+
+fn mark_of(app: &App, task: &api::Task) -> uicore::agenda::Mark {
+    uicore::agenda::Mark {
+        paused: task.paused,
+        blocked: task.blocked,
+        unread: task.unread,
+        last_ok: task.runs.first().map(|run| run.ok),
+        running: app
+            .agenda_pending
+            .iter()
+            .any(|(name, _)| name == &task.name),
+    }
+}
+
+fn open_agenda(mut app: Signal<App>) {
+    {
+        let mut state = app.write();
+        if !state.tabs.contains(&"agenda".to_string()) {
+            state.tabs.push("agenda".to_string());
+        }
+        state.active = Some("agenda".to_string());
+    }
+    load_agenda(app);
+    remember_tabs(&app.read());
+    remember_hash(Some("agenda"));
+}
+
+fn load_agenda(app: Signal<App>) {
+    spawn(async move {
+        let mut app = app;
+        let Ok(agenda) = api::get::<api::Agenda>("/api/agenda").await else {
+            return;
+        };
+        let mut state = app.write();
+        state.agenda = Some(agenda.tasks.clone());
+        state.agenda_pending.retain(|(name, baseline)| {
+            agenda.tasks.iter().any(|task| {
+                &task.name == name && task.runs.first().map(|run| run.ts) == Some(*baseline)
+            })
+        });
+    });
+}
+
+fn run_agenda(app: Signal<App>, name: String) {
+    spawn(async move {
+        let mut app = app;
+        let baseline = app
+            .read()
+            .agenda
+            .as_ref()
+            .and_then(|tasks| tasks.iter().find(|task| task.name == name))
+            .and_then(|task| task.runs.first().map(|run| run.ts))
+            .unwrap_or(0);
+        {
+            let mut state = app.write();
+            if !state.agenda_pending.iter().any(|(item, _)| item == &name) {
+                state.agenda_pending.push((name.clone(), baseline));
+            }
+        }
+        let body = serde_json::json!({ "name": name });
+        if let Err(message) = api::post_quiet("/api/agenda/run", &body).await {
+            app.write().agenda_pending.retain(|(item, _)| item != &name);
+            toast(app, &message);
+            return;
+        }
+        gloo_timers::future::TimeoutFuture::new(5000).await;
+        load_agenda(app);
+    });
+}
+
+fn pause_agenda(app: Signal<App>, name: String, paused: bool) {
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "name": name, "paused": paused });
+        match api::post_quiet("/api/agenda/pause", &body).await {
+            Ok(()) => load_agenda(app),
+            Err(message) => toast(app, &message),
+        }
+    });
+}
+
+fn read_agenda(app: Signal<App>, name: Option<String>) {
+    spawn(async move {
+        let app = app;
+        let body = match name {
+            Some(name) => serde_json::json!({ "name": name }),
+            None => serde_json::json!({}),
+        };
+        match api::post_quiet("/api/agenda/read", &body).await {
+            Ok(()) => load_agenda(app),
+            Err(message) => toast(app, &message),
+        }
+    });
 }
 
 fn rename_conversation(app: Signal<App>, key: String) {
@@ -1036,6 +1167,17 @@ fn app() -> Element {
         });
     });
 
+    use_hook(move || {
+        let signal = app;
+        load_agenda(signal);
+        spawn(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(60_000).await;
+                load_agenda(signal);
+            }
+        });
+    });
+
     let state = app();
     let active = state.active.clone();
     let workspace = state
@@ -1336,6 +1478,33 @@ fn app() -> Element {
                         }
                     }
                 }
+                div { id: "chips",
+                    {
+                        let marks: Vec<uicore::agenda::Mark> = state
+                            .agenda
+                            .clone()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|task| mark_of(&state, task))
+                            .collect();
+                        let unread = uicore::agenda::unread(&marks);
+                        let bad = uicore::agenda::failed(&marks) > 0;
+                        rsx! {
+                            button {
+                                id: "agenda",
+                                "aria-label": "Agenda",
+                                onclick: move |_| open_agenda(app),
+                                span { class: "label", "Agenda" }
+                                span {
+                                    id: "agenda-badge",
+                                    hidden: unread == 0,
+                                    class: if bad { "error" } else { "" },
+                                    "{unread}"
+                                }
+                            }
+                        }
+                    }
+                }
                 div { id: "base",
                     div { id: "machine",
                         if let Some(machine) = state.state.as_ref().map(|state| state.machine.clone()) {
@@ -1453,7 +1622,147 @@ fn app() -> Element {
                     for key in state.tabs.clone() {
                         {
                             let selected = active.as_deref() == Some(key.as_str());
-                            if uicore::files::is_files(&key) {
+                            if key == "agenda" {
+                                let tasks = state.agenda.clone().unwrap_or_default();
+                                let marks: Vec<uicore::agenda::Mark> =
+                                    tasks.iter().map(|task| mark_of(&state, task)).collect();
+                                let unread = uicore::agenda::unread(&marks);
+                                let open = state.agenda_open.clone();
+                                rsx! {
+                                    div { key: "{key}", class: "pane agenda", hidden: !selected,
+                                        div { class: "agenda-inner",
+                                            if tasks.is_empty() {
+                                                div { class: "agenda-empty", "No hay tareas agendadas." }
+                                            }
+                                            for task in tasks {
+                                                {
+                                                    let mark = mark_of(&state, &task);
+                                                    let state_name = uicore::agenda::state(mark);
+                                                    let expanded = open.contains(&task.name);
+                                                    let when = uicore::agenda::when(
+                                                        task.when.as_deref(),
+                                                        task.at.as_deref(),
+                                                        task.every.as_deref(),
+                                                    );
+                                                    let last = match task.runs.first() {
+                                                        None => "nunca corrió".to_string(),
+                                                        Some(run) => format!(
+                                                            "{} · {}",
+                                                            uicore::agenda::moment(&run.date, &clock_of(run.ts), &today(), &yesterday()),
+                                                            uicore::agenda::duration(run.ms)
+                                                        ),
+                                                    };
+                                                    rsx! {
+                                                        article {
+                                                            key: "{task.name}",
+                                                            class: if expanded { "task open" } else { "task" },
+                                                            div {
+                                                                class: "task-head",
+                                                                onclick: {
+                                                                    let name = task.name.clone();
+                                                                    move |_| {
+                                                                        let mut state = app.write();
+                                                                        let was_open = state.agenda_open.contains(&name);
+                                                                        if was_open {
+                                                                            state.agenda_open.retain(|item| item != &name);
+                                                                        } else {
+                                                                            state.agenda_open.push(name.clone());
+                                                                        }
+                                                                        drop(state);
+                                                                        if !was_open {
+                                                                            read_agenda(app, Some(name.clone()));
+                                                                        }
+                                                                    }
+                                                                },
+                                                                div { class: "task-title",
+                                                                    span { class: if state_name.is_empty() { "dot".to_string() } else { format!("dot {state_name}") } }
+                                                                    span { class: "task-name", "{task.name}" }
+                                                                    span { class: "task-when", "{when}" }
+                                                                    if task.unread > 0 {
+                                                                        span { class: "pill unread", "{task.unread}" }
+                                                                    }
+                                                                    if task.paused {
+                                                                        span { class: "pill", "pausada" }
+                                                                    }
+                                                                    if task.blocked {
+                                                                        span { class: "pill blocked", "bloqueada ({task.attempts})" }
+                                                                    }
+                                                                }
+                                                                div { class: "task-meta",
+                                                                    span { class: "task-last", "{last}" }
+                                                                    if !task.paused {
+                                                                        button {
+                                                                            class: "icon-btn",
+                                                                            title: "Correr ahora",
+                                                                            "aria-label": "Correr ahora",
+                                                                            onclick: {
+                                                                                let name = task.name.clone();
+                                                                                move |event: MouseEvent| {
+                                                                                    event.stop_propagation();
+                                                                                    run_agenda(app, name.clone());
+                                                                                }
+                                                                            },
+                                                                            Icon { name: "play", size: 14 }
+                                                                        }
+                                                                    }
+                                                                    button {
+                                                                        class: "icon-btn",
+                                                                        title: if task.paused { "Reanudar" } else { "Pausar" },
+                                                                        "aria-label": if task.paused { "Reanudar" } else { "Pausar" },
+                                                                        onclick: {
+                                                                            let name = task.name.clone();
+                                                                            let paused = task.paused;
+                                                                            move |event: MouseEvent| {
+                                                                                event.stop_propagation();
+                                                                                pause_agenda(app, name.clone(), !paused);
+                                                                            }
+                                                                        },
+                                                                        Icon { name: if task.paused { "play" } else { "pause" }, size: 14 }
+                                                                    }
+                                                                }
+                                                            }
+                                                            if expanded {
+                                                                div { class: "task-runs",
+                                                                    if task.runs.is_empty() {
+                                                                        div { class: "run-empty", "Todavía no corrió." }
+                                                                    }
+                                                                    for run in task.runs.clone() {
+                                                                        div {
+                                                                            key: "{run.ts}",
+                                                                            class: if run.ok { "run" } else { "run failed" },
+                                                                            span {
+                                                                                class: "run-time",
+                                                                                title: "{ago_of(run.ts)} · {uicore::agenda::duration(run.ms)}",
+                                                                                "{uicore::agenda::moment(&run.date, &clock_of(run.ts), &today(), &yesterday())}"
+                                                                            }
+                                                                            div {
+                                                                                class: "run-text",
+                                                                                if run.text.trim().is_empty() {
+                                                                                    "sin novedades"
+                                                                                } else {
+                                                                                    div { dangerous_inner_html: uicore::markdown::render(&run.text) }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if unread > 0 {
+                                                div { class: "agenda-foot",
+                                                    button {
+                                                        onclick: move |_| read_agenda(app, None),
+                                                        "Marcar todo leído"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if uicore::files::is_files(&key) {
                                 let tab = state
                                     .files
                                     .get(&key)
@@ -1587,7 +1896,10 @@ fn app() -> Element {
                         }
                     }
                 }
-                if let Some(key) = active.clone().filter(|key| !uicore::files::is_files(key)) {
+                if let Some(key) = active
+                    .clone()
+                    .filter(|key| !uicore::files::is_files(key) && key != "agenda")
+                {
                     form {
                         id: "composer",
                         onsubmit: {

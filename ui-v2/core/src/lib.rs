@@ -1,3 +1,4 @@
+pub mod agenda;
 pub mod files;
 pub mod machine;
 pub mod markdown;

@@ -165,3 +165,40 @@ pub async fn raw(project: &str, path: &str) -> Result<Raw, String> {
         bytes,
     })
 }
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Run {
+    pub ts: i64,
+    pub date: String,
+    pub ms: u64,
+    pub ok: bool,
+    pub text: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Task {
+    pub name: String,
+    #[serde(default)]
+    pub when: Option<String>,
+    #[serde(default)]
+    pub at: Option<String>,
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub unread: u64,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub attempts: u64,
+    #[serde(default)]
+    pub runs: Vec<Run>,
+}
+
+#[derive(Deserialize)]
+pub struct Agenda {
+    pub tasks: Vec<Task>,
+}

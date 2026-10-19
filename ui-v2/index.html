@@ -18,19 +18,66 @@
     <link rel="stylesheet" href="/avatar.css" />
     <link rel="stylesheet" href="/vault.css" />
     <link rel="stylesheet" href="/v2/app.css" />
+    <style>
+      #v2-fallo {
+        margin: 16px;
+        padding: 12px 14px;
+        border: 1px solid #4a2b2b;
+        border-radius: 10px;
+        background: #1a1214;
+        color: #f5c2c2;
+        font: 13px/1.5 system-ui, sans-serif;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #v2-fallo a {
+        color: #f5c2c2;
+      }
+    </style>
     <script>
       (() => {
         const saved = localStorage.getItem("jimmy-theme");
         document.documentElement.dataset.theme =
           saved || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
       })();
+
+      window.jimmyFallo = (motivo) => {
+        let box = document.getElementById("v2-fallo");
+        if (!box) {
+          box = document.createElement("div");
+          box.id = "v2-fallo";
+          document.body.append(box);
+        }
+        box.textContent =
+          "La v2 no arrancó: " +
+          motivo +
+          "\n\n" +
+          navigator.userAgent +
+          "\n\nVolver a la v1: " +
+          location.origin +
+          "/";
+      };
+
+      addEventListener("error", (event) => {
+        if (event.message) window.jimmyFallo(event.message);
+      });
+      addEventListener("unhandledrejection", (event) => {
+        window.jimmyFallo(String((event.reason && event.reason.message) || event.reason));
+      });
+      setTimeout(() => {
+        if (!document.querySelector("#main > *")) window.jimmyFallo("no montó nada en 8 segundos");
+      }, 8000);
     </script>
   </head>
   <body>
     <div id="main"></div>
     <script type="module">
       import init from "/v2/ui-v2.js";
-      await init();
+      try {
+        await init();
+      } catch (error) {
+        window.jimmyFallo("no cargó el wasm: " + (error && error.message ? error.message : error));
+      }
     </script>
   </body>
 </html>

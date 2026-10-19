@@ -329,7 +329,7 @@ fn v2_page(stream: &mut TcpStream, request: &Request) -> std::io::Result<()> {
         Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     };
-    http::respond(stream, 200, kind, &[("Cache-Control", "no-cache")], &body)
+    http::respond(stream, 200, kind, &[("Cache-Control", "no-store")], &body)
 }
 
 fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {

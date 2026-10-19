@@ -72,7 +72,8 @@ COPY --from=builder /build/jimmy/ui-v2/dist /app/web-v2
 ENV WEB_V2_DIR=/app/web-v2
 
 ENV XDG_CONFIG_HOME=/root/.config
-COPY skills /usr/local/share/jimmy/skillsCOPY --chmod=0755 bin/browse /usr/local/bin/browse
+COPY skills /usr/local/share/jimmy/skills
+COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
 WORKDIR /data

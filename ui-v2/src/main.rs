@@ -2450,7 +2450,10 @@ fn app() -> Element {
                                             onclick: {
                                                 let key = key.clone();
                                                 let sources = sources.clone();
-                                                move |_| close_tab(app, sources.clone(), &key)
+                                                move |event: MouseEvent| {
+                                                    event.stop_propagation();
+                                                    close_tab(app, sources.clone(), &key);
+                                                }
                                             },
                                             Icon { name: "close", size: 15 }
                                         }

@@ -13,5 +13,23 @@ strip = true
 [dependencies]
 dioxus = { version = "0.7", features = ["web"] }
 gloo-net = { version = "0.6", features = ["http"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+uicore = { path = "core" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Document",
+  "Element",
+  "EventSource",
+  "HtmlInputElement",
+  "MediaQueryList",
+  "MessageEvent",
+  "Storage",
+  "Window",
+]

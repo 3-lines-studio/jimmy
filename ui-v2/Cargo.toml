@@ -27,6 +27,7 @@ features = [
   "Document",
   "Element",
   "EventSource",
+  "HtmlElement",
   "HtmlInputElement",
   "MediaQueryList",
   "MessageEvent",

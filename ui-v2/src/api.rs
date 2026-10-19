@@ -32,10 +32,20 @@ pub struct Machine {
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
+pub struct Preview {
+    pub name: String,
+    pub port: u16,
+    pub seconds: u64,
+    pub path: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
 pub struct State {
     pub user: String,
     pub workspace: String,
     pub machine: Machine,
+    #[serde(default)]
+    pub previews: Vec<Preview>,
     pub projects: Vec<Project>,
 }
 

@@ -21,7 +21,25 @@ const VISIBLE: usize = 10;
 
 type Sources = Rc<RefCell<HashMap<String, web_sys::EventSource>>>;
 
-#[derive(Clone, PartialEq, Default)]
+impl Default for Tab {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            count: 0,
+            first: 0,
+            draft: String::new(),
+            pending: Vec::new(),
+            viewers: Vec::new(),
+            typing: String::new(),
+            running: false,
+            done: false,
+            error: false,
+            follow: true,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
 struct Tab {
     events: Vec<Event>,
     count: usize,
@@ -33,6 +51,7 @@ struct Tab {
     running: bool,
     done: bool,
     error: bool,
+    follow: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -728,6 +747,18 @@ fn activate(mut app: Signal<App>, sources: Sources, key: &str) {
     load_tab(app, sources, key.to_string());
     remember_tabs(&app.read());
     remember_hash(Some(key));
+    set_home(false);
+}
+
+fn stop_preview(app: Signal<App>, name: String) {
+    spawn(async move {
+        let app = app;
+        let body = serde_json::json!({ "name": name });
+        match api::post_quiet("/api/preview/stop", &body).await {
+            Ok(()) => refresh(app),
+            Err(message) => toast(app, &message),
+        }
+    });
 }
 
 fn refresh(app: Signal<App>) {
@@ -995,7 +1026,7 @@ fn walk(
     }
 }
 
-fn events_hook(app: Signal<App>) {
+pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
@@ -1059,6 +1090,62 @@ fn events_hook(app: Signal<App>) {
     );
     let _ = document.add_event_listener_with_callback("paste", paste.as_ref().unchecked_ref());
     paste.forget();
+
+    let scroll = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Some(id) = target.get_attribute("id") else {
+            return;
+        };
+        let Some(key) = id.strip_prefix("transcript-") else {
+            return;
+        };
+        let Some(element) = target.dyn_into::<web_sys::HtmlElement>().ok() else {
+            return;
+        };
+        let remaining = element.scroll_height() - element.scroll_top() - element.client_height();
+        let follow = remaining < 120;
+        if let Some(tab) = app.write().data.get_mut(key) {
+            tab.follow = follow;
+        }
+    });
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "scroll",
+        scroll.as_ref().unchecked_ref(),
+        true,
+    );
+    scroll.forget();
+
+    let hash = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let hash = window.location().hash().unwrap_or_default();
+        let hash = hash.trim_start_matches('#');
+        let hash = js_sys::decode_uri_component(hash)
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        if hash.is_empty() {
+            app.write().active = None;
+            set_home(true);
+            return;
+        }
+        let known = app.read().data.contains_key(&hash);
+        match known {
+            true => activate(app, sources.clone(), &hash),
+            false => open_tab(app, sources.clone(), hash),
+        }
+    });
+    if let Some(window) = web_sys::window() {
+        let _ =
+            window.add_event_listener_with_callback("hashchange", hash.as_ref().unchecked_ref());
+    }
+    hash.forget();
 }
 
 fn set_theme(theme: &str) {
@@ -1105,7 +1192,8 @@ fn app() -> Element {
     let sources =
         use_hook(|| Rc::new(RefCell::new(HashMap::<String, web_sys::EventSource>::new())));
 
-    use_hook(move || events_hook(app));
+    let sources_hook = sources.clone();
+    use_hook(move || events_hook(app, sources_hook));
 
     use_hook(move || {
         let theme = stored("jimmy-theme").unwrap_or_else(system_theme);
@@ -1127,8 +1215,15 @@ fn app() -> Element {
     });
 
     use_effect(move || {
-        let active = app.read().active.clone();
-        if let Some(key) = active.filter(|key| !uicore::files::is_files(key)) {
+        let state = app.read();
+        let active = state.active.clone();
+        let follow = active
+            .as_ref()
+            .and_then(|key| state.data.get(key))
+            .map(|tab| tab.follow)
+            .unwrap_or(true);
+        drop(state);
+        if let Some(key) = active.filter(|key| follow && !uicore::files::is_files(key)) {
             scroll_bottom(&key);
         }
     });
@@ -1517,6 +1612,42 @@ fn app() -> Element {
                         }
                     }
                 }
+                div {
+                    id: "previews",
+                    hidden: state
+                        .state
+                        .as_ref()
+                        .map(|state| state.previews.is_empty())
+                        .unwrap_or(true),
+                    for preview in state
+                        .state
+                        .as_ref()
+                        .map(|state| state.previews.clone())
+                        .unwrap_or_default()
+                    {
+                        div { key: "{preview.name}", class: "preview",
+                            a {
+                                class: "link",
+                                href: "{preview.path}",
+                                target: "_blank",
+                                rel: "noopener",
+                                title: "Abrir {preview.path} · {preview.port}",
+                                span { class: "slot", Icon { name: "globe", size: 16 } }
+                                span { class: "name", "{preview.name}" }
+                            }
+                            button {
+                                class: "icon-btn stop",
+                                title: "Parar {preview.name}",
+                                "aria-label": "Parar {preview.name}",
+                                onclick: {
+                                    let name = preview.name.clone();
+                                    move |_| stop_preview(app, name.clone())
+                                },
+                                Icon { name: "stop", size: 14 }
+                            }
+                        }
+                    }
+                }
                 div { id: "base",
                     div { id: "machine",
                         if let Some(machine) = state.state.as_ref().map(|state| state.machine.clone()) {
@@ -1566,6 +1697,7 @@ fn app() -> Element {
                         onclick: move |_| {
                             app.write().active = None;
                             remember_hash(None);
+                            set_home(true);
                         },
                         Icon { name: "left", size: 16 }
                     }

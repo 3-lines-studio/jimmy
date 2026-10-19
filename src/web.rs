@@ -301,6 +301,25 @@ fn asset(stream: &mut TcpStream, content_type: &str, body: &[u8]) -> std::io::Re
     )
 }
 
+fn stamp(page: &str) -> String {
+    page.replace("{{version}}", version())
+}
+
+fn version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        crate::env("JIMMY_COMMIT_SHA")
+            .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
+            .unwrap_or_else(|| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or_default();
+                format!("{now}")
+            })
+    })
+}
+
 fn v2_name(path: &str) -> Option<&str> {
     let name = match path.trim_start_matches("/v2").trim_start_matches('/') {
         "" => "index.html",
@@ -317,8 +336,12 @@ fn v2_page(stream: &mut TcpStream, request: &Request) -> std::io::Result<()> {
         return http::send_error(stream, 400, "esa ruta no vale");
     };
     let root = crate::env("WEB_V2_DIR").unwrap_or_else(|| "web-v2".to_string());
-    let Ok(body) = std::fs::read(Path::new(&root).join(name)) else {
+    let Ok(bytes) = std::fs::read(Path::new(&root).join(name)) else {
         return http::send_error(stream, 404, "la v2 no está");
+    };
+    let bytes = match name.ends_with(".html") {
+        true => stamp(&String::from_utf8_lossy(&bytes)).into_bytes(),
+        false => bytes,
     };
     let kind = match name.rsplit_once('.').map(|(_, extension)| extension) {
         Some("html") => HTML,
@@ -329,7 +352,7 @@ fn v2_page(stream: &mut TcpStream, request: &Request) -> std::io::Result<()> {
         Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     };
-    http::respond(stream, 200, kind, &[("Cache-Control", "no-store")], &body)
+    http::respond(stream, 200, kind, &[("Cache-Control", "no-store")], &bytes)
 }
 
 fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1300,6 +1323,13 @@ mod tests {
     use crate::protocol::Event;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
+
+    #[test]
+    fn the_v2_page_stamps_its_assets() {
+        let page = stamp("<script src=\"/v2/ui-v2.js?v={{version}}\"></script>");
+        assert!(!page.contains("{{version}}"), "{page}");
+        assert!(page.contains("/v2/ui-v2.js?v="), "{page}");
+    }
 
     #[test]
     fn the_v2_route_maps_to_files() {

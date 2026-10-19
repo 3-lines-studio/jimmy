@@ -1049,12 +1049,20 @@ fn send(app: Signal<App>, key: String) {
         });
         match api::post::<api::Sent>("/api/send", &body).await {
             Ok(sent) if sent.started => {
-                let mut write = app.write();
-                if let Some(tab) = write.data.get_mut(&key) {
-                    tab.draft.clear();
-                    tab.pending.clear();
-                    tab.running = true;
+                {
+                    let mut write = app.write();
+                    if let Some(tab) = write.data.get_mut(&key) {
+                        tab.draft.clear();
+                        tab.pending.clear();
+                        tab.running = true;
+                    }
                 }
+                spawn(async move {
+                    gloo_timers::future::TimeoutFuture::new(16).await;
+                    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+                        grow_composer(&document);
+                    }
+                });
             }
             Ok(_) => {}
             Err(message) => toast(app, &message),

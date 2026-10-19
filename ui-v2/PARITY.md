@@ -28,6 +28,10 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 - `jump`: ver anteriores (`/api/history?before=`) y bajar al final, con auto-scroll.
 - Share target: `?text=`/`?url=` de la PWA entran al borrador.
 - Al cambiar de pestaña se cierra el SSE de la anterior, como la v1 (batería).
+- Agenda: chip con badge y punto de error, panel con tareas, horario (`agendaWhen`),
+  última corrida, pills de no leído/pausada/bloqueada, desplegar corridas con markdown,
+  correr ahora, pausar/reanudar y "Marcar todo leído" (`/api/agenda*`). Se recarga cada
+  60 s como la v1. `uicore::agenda` con 6 tests portados de `agenda.test.js`.
 - Pestaña Archivos: árbol por proyecto (`/api/tree`), carpetas que se abren al hacer
   clic, imagen, markdown y texto con copiar (`/api/raw`), título "Archivos: Ken" y
   pill del proyecto.
@@ -36,7 +40,7 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 
 ## Falta (en orden de valor)
 
-1. Sidebar: chips de Agenda y Vault (y sus dos módulos), gaze de los ojos.
+1. Sidebar: chip de Vault y su módulo (`vault.js` + `secret.js`), gaze de los ojos.
 2. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff`), `table-wrap`, checkboxes.
 3. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes (>1 MB se suben enteras).
 4. Previews: tarjetas `#previews` con stop (`/api/preview/stop` ya existe).

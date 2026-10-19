@@ -40,7 +40,7 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 7. `machine.js`: CPU/disco al pie. `project.js` y `previews`: tarjetas de preview y stop.
 8. `secret.js`: diálogo de secretos del vault.
 9. `share_target` (texto/url de la PWA) y pull-to-refresh.
-10. Login propio: la v2 manda a `/login` de la v1.
+10. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.
 11. Tests del resto: `tool` y `markdown` ya viven en `ui-v2/core` (crate `uicore`, sin
     dioxus) y `make test` corre sus 7 tests en el host. Faltan los de `event` y `api`.
 

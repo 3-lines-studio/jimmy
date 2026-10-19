@@ -402,6 +402,11 @@ fn refresh(app: Signal<App>) {
                 write.error = None;
                 write.state = Some(state);
             }
+            Err(message) if message == "no estás adentro" => {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().set_href("/login");
+                }
+            }
             Err(message) => app.write().error = Some(message),
         }
     });

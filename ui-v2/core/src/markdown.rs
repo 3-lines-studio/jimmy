@@ -213,6 +213,55 @@ fn is_char(chars: &[char], i: usize) -> bool {
     }
 }
 
+fn tidy(html: &str) -> String {
+    let html = html.replace(">\n<", "><");
+    let html = html
+        .replace(
+            r#"<input disabled="" type="checkbox" checked=""/>"#,
+            r#"<input type="checkbox" disabled checked>"#,
+        )
+        .replace(
+            r#"<input disabled="" type="checkbox"/>"#,
+            r#"<input type="checkbox" disabled>"#,
+        );
+    let html = unwrap_list_paragraphs(&html);
+    html.replace("checked>\n", "checked> ")
+        .replace("disabled>\n", "disabled> ")
+        .replace("\n<ul>", "<ul>")
+        .replace("\n<ol>", "<ol>")
+}
+
+fn unwrap_list_paragraphs(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<li><p>") {
+        let tail = &rest[start + "<li><p>".len()..];
+        let Some(end) = tail.find("</p>") else {
+            out.push_str(&rest[..start]);
+            rest = &rest[start..];
+            break;
+        };
+        let body = &tail[..end];
+        let after = &tail[end + "</p>".len()..];
+        let alone = !body.contains("<p>") && !body.contains("</p>");
+        let closes = after.starts_with("</li>")
+            || after.starts_with("<ul>")
+            || after.starts_with("<ol>");
+        out.push_str(&rest[..start]);
+        if alone && closes {
+            out.push_str("<li>");
+            out.push_str(body);
+        } else {
+            out.push_str("<li><p>");
+            out.push_str(body);
+            out.push_str("</p>");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn wrap_tables(html: &str) -> String {
     let replaced = html
         .replace(r#"<th style="text-align: right">"#, r#"<th class="right">"#)
@@ -337,6 +386,8 @@ pub fn render(source: &str) -> String {
     });
     let mut html = String::new();
     html::push_html(&mut html, parser);
+    let html = tidy(&html);
+    let html = html.trim_end_matches('\n').to_string();
     let mut out = wrap_tables(&html);
     out = wrap_code(&out);
     out.push_str(r#"<div class="actions">"#);
@@ -401,6 +452,32 @@ mod tests {
             html.starts_with(r#"<div class="table-wrap"><table><thead><tr><th>a</th><th class="right">b</th><th class="center">c</th></tr></thead><tbody><tr><td>1</td><td class="right">2</td><td class="center">3</td></tr></tbody></table></div>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn lists_and_tasks_match_the_v1() {
+        let body = |source: &str| match render(source).find(r#"<div class="actions">"#) {
+            Some(index) => render(source)[..index].to_string(),
+            None => render(source),
+        };
+        assert_eq!(body("- [x] a\n- [ ] b"), r#"<ul><li><input type="checkbox" disabled checked> a</li><li><input type="checkbox" disabled> b</li></ul>"#);
+        assert_eq!(body("- a\n- b"), "<ul><li>a</li><li>b</li></ul>");
+        assert_eq!(body("- a\n  - b\n- c"), "<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>");
+        assert_eq!(body("1. a\n2. b"), "<ol><li>a</li><li>b</li></ol>");
+        assert_eq!(body("hola\n\nchau"), "<p>hola</p><p>chau</p>");
+    }
+
+    #[test]
+    fn loose_lists_do_not_grow_paragraphs() {
+        let html = render("- [x] hecha\n- [ ] pendiente\n\n- a\n  - b\n- c");
+        assert!(
+            html.starts_with("<ul><li><input type=\"checkbox\" disabled checked> hecha</li>"),
+            "{html}"
+        );
+        assert!(html.contains("<li>a<ul><li>b</li></ul></li>"), "{html}");
+        assert!(!html.contains("<p>"), "{html}");
+        let kept = render("- uno\n\n  dos");
+        assert!(kept.contains("<p>uno</p>"), "{kept}");
     }
 
     #[test]

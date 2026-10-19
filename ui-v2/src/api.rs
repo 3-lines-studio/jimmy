@@ -113,19 +113,19 @@ pub async fn post_quiet(path: &str, body: &serde_json::Value) -> Result<(), Stri
 }
 
 pub fn state_path() -> &'static str {
-    "/api/state"
+    uicore::api::state_path()
 }
 
 pub fn history_path(key: &str, before: usize) -> String {
-    format!("/api/history?conversation={key}&before={before}")
+    uicore::api::history_path(key, before)
 }
 
 pub fn stream_path(key: &str, since: usize) -> String {
-    format!("/api/stream?conversation={key}&since={since}")
+    uicore::api::stream_path(key, since)
 }
 
 pub fn file_path(conversation: &str, name: &str) -> String {
-    format!("/api/file?conversation={conversation}&name={name}")
+    uicore::api::file_path(conversation, name)
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
@@ -142,15 +142,11 @@ pub struct Tree {
 }
 
 pub fn tree_path(project: &str, path: &str) -> String {
-    format!("/api/tree?project={project}&path={}", url(path))
+    uicore::api::tree_path(project, path)
 }
 
 pub fn raw_path(project: &str, path: &str) -> String {
-    format!("/api/raw?project={project}&path={}", url(path))
-}
-
-fn url(text: &str) -> String {
-    js_sys::encode_uri_component(text).into()
+    uicore::api::raw_path(project, path)
 }
 
 pub struct Raw {

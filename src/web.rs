@@ -389,11 +389,19 @@ fn versioned(page: &str) -> String {
 
 fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let email = request.field("email").unwrap_or_default();
+    let next = request.field("next").unwrap_or_default();
     let sent = serde_json::json!({ "sent": true });
     let Some(token) = web.auth.request_link(&email) else {
         return http::send_json(stream, 200, &sent);
     };
-    let link = format!("{}/auth?token={token}", web.base_url(request));
+    let link = match safe_next(&next) {
+        Some(next) => format!(
+            "{}/auth?token={token}&next={}",
+            web.base_url(request),
+            encode_path(&next)
+        ),
+        None => format!("{}/auth?token={token}", web.base_url(request)),
+    };
     let Some(mail) = &web.auth.mail else {
         if !web.auth.dev {
             eprintln!("jimmy web: sin proveedor de mail, no puedo mandarle el link a {email}");
@@ -429,8 +437,39 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         auth::COOKIE,
         auth::SESSION_TTL
     );
-    let headers = [("Set-Cookie", cookie.as_str()), ("Location", "/")];
+    let target = request.param("next").unwrap_or_default();
+    let location = safe_next(target).unwrap_or_else(|| "/".to_string());
+    let headers = [
+        ("Set-Cookie", cookie.as_str()),
+        ("Location", location.as_str()),
+    ];
     http::respond(stream, 303, "text/plain", &headers, b"")
+}
+
+fn encode_path(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let plain =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~');
+        match plain {
+            true => out.push(byte as char),
+            false => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn safe_next(next: &str) -> Option<String> {
+    let ok = next.starts_with('/')
+        && !next.starts_with("//")
+        && next.len() <= 200
+        && next
+            .chars()
+            .all(|char| char.is_ascii_graphic() && char != '"' && char != '\\');
+    match ok {
+        true => Some(next.to_string()),
+        false => None,
+    }
 }
 
 fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1679,6 +1718,46 @@ done
                 "{asset} viaja sin versión: los assets van con caché immutable, así que el navegador lo revive viejo"
             );
         }
+    }
+
+    #[test]
+    fn the_link_carries_a_safe_next_and_the_login_returns_there() {
+        let server = start("next");
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"bob@ejemplo.com","next":"/v2"}"#,
+        );
+        let link = link_in(&answer);
+        assert!(link.contains("next=/v2"), "el link no lleva el next");
+        let token = link
+            .split_once("token=")
+            .and_then(|(_, rest)| rest.split('&').next())
+            .unwrap();
+        let followed = get(server.port, &format!("/auth?token={token}&next=/v2"), None);
+        assert!(followed.starts_with("HTTP/1.1 303"), "{followed}");
+        assert!(followed.contains("Location: /v2"), "{followed}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_next_that_leaves_the_site_is_ignored() {
+        let server = start("next-bad");
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"bob@ejemplo.com","next":"//evil.example"}"#,
+        );
+        let link = link_in(&answer);
+        assert!(!link.contains("next="), "{link}");
+        let token = link.split_once("token=").unwrap().1;
+        let followed = get(
+            server.port,
+            &format!("/auth?token={token}&next=//evil.example"),
+            None,
+        );
+        assert!(followed.contains("Location: /\r"), "{followed}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]

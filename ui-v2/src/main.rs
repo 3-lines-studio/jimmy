@@ -86,7 +86,6 @@ impl Default for Tab {
             viewers: Vec::new(),
             typing: String::new(),
             typing_sent: 0.0,
-            opened: false,
             retries: 0,
             last_event: 0.0,
             loading: false,
@@ -108,7 +107,6 @@ struct Tab {
     viewers: Vec<String>,
     typing: String,
     typing_sent: f64,
-    opened: bool,
     retries: u32,
     last_event: f64,
     loading: bool,
@@ -737,20 +735,17 @@ fn subscribe(app: Signal<App>, sources: Sources, key: String) {
     let mut opening = app;
     let opening_sources = sources.clone();
     let opening_key = key.clone();
+    let opened = std::rc::Rc::new(std::cell::Cell::new(false));
     let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        let mut state = opening.write();
-        let Some(tab) = state.data.get_mut(&opening_key) else {
-            return;
-        };
-        let reconnected = tab.opened;
-        if reconnected {
-            drop(state);
+        if opened.get() {
             unsubscribe(&opening_sources, &opening_key);
             subscribe(opening, opening_sources.clone(), opening_key.clone());
             return;
         }
-        tab.opened = true;
-        tab.retries = 0;
+        opened.set(true);
+        if let Some(tab) = opening.write().data.get_mut(&opening_key) {
+            tab.retries = 0;
+        }
     });
     source.set_onopen(Some(on_open.as_ref().unchecked_ref()));
     on_open.forget();
@@ -819,6 +814,9 @@ fn load_tab(app: Signal<App>, sources: Sources, key: String) {
         .map(|tab| !tab.events.is_empty())
         .unwrap_or(false);
     if loaded {
+        if !uicore::files::is_files(&key) {
+            subscribe(app, sources, key);
+        }
         return;
     }
     spawn(async move {
@@ -2423,7 +2421,21 @@ fn app() -> Element {
                                 let project = project_of(&state, &key);
                                 let color = uicore::project::color(&project);
                                 rsx! {
-                                    div { key: "{key}", class: if selected { "tab active" } else { "tab" },
+                                    div {
+                                        key: "{key}",
+                                        class: if selected { "tab active" } else { "tab" },
+                                        onclick: {
+                                            let key = key.clone();
+                                            let sources = sources.clone();
+                                            move |_| {
+                                                let known = app.read().data.contains_key(&key);
+                                                if known {
+                                                    activate(app, sources.clone(), &key);
+                                                } else {
+                                                    open_tab(app, sources.clone(), key.clone());
+                                                }
+                                            }
+                                        },
                                         span {
                                             class: "pill",
                                             style: "background: {color};",

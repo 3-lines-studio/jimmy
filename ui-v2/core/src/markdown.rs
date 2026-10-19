@@ -1,4 +1,4 @@
-use pulldown_cmark::{html, Event, Options, Parser};
+use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 const COPY: &str = r#"<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>"#;
 const CHECK: &str = r#"<path d="M20 6 9 17l-5-5"/>"#;
@@ -40,6 +40,14 @@ fn copy_button(text: &str, label: &str) -> String {
     format!(
         r#"<button class="copy" data-copy="{escaped}" title="{label}" aria-label="{label}">{idle}{done}</button>"#
     )
+}
+
+fn next(level: HeadingLevel) -> HeadingLevel {
+    match level {
+        HeadingLevel::H1 => HeadingLevel::H2,
+        HeadingLevel::H2 => HeadingLevel::H3,
+        _ => HeadingLevel::H4,
+    }
 }
 
 fn strip_tags(html: &str) -> String {
@@ -87,6 +95,18 @@ pub fn render(source: &str) -> String {
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(source, options).map(|event| match event {
         Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
+        Event::Start(Tag::Heading {
+            level,
+            id,
+            classes,
+            attrs,
+        }) => Event::Start(Tag::Heading {
+            level: next(level),
+            id,
+            classes,
+            attrs,
+        }),
+        Event::End(TagEnd::Heading(level)) => Event::End(TagEnd::Heading(next(level))),
         event => event,
     });
     let mut html = String::new();
@@ -120,6 +140,15 @@ mod tests {
         assert!(html.contains(r#"<div class="actions">"#), "{html}");
         assert!(html.contains("Copiar el mensaje"), "{html}");
         assert!(html.contains("<p>hola</p>"), "{html}");
+    }
+
+    #[test]
+    fn headings_start_at_two_like_the_v1() {
+        let html = render("# uno\n\n## dos\n\n### tres\n\n#### cuatro");
+        assert!(html.contains("<h2>uno</h2>"), "{html}");
+        assert!(html.contains("<h3>dos</h3>"), "{html}");
+        assert!(html.contains("<h4>tres</h4>"), "{html}");
+        assert!(html.contains("<h4>cuatro</h4>"), "{html}");
     }
 
     #[test]

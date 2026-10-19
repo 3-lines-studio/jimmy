@@ -117,3 +117,51 @@ pub fn stream_path(key: &str, since: usize) -> String {
 pub fn file_path(conversation: &str, name: &str) -> String {
     format!("/api/file?conversation={conversation}&name={name}")
 }
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct Entry {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    pub kind: String,
+}
+
+#[derive(Deserialize)]
+pub struct Tree {
+    pub entries: Vec<Entry>,
+}
+
+pub fn tree_path(project: &str, path: &str) -> String {
+    format!("/api/tree?project={project}&path={}", url(path))
+}
+
+pub fn raw_path(project: &str, path: &str) -> String {
+    format!("/api/raw?project={project}&path={}", url(path))
+}
+
+fn url(text: &str) -> String {
+    js_sys::encode_uri_component(text).into()
+}
+
+pub struct Raw {
+    pub content_type: String,
+    pub truncated: bool,
+    pub bytes: Vec<u8>,
+}
+
+pub async fn raw(project: &str, path: &str) -> Result<Raw, String> {
+    let answer = Request::get(&raw_path(project, path))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let answer = check(answer).await?;
+    let headers = answer.headers();
+    let content_type = headers.get("content-type").unwrap_or_default();
+    let truncated = headers.get("x-truncated").is_some();
+    let bytes = answer.binary().await.map_err(|error| error.to_string())?;
+    Ok(Raw {
+        content_type,
+        truncated,
+        bytes,
+    })
+}

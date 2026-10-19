@@ -19,14 +19,16 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   `localStorage`), menú kebab con renombrar, duplicar y quitar proyecto, "Ver más"
   después de 10 conversaciones.
 - Pie con CPU y disco (`uicore::machine`).
+- Pestaña Archivos: árbol por proyecto (`/api/tree`), carpetas que se abren al hacer
+  clic, imagen, markdown y texto con copiar (`/api/raw`), título "Archivos: Ken" y
+  pill del proyecto.
 - Mismo CSS de la v1 (`/theme.css`, `/style.css`, `/avatar.css`, `/vault.css`); la v2
   sólo agrega `#main { height: 100% }`.
 
 ## Falta (en orden de valor)
 
-1. Sidebar: chips de Agenda/Vault, "Ver archivos" en el menú, buscador, puntos de
-   no leído / atención, renombrar y borrar conversación desde la fila, y el gaze
-   de los ojos (puntero).
+1. Sidebar: chips de Agenda/Vault, buscador, puntos de no leído / atención,
+   renombrar y borrar conversación desde la fila, y el gaze de los ojos (puntero).
 2. Pestañas: persistencia en `localStorage` + `#hash`, contador en `document.title`,
    "Mirando", botón Cancelar.
 3. Mensajes: `jump` (subir/bajar), cargar anteriores, auto-scroll con `follow`,
@@ -34,7 +36,7 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 4. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff` de `markdown.js`),
    `table-wrap`, checkboxes.
 5. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes.
-6. `agenda.js`, `vault.js`, `files.js`: pestañas y paneles completos.
+6. `agenda.js` y `vault.js`: pestañas y paneles completos.
 7. `machine.js`: CPU/disco al pie. `project.js` y `previews`: tarjetas de preview y stop.
 8. `secret.js`: diálogo de secretos del vault.
 9. `share_target` (texto/url de la PWA) y pull-to-refresh.

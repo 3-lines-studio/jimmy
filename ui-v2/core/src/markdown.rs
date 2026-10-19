@@ -213,6 +213,33 @@ fn is_char(chars: &[char], i: usize) -> bool {
     }
 }
 
+fn wrap_tables(html: &str) -> String {
+    let replaced = html
+        .replace(r#"<th style="text-align: right">"#, r#"<th class="right">"#)
+        .replace(r#"<td style="text-align: right">"#, r#"<td class="right">"#)
+        .replace(r#"<th style="text-align: center">"#, r#"<th class="center">"#)
+        .replace(r#"<td style="text-align: center">"#, r#"<td class="center">"#)
+        .replace(r#"<th style="text-align: left">"#, "<th>")
+        .replace(r#"<td style="text-align: left">"#, "<td>");
+    let mut out = String::with_capacity(replaced.len());
+    let mut rest = replaced.as_str();
+    while let Some(start) = rest.find("<table>") {
+        out.push_str(&rest[..start]);
+        out.push_str(r#"<div class="table-wrap">"#);
+        rest = &rest[start..];
+        match rest.find("</table>") {
+            Some(end) => {
+                out.push_str(&rest[..end + "</table>".len()].replace('\n', ""));
+                out.push_str("</div>");
+                rest = rest[end + "</table>".len()..].trim_start_matches('\n');
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn code_char_index(chars: &[char], from: usize, target: char) -> Option<usize> {
     chars
         .iter()
@@ -310,7 +337,8 @@ pub fn render(source: &str) -> String {
     });
     let mut html = String::new();
     html::push_html(&mut html, parser);
-    let mut out = wrap_code(&html);
+    let mut out = wrap_tables(&html);
+    out = wrap_code(&out);
     out.push_str(r#"<div class="actions">"#);
     out.push_str(&copy_button(Some(source), "Copiar el mensaje"));
     out.push_str("</div>");
@@ -364,6 +392,15 @@ mod tests {
         assert!(!unknown.contains("tok-"), "{unknown}");
         let escaped = highlight("a < b", "bash");
         assert!(escaped.contains("&lt;"), "{escaped}");
+    }
+
+    #[test]
+    fn tables_are_wrapped_and_aligned_like_the_v1() {
+        let html = render("| a | b | c |\n|---|--:|:-:|\n| 1 | 2 | 3 |");
+        assert!(
+            html.starts_with(r#"<div class="table-wrap"><table><thead><tr><th>a</th><th class="right">b</th><th class="center">c</th></tr></thead><tbody><tr><td>1</td><td class="right">2</td><td class="center">3</td></tr></tbody></table></div>"#),
+            "{html}"
+        );
     }
 
     #[test]

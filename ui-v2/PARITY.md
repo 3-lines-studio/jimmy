@@ -37,6 +37,12 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   (`tok-comment`, `tok-string`, `tok-keyword`, `tok-number`, `tok-add`, `tok-del`,
   `tok-meta`), mismos alias de lenguaje y sin línea final de más. Los archivos de
   texto de la pestaña Archivos también se resaltan por extensión.
+- Tablas: `<div class="table-wrap"><table>…` y las columnas alineadas con
+  `class="right"`/`"center"`, sin los saltos de línea que mete pulldown.
+- Imágenes de más de 1 MB: se achican en el navegador (lado máximo 1600 px,
+  jpeg 0.85, png se queda png) antes de subirlas; si no achica, sube la original.
+- Pull-to-refresh: tirar del transcript desde arriba muestra `#refresh` con
+  «Tirá para recargar» / «Soltá para recargar» y recarga pasados 64 px.
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token
@@ -54,11 +60,11 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 
 ## Falta (en orden de valor)
 
-1. La tarjeta de `secret.js` en el composer (pegar un secreto o `/secret` para
-   guardarlo en el vault) y el gaze de los ojos.
+1. `web/secret.js` no está commiteado en la v1: la tarjeta de secretos sólo existe
+   como archivo suelto, así que no hay paridad que copiar. Falta decidir si se
+   agrega a las dos o se descarta. Después, el gaze de los ojos.
 2. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff`), `table-wrap`, checkboxes.
 3. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes (>1 MB se suben enteras).
-6. Pull-to-refresh (el hash ya escucha `hashchange`).
 8. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.
 9. Tests de `event` y `api`; `uicore` tiene 22.
 

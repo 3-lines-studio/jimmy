@@ -837,9 +837,99 @@ fn cancel(app: Signal<App>, key: String) {
     });
 }
 
+const SHRINK_OVER: f64 = 1024.0 * 1024.0;
+const MAX_SIDE: f64 = 1600.0;
+
+async fn shrink(file: web_sys::File) -> web_sys::File {
+    match file.size() >= SHRINK_OVER {
+        true => shrink_try(&file).await.unwrap_or(file),
+        false => file,
+    }
+}
+
+async fn shrink_try(file: &web_sys::File) -> Option<web_sys::File> {
+    use wasm_bindgen::JsCast;
+
+    let url = web_sys::Url::create_object_url_with_blob(file).ok()?;
+    let image = web_sys::HtmlImageElement::new().ok()?;
+    image.set_src(&url);
+    let decoded = wasm_bindgen_futures::JsFuture::from(image.decode()).await;
+    let _ = web_sys::Url::revoke_object_url(&url);
+    decoded.ok()?;
+    let width = image.width() as f64;
+    let height = image.height() as f64;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let scale = (MAX_SIDE / width.max(height)).min(1.0);
+    let canvas = web_sys::window()?
+        .document()?
+        .create_element("canvas")
+        .ok()?
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .ok()?;
+    canvas.set_width((width * scale).round() as u32);
+    canvas.set_height((height * scale).round() as u32);
+    let context = canvas
+        .get_context("2d")
+        .ok()??
+        .dyn_into::<web_sys::CanvasRenderingContext2d>()
+        .ok()?;
+    context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            &image,
+            0.0,
+            0.0,
+            canvas.width() as f64,
+            canvas.height() as f64,
+        )
+        .ok()?;
+    let png = file.type_() == "image/png";
+    let mime = match png {
+        true => "image/png",
+        false => "image/jpeg",
+    };
+    let blob = js_sys::Promise::new(&mut |resolve, _| {
+        let callback = wasm_bindgen::closure::Closure::once(move |blob: wasm_bindgen::JsValue| {
+            let _ = resolve.call1(&wasm_bindgen::JsValue::NULL, &blob);
+        });
+        let _ = canvas.to_blob_with_type_and_encoder_options(
+            callback.as_ref().unchecked_ref(),
+            mime,
+            &wasm_bindgen::JsValue::from(0.85),
+        );
+        callback.forget();
+    });
+    let blob = wasm_bindgen_futures::JsFuture::from(blob)
+        .await
+        .ok()?
+        .dyn_into::<web_sys::Blob>()
+        .ok()?;
+    if blob.size() >= file.size() {
+        return None;
+    }
+    let original = file.name();
+    let name = match png {
+        true => original,
+        false => format!(
+            "{}.jpg",
+            original
+                .rsplit_once('.')
+                .map(|(base, _)| base)
+                .unwrap_or(&original)
+        ),
+    };
+    let options = web_sys::FilePropertyBag::new();
+    options.set_type(mime);
+    let parts = js_sys::Array::of1(&blob);
+    let shrunk = web_sys::File::new_with_blob_sequence_and_options(&parts, &name, &options).ok()?;
+    Some(shrunk)
+}
+
 fn upload(app: Signal<App>, key: String, file: web_sys::File) {
     spawn(async move {
         let mut app = app;
+        let file = shrink(file).await;
         let name = match file.name().is_empty() {
             true => "imagen".to_string(),
             false => file.name(),
@@ -1026,6 +1116,8 @@ fn walk(
     }
 }
 
+const REFRESH_AT: f64 = 64.0;
+
 pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -1128,6 +1220,109 @@ pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
         true,
     );
     scroll.forget();
+
+    let pull_from = std::rc::Rc::new(std::cell::Cell::new(None::<f64>));
+    let pull_distance = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+    let start = Closure::<dyn FnMut(web_sys::TouchEvent)>::new({
+        let pull_from = pull_from.clone();
+        move |event: web_sys::TouchEvent| {
+            let Some(touch) = event.touches().get(0) else {
+                return;
+            };
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            let scroller = document
+                .query_selector(".pane:not([hidden]) .transcript")
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    document
+                        .query_selector(".pane:not([hidden]) .body")
+                        .ok()
+                        .flatten()
+                });
+            let Some(scroller) =
+                scroller.and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+            else {
+                pull_from.set(None);
+                return;
+            };
+            if scroller.scroll_top() > 0 || event.touches().length() != 1 {
+                pull_from.set(None);
+                return;
+            }
+            pull_from.set(Some(touch.client_y() as f64));
+        }
+    });
+    let _ = document.add_event_listener_with_callback("touchstart", start.as_ref().unchecked_ref());
+    start.forget();
+
+    let pull = Closure::<dyn FnMut(web_sys::TouchEvent)>::new({
+        let pull_from = pull_from.clone();
+        let pull_distance = pull_distance.clone();
+        move |event: web_sys::TouchEvent| {
+            let Some(from) = pull_from.get() else {
+                return;
+            };
+            let Some(touch) = event.touches().get(0) else {
+                return;
+            };
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            let Some(element) = document.get_element_by_id("refresh") else {
+                return;
+            };
+            let distance = touch.client_y() as f64 - from;
+            if distance <= 0.0 {
+                pull_from.set(None);
+                pull_distance.set(0.0);
+                let _ = element.set_attribute("hidden", "");
+                let _ = element.set_attribute("style", "");
+                return;
+            }
+            pull_distance.set(distance);
+            let _ = element.remove_attribute("hidden");
+            element.set_inner_html(match distance > REFRESH_AT {
+                true => "Soltá para recargar",
+                false => "Tirá para recargar",
+            });
+            let _ = element.set_attribute(
+                "style",
+                &format!("transform: translate(-50%, {}px);", distance.min(120.0)),
+            );
+        }
+    });
+    let _ = document.add_event_listener_with_callback("touchmove", pull.as_ref().unchecked_ref());
+    pull.forget();
+
+    let end = Closure::<dyn FnMut(web_sys::Event)>::new({
+        let pull_from = pull_from.clone();
+        let pull_distance = pull_distance.clone();
+        move |_| {
+            let was = pull_from.get().is_some();
+            pull_from.set(None);
+            let distance = pull_distance.replace(0.0);
+            if !was {
+                return;
+            }
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            if let Some(element) = document.get_element_by_id("refresh") {
+                let _ = element.set_attribute("hidden", "");
+                let _ = element.set_attribute("style", "");
+            }
+            if distance > REFRESH_AT {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().reload();
+                }
+            }
+        }
+    });
+    let _ = document.add_event_listener_with_callback("touchend", end.as_ref().unchecked_ref());
+    end.forget();
 
     let hash = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
         let Some(window) = web_sys::window() else {

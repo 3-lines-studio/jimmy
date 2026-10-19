@@ -1,12 +1,21 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.98-bookworm AS builder
 RUN rustup toolchain install nightly --profile minimal && rustup default nightly
+
+ARG WASM_BINDGEN_VERSION=0.2.129
+RUN rustup target add wasm32-unknown-unknown \
+    && curl -fsSL -o /tmp/wasm-bindgen.tar.gz "https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && tar xzf /tmp/wasm-bindgen.tar.gz -C /usr/local/bin --strip-components=1 \
+    && rm /tmp/wasm-bindgen.tar.gz \
+    && wasm-bindgen --version
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock /build/jimmy/
 COPY src /build/jimmy/src
 COPY web /build/jimmy/web
 COPY prompts /build/jimmy/prompts
+COPY ui-v2 /build/jimmy/ui-v2
+RUN cd /build/jimmy/ui-v2 && (./build.sh || mkdir -p dist)
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 
@@ -59,9 +68,11 @@ RUN ln -sf /usr/local/bin/jimmy /usr/local/bin/heimdall \
     && heimdall help > /dev/null \
     && doppler help > /dev/null
 
+COPY --from=builder /build/jimmy/ui-v2/dist /app/web-v2
+ENV WEB_V2_DIR=/app/web-v2
+
 ENV XDG_CONFIG_HOME=/root/.config
-COPY skills /usr/local/share/jimmy/skills
-COPY --chmod=0755 bin/browse /usr/local/bin/browse
+COPY skills /usr/local/share/jimmy/skillsCOPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
 WORKDIR /data

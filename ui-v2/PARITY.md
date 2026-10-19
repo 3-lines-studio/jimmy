@@ -1,5 +1,8 @@
 # Paridad v1 → v2
 
+La v2 se sirve en `/`; la v1 sigue en `/clasica` y `/v2` redirige a `/`. Si
+`WEB_V2_DIR` no existe, `/` cae a la v1.
+
 Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium contra un
 `jimmy` real con `JIMMY_TRANSPORT=none` y el modelo falso de `tests/e2e/model.py`.
 

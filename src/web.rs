@@ -44,9 +44,16 @@ const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../web/icon-512.png");
 const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
 
+pub struct Paths {
+    pub root: PathBuf,
+    pub workspace: PathBuf,
+    pub v2: PathBuf,
+}
+
 pub struct Web {
     root: PathBuf,
     workspace: PathBuf,
+    v2: PathBuf,
     bus: Arc<Bus>,
     agent: Agent,
     auth: Auth,
@@ -57,8 +64,7 @@ pub struct Web {
 
 impl Web {
     pub fn new(
-        root: PathBuf,
-        workspace: PathBuf,
+        paths: Paths,
         bus: Arc<Bus>,
         agent: Agent,
         auth: Auth,
@@ -66,8 +72,9 @@ impl Web {
         agenda: Sender<String>,
     ) -> Arc<Web> {
         Arc::new(Web {
-            root,
-            workspace,
+            root: paths.root,
+            workspace: paths.workspace,
+            v2: paths.v2,
             bus,
             agent,
             auth,
@@ -175,12 +182,22 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     {
         return http::send_error(stream, 400, "esa conversación no existe");
     }
-    if request.path == "/v2" || request.path.starts_with("/v2/") {
-        return v2_page(stream, &request);
+    if request.path == "/v2" || request.path == "/v2/" {
+        return http::respond(stream, 302, "text/plain", &[("Location", "/")], b"");
+    }
+    if let Some(name) = request.path.strip_prefix("/v2/") {
+        return v2_asset(web, stream, &request, name);
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => http::send_text(stream, 200, "text/plain", "ok"),
-        ("GET", "/") => app_page(web, &request, stream),
+        ("GET", "/") => {
+            if web.v2.join("index.html").exists() {
+                v2_page(web, stream, &request, "index.html")
+            } else {
+                app_page(web, &request, stream)
+            }
+        }
+        ("GET", "/clasica") => app_page(web, &request, stream),
         ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
         ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
@@ -320,26 +337,41 @@ fn version() -> &'static str {
     })
 }
 
-fn v2_name(path: &str) -> Option<&str> {
-    let name = match path.trim_start_matches("/v2").trim_start_matches('/') {
-        "" => "index.html",
-        name => name,
-    };
-    (!name.contains("..")).then_some(name)
+fn v2_asset(
+    web: &Arc<Web>,
+    stream: &mut TcpStream,
+    request: &Request,
+    name: &str,
+) -> std::io::Result<()> {
+    if name.contains("..") {
+        return http::send_error(stream, 400, "esa ruta no vale");
+    }
+    v2_page(web, stream, request, name)
 }
 
-fn v2_page(stream: &mut TcpStream, request: &Request) -> std::io::Result<()> {
+fn v2_page(
+    web: &Arc<Web>,
+    stream: &mut TcpStream,
+    request: &Request,
+    name: &str,
+) -> std::io::Result<()> {
     if request.method != "GET" {
         return http::send_error(stream, 405, "sólo GET");
     }
-    let Some(name) = v2_name(&request.path) else {
-        return http::send_error(stream, 400, "esa ruta no vale");
-    };
-    let root = crate::env("WEB_V2_DIR").unwrap_or_else(|| "web-v2".to_string());
-    let Ok(bytes) = std::fs::read(Path::new(&root).join(name)) else {
+    if web.user(request).is_none() {
+        return http::respond(
+            stream,
+            303,
+            "text/plain",
+            &[("Location", "/login?next=/")],
+            b"",
+        );
+    }
+    let Ok(bytes) = std::fs::read(web.v2.join(name)) else {
         return http::send_error(stream, 404, "la v2 no está");
     };
-    let bytes = match name.ends_with(".html") {
+    let page = name.ends_with(".html");
+    let bytes = match page {
         true => stamp(&String::from_utf8_lossy(&bytes)).into_bytes(),
         false => bytes,
     };
@@ -352,7 +384,11 @@ fn v2_page(stream: &mut TcpStream, request: &Request) -> std::io::Result<()> {
         Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     };
-    http::respond(stream, 200, kind, &[("Cache-Control", "no-store")], &bytes)
+    let cache = match page {
+        true => "no-store",
+        false => IMMUTABLE,
+    };
+    http::respond(stream, 200, kind, &[("Cache-Control", cache)], &bytes)
 }
 
 fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -1370,14 +1406,6 @@ mod tests {
         assert!(page.contains("/v2/ui-v2.js?v="), "{page}");
     }
 
-    #[test]
-    fn the_v2_route_maps_to_files() {
-        assert_eq!(v2_name("/v2"), Some("index.html"));
-        assert_eq!(v2_name("/v2/"), Some("index.html"));
-        assert_eq!(v2_name("/v2/ui-v2_bg.wasm"), Some("ui-v2_bg.wasm"));
-        assert_eq!(v2_name("/v2/../Cargo.toml"), None);
-    }
-
     struct Server {
         root: PathBuf,
         workspace: PathBuf,
@@ -1439,9 +1467,20 @@ done
         let auth = Auth::new("bob@ejemplo.com, ana@ejemplo.com", &root, None, dev);
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
+        let v2 = base.join("web-v2");
+        std::fs::create_dir_all(&v2).unwrap();
+        std::fs::write(
+            v2.join("index.html"),
+            "<div id=\"main\"></div><script src=\"/v2/ui-v2.js?v={{version}}\"></script>",
+        )
+        .unwrap();
+        std::fs::write(v2.join("ui-v2.js"), "console.log('v2');").unwrap();
         let web = Web::new(
-            root.clone(),
-            workspace.clone(),
+            Paths {
+                root: root.clone(),
+                workspace: workspace.clone(),
+                v2: v2.clone(),
+            },
             bus.clone(),
             agent,
             auth,
@@ -1602,7 +1641,7 @@ done
         let server = start("assets");
         let redirect = get(server.port, "/", None);
         assert!(redirect.starts_with("HTTP/1.1 303"), "{redirect}");
-        assert!(redirect.contains("Location: /login"), "{redirect}");
+        assert!(redirect.contains("Location: /login?"), "{redirect}");
 
         let page = get(server.port, "/login", None);
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
@@ -1664,7 +1703,7 @@ done
         }
 
         let cookie = login(server.port, "bob@ejemplo.com");
-        let page = get(server.port, "/", Some(&cookie));
+        let page = get(server.port, "/clasica", Some(&cookie));
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(
             page.contains("Cache-Control: no-store"),
@@ -1757,6 +1796,41 @@ done
             None,
         );
         assert!(followed.contains("Location: /\r"), "{followed}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_root_serves_the_v2_and_keeps_the_old_paths() {
+        let server = start("root-v2");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let page = get(server.port, "/", Some(&cookie));
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("id=\"main\""), "{page}");
+        assert!(page.contains("no-store"), "{page}");
+        assert!(page.contains("/v2/ui-v2.js?v="), "{page}");
+
+        let script = get(server.port, "/v2/ui-v2.js", Some(&cookie));
+        assert!(script.starts_with("HTTP/1.1 200"), "{script}");
+        assert!(script.contains("immutable"), "{script}");
+
+        let moved = get(server.port, "/v2", Some(&cookie));
+        assert!(moved.starts_with("HTTP/1.1 302"), "{moved}");
+        assert!(moved.contains("Location: /\r"), "{moved}");
+
+        let classic = get(server.port, "/clasica", Some(&cookie));
+        assert!(classic.starts_with("HTTP/1.1 200"), "{classic}");
+        assert!(classic.contains("/app.js?v="), "{classic}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn without_the_v2_the_root_falls_back_to_the_v1() {
+        let server = start("root-v1");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap().join("web-v2"));
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let page = get(server.port, "/", Some(&cookie));
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("/app.js?v="), "{page}");
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 

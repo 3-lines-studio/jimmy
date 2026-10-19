@@ -371,16 +371,21 @@ pub fn Transcript(
                             }
                         }
                     },
-                    Block::Assistant { text, streaming } => rsx! {
-                        div {
-                            key: "{index}",
-                            class: if *streaming { "event assistant streaming" } else { "event assistant" },
-                            if *streaming {
+                    Block::Assistant { text, streaming } => match streaming {
+                        true => rsx! {
+                            div {
+                                key: "{index}",
+                                class: "event assistant streaming",
                                 "{text}"
-                            } else {
-                                div { dangerous_inner_html: markdown::render(text) }
                             }
-                        }
+                        },
+                        false => rsx! {
+                            div {
+                                key: "{index}",
+                                class: "event assistant",
+                                dangerous_inner_html: markdown::render(text),
+                            }
+                        },
                     },
                     Block::Steps(steps) => {
                         let names: Vec<String> = steps.items.iter().map(|item| item.name.clone()).collect();

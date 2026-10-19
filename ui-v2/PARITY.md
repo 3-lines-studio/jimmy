@@ -33,6 +33,10 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 - `hashchange`: cambiar el `#hash` abre o cierra la pestaña correspondiente.
 - Scroll: sólo sigue al final si ya estabas abajo (listener en el transcript, umbral 120 px);
   si estás leyendo arriba, un mensaje nuevo no te mueve.
+- Resaltado de sintaxis en los bloques de código: mismo tokenizador de la v1
+  (`tok-comment`, `tok-string`, `tok-keyword`, `tok-number`, `tok-add`, `tok-del`,
+  `tok-meta`), mismos alias de lenguaje y sin línea final de más. Los archivos de
+  texto de la pestaña Archivos también se resaltan por extensión.
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token

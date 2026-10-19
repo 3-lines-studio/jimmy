@@ -51,6 +51,9 @@ fn paths(name: &str) -> &'static str {
             r#"<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>"#
         }
         "dot" => r#"<circle cx="12" cy="12" r="3"/>"#,
+        "key" => {
+            r#"<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>"#
+        }
         "clock" => r#"<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>"#,
         "play" => r#"<path d="m6 4 14 8-14 8Z"/>"#,
         "pause" => r#"<path d="M9 4v16"/><path d="M15 4v16"/>"#,
@@ -75,19 +78,41 @@ pub fn tool_icon(name: &str) -> &'static str {
 }
 
 #[component]
-pub fn Icon(name: String, #[props(default = 16)] size: u32) -> Element {
-    rsx! {
-        svg {
-            view_box: "0 0 24 24",
-            width: "{size}",
-            height: "{size}",
-            fill: "none",
-            stroke: "currentColor",
-            stroke_width: "2",
-            stroke_linecap: "round",
-            stroke_linejoin: "round",
-            "aria-hidden": "true",
-            dangerous_inner_html: paths(&name),
-        }
+pub fn Icon(
+    name: String,
+    #[props(default = 16)] size: u32,
+    #[props(default = None)] class: Option<String>,
+) -> Element {
+    let inner = paths(&name);
+    match class {
+        Some(class) => rsx! {
+            svg {
+                class: "{class}",
+                view_box: "0 0 24 24",
+                width: "{size}",
+                height: "{size}",
+                fill: "none",
+                stroke: "currentColor",
+                stroke_width: "2",
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                "aria-hidden": "true",
+                dangerous_inner_html: inner,
+            }
+        },
+        None => rsx! {
+            svg {
+                view_box: "0 0 24 24",
+                width: "{size}",
+                height: "{size}",
+                fill: "none",
+                stroke: "currentColor",
+                stroke_width: "2",
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                "aria-hidden": "true",
+                dangerous_inner_html: inner,
+            }
+        },
     }
 }

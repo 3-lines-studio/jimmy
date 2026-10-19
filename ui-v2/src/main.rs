@@ -89,6 +89,7 @@ impl Default for Tab {
             opened: false,
             retries: 0,
             last_event: 0.0,
+            loading: false,
             running: false,
             done: false,
             error: false,
@@ -110,6 +111,7 @@ struct Tab {
     opened: bool,
     retries: u32,
     last_event: f64,
+    loading: bool,
     running: bool,
     done: bool,
     error: bool,
@@ -329,14 +331,25 @@ fn confirm(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn load_earlier(app: Signal<App>, key: String) {
-    let before = app.read().data.get(&key).map(|tab| tab.first).unwrap_or(0);
-    if before == 0 {
-        return;
-    }
+fn load_earlier(mut app: Signal<App>, key: String) {
+    let before = {
+        let mut state = app.write();
+        let Some(tab) = state.data.get_mut(&key) else {
+            return;
+        };
+        if tab.first == 0 || tab.loading {
+            return;
+        }
+        tab.loading = true;
+        tab.first
+    };
     spawn(async move {
+        let history = api::get::<api::History>(&api::history_path(&key, before)).await;
         let mut app = app;
-        let Ok(history) = api::get::<api::History>(&api::history_path(&key, before)).await else {
+        let Ok(history) = history else {
+            if let Some(tab) = app.write().data.get_mut(&key) {
+                tab.loading = false;
+            }
             return;
         };
         let mut state = app.write();
@@ -345,6 +358,7 @@ fn load_earlier(app: Signal<App>, key: String) {
             older.extend(tab.events.clone());
             tab.events = older;
             tab.first = history.first;
+            tab.loading = false;
         }
     });
 }
@@ -2007,7 +2021,7 @@ fn app() -> Element {
                         oninput: move |event| app.write().new_project = event.value(),
                     }
                     button { "aria-label": "Agregar proyecto", title: "Agregar proyecto",
-                        Icon { name: "plus", size: 14 }
+                        Icon { name: "plus", size: 17 }
                     }
                 }
                 div { id: "online", "{state.online}" }
@@ -2226,7 +2240,7 @@ fn app() -> Element {
                                                                         rename_conversation(app, key.clone());
                                                                     }
                                                                 },
-                                                                Icon { name: "pencil", size: 14 }
+                                                                Icon { name: "pencil", size: 15 }
                                                             }
                                                             button {
                                                                 class: "icon-btn danger",
@@ -2240,7 +2254,7 @@ fn app() -> Element {
                                                                         remove_conversation(app, sources.clone(), key.clone());
                                                                     }
                                                                 },
-                                                                Icon { name: "close", size: 14 }
+                                                                Icon { name: "close", size: 15 }
                                                             }
                                                         }
                                                     }
@@ -2276,15 +2290,10 @@ fn app() -> Element {
                         let bad = uicore::agenda::failed(&marks) > 0;
                         rsx! {
                             button {
-                                id: "vault",
-                                "aria-label": "Vault",
-                                onclick: move |_| open_vault(app),
-                                span { class: "label", "Vault" }
-                            }
-                            button {
                                 id: "agenda",
                                 "aria-label": "Agenda",
                                 onclick: move |_| open_agenda(app),
+                                Icon { name: "clock", size: 16 }
                                 span { class: "label", "Agenda" }
                                 span {
                                     id: "agenda-badge",
@@ -2292,6 +2301,13 @@ fn app() -> Element {
                                     class: if bad { "error" } else { "" },
                                     "{unread}"
                                 }
+                            }
+                            button {
+                                id: "vault",
+                                "aria-label": "Vault",
+                                onclick: move |_| open_vault(app),
+                                Icon { name: "key", size: 16 }
+                                span { class: "label", "Vault" }
                             }
                         }
                     }
@@ -2362,11 +2378,12 @@ fn app() -> Element {
                                 app.write().theme = next.to_string();
                                 set_theme(next);
                             },
-                            Icon { name: if state.theme == "light" { "moon" } else { "sun" }, size: 18 }
+                            Icon { name: "sun", size: 18, class: "sun" }
+                            Icon { name: "moon", size: 18, class: "moon" }
                         }
                         form { id: "logout", method: "post", action: "/api/logout",
                             button { "aria-label": "Salir", title: "Salir",
-                                Icon { name: "logout", size: 16 }
+                                Icon { name: "logout", size: 18 }
                             }
                         }
                     }
@@ -2383,7 +2400,7 @@ fn app() -> Element {
                             remember_hash(None);
                             set_home(true);
                         },
-                        Icon { name: "left", size: 16 }
+                        Icon { name: "left", size: 18 }
                     }
                     div { id: "tabs",
                         for key in state.tabs.clone() {
@@ -2708,24 +2725,32 @@ fn app() -> Element {
                                             workspace: workspace.clone(),
                                             events: tab.events.clone(),
                                         }
-                                        div { class: "jump",
-                                            if tab.first > 0 {
-                                                button {
-                                                    class: "up",
-                                                    "aria-label": "Ver anteriores",
-                                                    onclick: {
-                                                        let key = key.clone();
-                                                        move |_| load_earlier(app, key.clone())
-                                                    },
-                                                    Icon { name: "up", size: 15 }
-                                                }
+                                        div {
+                                            class: "jump",
+                                            hidden: tab.first == 0 && tab.follow,
+                                            button {
+                                                class: "up",
+                                                "aria-label": "Ver anteriores",
+                                                hidden: tab.first == 0,
+                                                disabled: tab.loading,
+                                                onclick: {
+                                                    let key = key.clone();
+                                                    move |_| load_earlier(app, key.clone())
+                                                },
+                                                Icon { name: "up", size: 15 }
                                             }
                                             button {
                                                 class: "down",
                                                 "aria-label": "Ir al final",
+                                                hidden: tab.follow,
                                                 onclick: {
                                                     let key = key.clone();
-                                                    move |_| scroll_bottom(&key)
+                                                    move |_| {
+                                                        if let Some(tab) = app.write().data.get_mut(&key) {
+                                                            tab.follow = true;
+                                                        }
+                                                        scroll_bottom(&key);
+                                                    }
                                                 },
                                                 Icon { name: "arrow-down", size: 15 }
                                             }
@@ -2806,6 +2831,7 @@ fn app() -> Element {
                                 },
                             }
                             label { id: "attach", title: "Adjuntar imagen",
+                                Icon { name: "clip", size: 17 }
                                 input {
                                     id: "file",
                                     r#type: "file",
@@ -2849,8 +2875,8 @@ fn app() -> Element {
                                         }
                                     }
                                 },
-                                span { class: "send-icon", Icon { name: "up", size: 17 } }
-                                span { class: "stop-icon", Icon { name: "stop", size: 15 } }
+                                Icon { name: "up", size: 17, class: "send-icon" }
+                                Icon { name: "stop", size: 15, class: "stop-icon" }
                             }
                         }
                     }

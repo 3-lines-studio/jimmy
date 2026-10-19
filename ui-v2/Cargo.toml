@@ -32,4 +32,8 @@ features = [
   "MessageEvent",
   "Storage",
   "Window",
+  "Clipboard",
+  "Navigator",
+  "EventTarget",
+  "DomTokenList",
 ]

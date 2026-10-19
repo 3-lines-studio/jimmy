@@ -33,6 +33,40 @@ struct Tab {
     error: bool,
 }
 
+#[derive(Clone, PartialEq)]
+enum Content {
+    Empty,
+    Note(String),
+    Text(String),
+    Markdown(String),
+    Image(String),
+}
+
+#[derive(Clone, PartialEq)]
+struct FilesTab {
+    project: String,
+    root: Vec<api::Entry>,
+    dirs: HashMap<String, Vec<api::Entry>>,
+    open: Vec<String>,
+    file: Option<String>,
+    content: Content,
+    showing: bool,
+}
+
+impl FilesTab {
+    fn new(project: String) -> Self {
+        Self {
+            project,
+            root: Vec::new(),
+            dirs: HashMap::new(),
+            open: Vec::new(),
+            file: None,
+            content: Content::Empty,
+            showing: false,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Default)]
 struct App {
     state: Option<api::State>,
@@ -47,6 +81,7 @@ struct App {
     opened: Vec<String>,
     expanded: Vec<String>,
     menu: Option<String>,
+    files: HashMap<String, FilesTab>,
 }
 
 fn main() {
@@ -82,6 +117,9 @@ fn conversation_of(app: &App, key: &str) -> Option<api::Conversation> {
 }
 
 fn title_of(app: &App, key: &str) -> String {
+    if let Some(title) = uicore::files::title(key) {
+        return title;
+    }
     conversation_of(app, key)
         .map(|conversation| conversation.title)
         .filter(|title| !title.is_empty())
@@ -90,6 +128,9 @@ fn title_of(app: &App, key: &str) -> String {
 }
 
 fn project_of(app: &App, key: &str) -> String {
+    if let Some(project) = uicore::files::project_of(key) {
+        return project;
+    }
     conversation_of(app, key)
         .map(|conversation| conversation.project)
         .unwrap_or_default()
@@ -484,6 +525,170 @@ fn new_conversation(app: Signal<App>, sources: Sources, project: String) {
     });
 }
 
+fn open_files_tab(mut app: Signal<App>, project: String) {
+    let id = format!("files:{project}");
+    {
+        let mut state = app.write();
+        if !state.tabs.contains(&id) {
+            state.tabs.push(id.clone());
+        }
+        state
+            .files
+            .entry(id.clone())
+            .or_insert_with(|| FilesTab::new(project.clone()));
+        state.active = Some(id.clone());
+    }
+    load_dir(app, id, String::new());
+}
+
+fn load_dir(app: Signal<App>, id: String, path: String) {
+    let project = match app.read().files.get(&id) {
+        Some(tab) => tab.project.clone(),
+        None => return,
+    };
+    spawn(async move {
+        let mut app = app;
+        let answer = api::get::<api::Tree>(&api::tree_path(&project, &path)).await;
+        let mut failure = None;
+        {
+            let mut state = app.write();
+            if let Some(tab) = state.files.get_mut(&id) {
+                match answer {
+                    Ok(tree) => match path.is_empty() {
+                        true => tab.root = tree.entries,
+                        false => {
+                            tab.dirs.insert(path.clone(), tree.entries);
+                            if !tab.open.contains(&path) {
+                                tab.open.push(path);
+                            }
+                        }
+                    },
+                    Err(message) => failure = Some(message),
+                }
+            }
+        }
+        if let Some(message) = failure {
+            toast(app, &message);
+        }
+    });
+}
+
+fn open_file(mut app: Signal<App>, id: String, path: String, kind: String) {
+    let project = match app.read().files.get(&id) {
+        Some(tab) => tab.project.clone(),
+        None => return,
+    };
+    {
+        let mut state = app.write();
+        if let Some(tab) = state.files.get_mut(&id) {
+            tab.file = Some(path.clone());
+            tab.showing = true;
+            tab.content = Content::Note("Trayendo…".to_string());
+        }
+    }
+    spawn(async move {
+        let mut app = app;
+        let answer = api::raw(&project, &path).await;
+        let mut failure = None;
+        {
+            let mut state = app.write();
+            if let Some(tab) = state.files.get_mut(&id) {
+                if tab.file.as_deref() != Some(path.as_str()) {
+                    return;
+                }
+                match answer {
+                    Ok(raw) => {
+                        tab.content = match raw.content_type.starts_with("image/") {
+                            true => Content::Image(api::raw_path(&project, &path)),
+                            false => {
+                                let text = String::from_utf8_lossy(&raw.bytes).to_string();
+                                match kind.as_str() {
+                                    "markdown" => Content::Markdown(text),
+                                    _ => Content::Text(text),
+                                }
+                            }
+                        };
+                        if raw.truncated {
+                            if let Content::Text(text) = &mut tab.content {
+                                text.push_str(
+                                    "\n\nSe ve sólo el principio: el archivo pasa los 512 KB",
+                                );
+                            }
+                        }
+                    }
+                    Err(message) => {
+                        tab.content = Content::Note("No pude abrir ese archivo".to_string());
+                        failure = Some(message);
+                    }
+                }
+            }
+        }
+        if let Some(message) = failure {
+            toast(app, &message);
+        }
+    });
+}
+
+fn flatten(tab: &FilesTab) -> Vec<(usize, String, api::Entry)> {
+    let mut rows = Vec::new();
+    walk(tab, "", &tab.root, 0, &mut rows);
+    rows
+}
+
+fn walk(
+    tab: &FilesTab,
+    path: &str,
+    entries: &[api::Entry],
+    depth: usize,
+    rows: &mut Vec<(usize, String, api::Entry)>,
+) {
+    for entry in entries {
+        let child = uicore::files::join(path, &entry.name);
+        rows.push((depth, child.clone(), entry.clone()));
+        if entry.dir && tab.open.contains(&child) {
+            if let Some(kids) = tab.dirs.get(&child) {
+                walk(tab, &child, kids, depth + 1, rows);
+            }
+        }
+    }
+}
+
+fn copy_hook() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let listener =
+        Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |event: web_sys::MouseEvent| {
+            let Some(target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            let Ok(Some(button)) = target.closest("button.copy") else {
+                return;
+            };
+            let Some(text) = button.get_attribute("data-copy") else {
+                return;
+            };
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let done = button.clone();
+            let promise = window.navigator().clipboard().write_text(&text);
+            spawn(async move {
+                if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+                    return;
+                }
+                let _ = done.class_list().add_1("copied");
+                gloo_timers::future::TimeoutFuture::new(1500).await;
+                let _ = done.class_list().remove_1("copied");
+            });
+        });
+    let _ = document.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
 fn set_theme(theme: &str) {
     if let Some(document) = web_sys::window().and_then(|window| window.document()) {
         if let Some(root) = document.document_element() {
@@ -527,6 +732,8 @@ fn app() -> Element {
     let mut app = use_signal(App::default);
     let sources =
         use_hook(|| Rc::new(RefCell::new(HashMap::<String, web_sys::EventSource>::new())));
+
+    use_hook(copy_hook);
 
     use_hook(move || {
         let theme = stored("jimmy-theme").unwrap_or_else(system_theme);
@@ -717,6 +924,17 @@ fn app() -> Element {
                                                 },
                                                 "Nueva conversación"
                                             }
+                                            button {
+                                                class: "item",
+                                                onclick: {
+                                                    let name = name.clone();
+                                                    move |_| {
+                                                        app.write().menu = None;
+                                                        open_files_tab(app, name.clone());
+                                                    }
+                                                },
+                                                "Ver archivos"
+                                            }
                                             if project.name != "general" {
                                                 button {
                                                     class: "item",
@@ -875,7 +1093,7 @@ fn app() -> Element {
                                     div { key: "{key}", class: if selected { "tab active" } else { "tab" },
                                         span { class: "pill",
                                             if !project.is_empty() && project != "general" {
-                                                "{project}"
+                                                "{uicore::project::initials(&project)}"
                                             }
                                         }
                                         span { class: "{status}" }
@@ -905,21 +1123,119 @@ fn app() -> Element {
                     div { id: "placeholder", hidden: active.is_some(), "Elegí una conversación o creá una nueva." }
                     for key in state.tabs.clone() {
                         {
-                            let tab = state.data.get(&key).cloned().unwrap_or_default();
                             let selected = active.as_deref() == Some(key.as_str());
-                            rsx! {
-                                div { key: "{key}", class: "pane", hidden: !selected,
-                                    Transcript {
-                                        conversation: key.clone(),
-                                        workspace: workspace.clone(),
-                                        events: tab.events.clone(),
+                            if uicore::files::is_files(&key) {
+                                let tab = state
+                                    .files
+                                    .get(&key)
+                                    .cloned()
+                                    .unwrap_or_else(|| FilesTab::new(String::new()));
+                                let rows = flatten(&tab);
+                                let file = tab.file.clone().unwrap_or_default();
+                                rsx! {
+                                    div {
+                                        key: "{key}",
+                                        class: if tab.showing { "pane files showing" } else { "pane files" },
+                                        hidden: !selected,
+                                        div { class: "files-view",
+                                            div { class: "files-head", hidden: !tab.showing,
+                                                button {
+                                                    class: "files-back",
+                                                    onclick: {
+                                                        let key = key.clone();
+                                                        move |_| {
+                                                            if let Some(tab) = app.write().files.get_mut(&key) {
+                                                                tab.showing = false;
+                                                            }
+                                                        }
+                                                    },
+                                                    Icon { name: "left", size: 15 }
+                                                    span { "Archivos" }
+                                                }
+                                                span { class: "files-path", "{file}" }
+                                            }
+                                            div { class: "files-body",
+                                                match tab.content.clone() {
+                                                    Content::Empty => rsx! { div { class: "files-note", "Elegí un archivo para leerlo." } },
+                                                    Content::Note(text) => rsx! { div { class: "files-note", "{text}" } },
+                                                    Content::Image(src) => rsx! { img { class: "files-image", src: "{src}", alt: "{file}" } },
+                                                    Content::Markdown(text) => rsx! {
+                                                        div { class: "event assistant files-markdown",
+                                                            div { dangerous_inner_html: uicore::markdown::render(&text) }
+                                                        }
+                                                    },
+                                                    Content::Text(text) => rsx! {
+                                                        div { class: "files-code",
+                                                            pre { "{text}" }
+                                                            button {
+                                                                class: "copy",
+                                                                "data-copy": "{text}",
+                                                                title: "Copiar el archivo",
+                                                                "aria-label": "Copiar el archivo",
+                                                                Icon { name: "copy", size: 14 }
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                        div { class: "files-tree",
+                                            if rows.is_empty() {
+                                                div { class: "files-note", "Vacía" }
+                                            }
+                                            for (depth, path, entry) in rows {
+                                                {
+                                                    let mut class = match entry.dir {
+                                                        true => "files-row files-folder".to_string(),
+                                                        false => "files-row button".to_string(),
+                                                    };
+                                                    if tab.file.as_deref() == Some(path.as_str()) {
+                                                        class.push_str(" active");
+                                                    }
+                                                    let pad = depth * 12;
+                                                    rsx! {
+                                                        div {
+                                                            key: "{path}",
+                                                            class: "{class}",
+                                                            style: "padding-left: {pad}px",
+                                                            onclick: {
+                                                                let path = path.clone();
+                                                                let kind = entry.kind.clone();
+                                                                let dir = entry.dir;
+                                                                let key = key.clone();
+                                                                move |_| match dir {
+                                                                    true => load_dir(app, key.clone(), path.clone()),
+                                                                    false => open_file(app, key.clone(), path.clone(), kind.clone()),
+                                                                }
+                                                            },
+                                                            Icon { name: if entry.dir { "folder" } else { "file" }, size: 15 }
+                                                            span { class: "files-label", "{entry.name}" }
+                                                            if !entry.dir && entry.size > 0 {
+                                                                span { class: "files-size", "{uicore::files::size(entry.size)}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                let tab = state.data.get(&key).cloned().unwrap_or_default();
+                                rsx! {
+                                    div { key: "{key}", class: "pane", hidden: !selected,
+                                        Transcript {
+                                            conversation: key.clone(),
+                                            workspace: workspace.clone(),
+                                            events: tab.events.clone(),
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-                if let Some(key) = active.clone() {
+                if let Some(key) = active.clone().filter(|key| !uicore::files::is_files(key)) {
                     form {
                         id: "composer",
                         onsubmit: {

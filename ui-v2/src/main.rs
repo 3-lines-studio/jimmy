@@ -23,8 +23,48 @@ const VISIBLE: usize = 10;
 type Sources = Rc<RefCell<HashMap<String, web_sys::EventSource>>>;
 
 thread_local! {
+    static AVATAR_VARS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+
     static STREAM_SENDER: RefCell<Option<futures_channel::mpsc::UnboundedSender<(String, Event)>>> =
         const { RefCell::new(None) };
+}
+
+fn open_online(retries: u32) {
+    let Ok(source) = web_sys::EventSource::new("/api/online") else {
+        return;
+    };
+    let on =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |message: web_sys::MessageEvent| {
+            let Some(data) = message.data().as_string() else {
+                return;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+                return;
+            };
+            let Some(event) = Event::parse(&value) else {
+                return;
+            };
+            send_event(String::new(), event);
+        });
+    source.set_onmessage(Some(on.as_ref().unchecked_ref()));
+    on.forget();
+    let closed = source.clone();
+    let error = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        if closed.ready_state() != web_sys::EventSource::CLOSED {
+            return;
+        }
+        let wait = (1000.0 * 2f64.powi(retries as i32)).min(30000.0);
+        let retry = Closure::once(move || open_online(retries + 1));
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                retry.as_ref().unchecked_ref(),
+                wait as i32,
+            );
+        }
+        retry.forget();
+    });
+    source.set_onerror(Some(error.as_ref().unchecked_ref()));
+    error.forget();
 }
 
 fn send_event(key: String, event: Event) {
@@ -48,6 +88,7 @@ impl Default for Tab {
             typing_sent: 0.0,
             opened: false,
             retries: 0,
+            last_event: 0.0,
             running: false,
             done: false,
             error: false,
@@ -68,6 +109,7 @@ struct Tab {
     typing_sent: f64,
     opened: bool,
     retries: u32,
+    last_event: f64,
     running: bool,
     done: bool,
     error: bool,
@@ -128,6 +170,7 @@ pub(crate) struct App {
     pub(crate) agenda: Option<Vec<api::Task>>,
     pub(crate) agenda_open: Vec<String>,
     pub(crate) agenda_pending: Vec<(String, i64)>,
+    pub(crate) tick: u64,
 }
 
 fn main() {
@@ -188,15 +231,39 @@ fn project_of(app: &App, key: &str) -> String {
         .unwrap_or_default()
 }
 
+fn avatar_vars(name: &str) -> String {
+    AVATAR_VARS.with(|vars| {
+        vars.borrow_mut()
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let random = js_sys::Math::random();
+                let more = js_sys::Math::random();
+                let other = js_sys::Math::random();
+                let last = js_sys::Math::random();
+                format!(
+                    "--blink: {:.2}s; --delay: {:.2}s; --hop: {:.2}s; --gaze: {:.2}s",
+                    2.8 + random * 3.4,
+                    -more * 5.0,
+                    -other * 1.1,
+                    -last * 11.0
+                )
+            })
+            .clone()
+    })
+}
+
 fn avatar_state(app: &App, project: &api::Project, active: Option<&str>) -> String {
-    let mut state = if app.opened.contains(&project.name) {
-        "idle"
-    } else {
-        "sleeping"
-    };
+    let now = js_sys::Date::now();
+    let mut opened = false;
+    let mut focused = false;
+    let mut busy = false;
     for conversation in &project.conversations {
+        if !app.tabs.contains(&conversation.key) {
+            continue;
+        }
+        opened = true;
         if Some(conversation.key.as_str()) == active {
-            state = "focused";
+            focused = true;
         }
         if let Some(tab) = app.data.get(&conversation.key) {
             if tab.error {
@@ -205,14 +272,28 @@ fn avatar_state(app: &App, project: &api::Project, active: Option<&str>) -> Stri
             if tab.done {
                 return "done".to_string();
             }
-            if tab.running {
-                state = "working";
+            if conversation.running && now - tab.last_event <= 1500.0 {
+                busy = true;
             }
-        } else if conversation.running && state == "idle" {
-            state = "waiting";
         }
     }
-    state.to_string()
+    if busy {
+        return "working".to_string();
+    }
+    let waiting = project
+        .conversations
+        .iter()
+        .any(|conversation| conversation.running);
+    if waiting {
+        return "waiting".to_string();
+    }
+    if focused {
+        return "focused".to_string();
+    }
+    if !opened {
+        return "sleeping".to_string();
+    }
+    "idle".to_string()
 }
 
 fn toggle(list: &mut Vec<String>, name: &str) {
@@ -540,6 +621,8 @@ fn remove_project(app: Signal<App>, project: api::Project) {
 }
 
 fn apply(mut app: Signal<App>, key: &str, event: Event) {
+    let signal = app;
+    let active_now = app.read().active.clone();
     if let Event::Typing { user } = event.clone() {
         let me = app.read().state.as_ref().map(|state| state.user.clone());
         if me.as_deref() == Some(user.as_str()) {
@@ -550,11 +633,7 @@ fn apply(mut app: Signal<App>, key: &str, event: Event) {
         }
         let key = key.to_string();
         spawn(async move {
-            let started = js_sys::Date::now();
             gloo_timers::future::TimeoutFuture::new(4000).await;
-            web_sys::console::log_1(
-                &format!("typing clear a los {}", js_sys::Date::now() - started).into(),
-            );
             let mut write = app.write();
             if let Some(tab) = write.data.get_mut(&key) {
                 if tab.typing == user {
@@ -582,21 +661,33 @@ fn apply(mut app: Signal<App>, key: &str, event: Event) {
         }
         Event::Done { .. } => {
             tab.running = false;
-            tab.done = true;
+            tab.done = active_now.as_deref() != Some(key);
             tab.events.push(event);
         }
         Event::Error { .. } => {
             tab.running = false;
-            tab.error = true;
+            tab.error = active_now.as_deref() != Some(key);
+            tab.events.push(event);
+        }
+        Event::User { .. } => {
+            tab.last_event = js_sys::Date::now();
+            tab.count += 1;
             tab.events.push(event);
         }
         Event::Assistant { .. } | Event::Stopped { .. } => {
             tab.running = false;
+            tab.last_event = js_sys::Date::now();
             tab.events.push(event);
         }
         event => {
             tab.count += usize::from(event.logged());
             tab.events.push(event);
+            tab.last_event = js_sys::Date::now();
+            let mut signal = signal;
+            spawn(async move {
+                gloo_timers::future::TimeoutFuture::new(1560).await;
+                signal.write().tick += 1;
+            });
         }
     }
 }
@@ -1485,6 +1576,76 @@ pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
     }
     measure.forget();
 
+    let gaze_last = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+    let gaze = Closure::<dyn FnMut(web_sys::PointerEvent)>::new({
+        let gaze_last = gaze_last.clone();
+        move |event: web_sys::PointerEvent| {
+            let reduced = web_sys::window()
+                .and_then(|window| {
+                    window
+                        .match_media("(prefers-reduced-motion: reduce)")
+                        .ok()
+                        .flatten()
+                })
+                .map(|query| query.matches())
+                .unwrap_or(false);
+            if reduced {
+                return;
+            }
+            let now = js_sys::Date::now();
+            if now - gaze_last.get() < 16.0 {
+                return;
+            }
+            gaze_last.set(now);
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            let Ok(nodes) = document.query_selector_all(".avatar.bot") else {
+                return;
+            };
+            for index in 0..nodes.length() {
+                let Some(element) = nodes
+                    .get(index)
+                    .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+                else {
+                    continue;
+                };
+                let rect = element.get_bounding_client_rect();
+                if rect.width() <= 0.0 {
+                    continue;
+                }
+                let dx = event.client_x() as f64 - (rect.left() + rect.width() / 2.0);
+                let dy = event.client_y() as f64 - (rect.top() + rect.height() / 2.0);
+                let distance = (dx * dx + dy * dy).sqrt();
+                let (dxs, dys) = match distance > 240.0 {
+                    true => ("0px".to_string(), "0px".to_string()),
+                    false => {
+                        let reach = (distance / 320.0).min(1.0);
+                        let focused = element.class_list().contains("focused");
+                        let shift = rect.width() * if focused { 0.3 } else { 0.17 } * reach;
+                        let divisor = distance.max(1.0);
+                        (
+                            format!("{:.1}px", dx / divisor * shift),
+                            format!("{:.1}px", dy / divisor * shift * 0.7),
+                        )
+                    }
+                };
+                let style = element
+                    .dyn_ref::<web_sys::HtmlElement>()
+                    .map(|element| element.style());
+                if let Some(style) = style {
+                    let _ = style.set_property("--dx", &dxs);
+                    let _ = style.set_property("--dy", &dys);
+                }
+            }
+        }
+    });
+    if let Some(window) = web_sys::window() {
+        let _ =
+            window.add_event_listener_with_callback("pointermove", gaze.as_ref().unchecked_ref());
+    }
+    gaze.forget();
+
     let pull_from = std::rc::Rc::new(std::cell::Cell::new(None::<f64>));
     let pull_distance = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
     let start = Closure::<dyn FnMut(web_sys::TouchEvent)>::new({
@@ -1663,9 +1824,29 @@ fn app() -> Element {
     use_hook(move || {
         let (sender, mut receiver) = futures_channel::mpsc::unbounded::<(String, Event)>();
         STREAM_SENDER.with(|slot| *slot.borrow_mut() = Some(sender));
+        open_online(0);
         spawn(async move {
             while let Some((key, event)) = receiver.next().await {
+                if key.is_empty() {
+                    if let Event::Online { users } = event {
+                        app.write().online = match users.len() > 1 {
+                            true => users.join(", "),
+                            false => String::new(),
+                        };
+                    }
+                    continue;
+                }
+                let refresh_needed = matches!(
+                    event,
+                    Event::User { .. }
+                        | Event::Done { .. }
+                        | Event::Error { .. }
+                        | Event::Stopped { .. }
+                );
                 apply(app, &key, event);
+                if refresh_needed {
+                    refresh(app);
+                }
             }
         });
     });
@@ -1773,6 +1954,7 @@ fn app() -> Element {
     });
 
     let state = app();
+    let _ = state.tick;
     let active = state.active.clone();
     let workspace = state
         .state
@@ -1838,6 +2020,7 @@ fn app() -> Element {
                             let (body, eyes) = uicore::project::face(&project.name);
                             let hue = uicore::project::hue(&project.name);
                             let avatar = avatar_state(&state, &project, active.as_deref());
+                            let vars = avatar_vars(&project.name);
                             let more = project.conversations.len() > VISIBLE;
                             let all = state.expanded.contains(&project.name);
                             let shown = match all {
@@ -1878,7 +2061,7 @@ fn app() -> Element {
                                             },
                                             span {
                                                 class: "avatar bot body-{body} eyes-{eyes} {avatar}",
-                                                style: "--h: {hue}",
+                                                style: "--h: {hue}; {vars}",
                                                 span { class: "eye", i {} }
                                                 span { class: "eye", i {} }
                                             }

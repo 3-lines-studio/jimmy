@@ -10,9 +10,11 @@ use wasm_bindgen::JsCast;
 mod api;
 mod event;
 mod icons;
+mod vault;
 
 use event::{Event, Transcript};
 use icons::Icon;
+use vault::{open_vault, Pane as VaultPane};
 
 const TAIL: usize = 1_000_000;
 const VISIBLE: usize = 10;
@@ -68,24 +70,25 @@ impl FilesTab {
 }
 
 #[derive(Clone, PartialEq, Default)]
-struct App {
-    state: Option<api::State>,
-    error: Option<String>,
-    tabs: Vec<String>,
-    active: Option<String>,
-    data: HashMap<String, Tab>,
-    theme: String,
-    toast: Option<String>,
-    online: String,
-    new_project: String,
-    opened: Vec<String>,
-    expanded: Vec<String>,
-    menu: Option<String>,
-    files: HashMap<String, FilesTab>,
-    share: Option<String>,
-    agenda: Option<Vec<api::Task>>,
-    agenda_open: Vec<String>,
-    agenda_pending: Vec<(String, i64)>,
+pub(crate) struct App {
+    pub(crate) state: Option<api::State>,
+    pub(crate) error: Option<String>,
+    pub(crate) tabs: Vec<String>,
+    pub(crate) active: Option<String>,
+    pub(crate) data: HashMap<String, Tab>,
+    pub(crate) theme: String,
+    pub(crate) toast: Option<String>,
+    pub(crate) online: String,
+    pub(crate) new_project: String,
+    pub(crate) opened: Vec<String>,
+    pub(crate) expanded: Vec<String>,
+    pub(crate) menu: Option<String>,
+    pub(crate) files: HashMap<String, FilesTab>,
+    pub(crate) share: Option<String>,
+    pub(crate) vault: vault::Vault,
+    pub(crate) agenda: Option<Vec<api::Task>>,
+    pub(crate) agenda_open: Vec<String>,
+    pub(crate) agenda_pending: Vec<(String, i64)>,
 }
 
 fn main() {
@@ -100,7 +103,7 @@ fn stored(key: &str) -> Option<String> {
         .ok()?
 }
 
-fn toast(app: Signal<App>, text: &str) {
+pub(crate) fn toast(app: Signal<App>, text: &str) {
     let mut app = app;
     app.write().toast = Some(text.to_string());
     let mut later = app;
@@ -123,6 +126,9 @@ fn conversation_of(app: &App, key: &str) -> Option<api::Conversation> {
 fn title_of(app: &App, key: &str) -> String {
     if key == "agenda" {
         return "Agenda".to_string();
+    }
+    if key == "vault" {
+        return "Vault".to_string();
     }
     if let Some(title) = uicore::files::title(key) {
         return title;
@@ -615,7 +621,7 @@ fn open_tab(app: Signal<App>, sources: Sources, key: String) {
     activate(app, sources, &key);
 }
 
-fn remember_tabs(app: &App) {
+pub(crate) fn remember_tabs(app: &App) {
     let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
     else {
         return;
@@ -624,7 +630,7 @@ fn remember_tabs(app: &App) {
     let _ = storage.set_item("jimmy-tabs", &value.to_string());
 }
 
-fn remember_hash(key: Option<&str>) {
+pub(crate) fn remember_hash(key: Option<&str>) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -1491,6 +1497,12 @@ fn app() -> Element {
                         let bad = uicore::agenda::failed(&marks) > 0;
                         rsx! {
                             button {
+                                id: "vault",
+                                "aria-label": "Vault",
+                                onclick: move |_| open_vault(app),
+                                span { class: "label", "Vault" }
+                            }
+                            button {
                                 id: "agenda",
                                 "aria-label": "Agenda",
                                 onclick: move |_| open_agenda(app),
@@ -1622,7 +1634,13 @@ fn app() -> Element {
                     for key in state.tabs.clone() {
                         {
                             let selected = active.as_deref() == Some(key.as_str());
-                            if key == "agenda" {
+                            if key == "vault" {
+                                rsx! {
+                                    div { key: "{key}", class: "pane vault", hidden: !selected,
+                                        VaultPane { app }
+                                    }
+                                }
+                            } else if key == "agenda" {
                                 let tasks = state.agenda.clone().unwrap_or_default();
                                 let marks: Vec<uicore::agenda::Mark> =
                                     tasks.iter().map(|task| mark_of(&state, task)).collect();
@@ -1898,7 +1916,7 @@ fn app() -> Element {
                 }
                 if let Some(key) = active
                     .clone()
-                    .filter(|key| !uicore::files::is_files(key) && key != "agenda")
+                    .filter(|key| !uicore::files::is_files(key) && key != "agenda" && key != "vault")
                 {
                     form {
                         id: "composer",

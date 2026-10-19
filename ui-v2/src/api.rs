@@ -67,7 +67,7 @@ pub struct Sent {
 
 async fn check(answer: gloo_net::http::Response) -> Result<gloo_net::http::Response, String> {
     match answer.status() {
-        200 => Ok(answer),
+        status if (200..300).contains(&status) => Ok(answer),
         401 => Err("no estás adentro".to_string()),
         status => Err(format!("estado {status}")),
     }

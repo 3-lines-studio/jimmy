@@ -1,6 +1,7 @@
 #![allow(clippy::useless_format)]
 
 use dioxus::prelude::*;
+use futures_util::StreamExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,6 +22,19 @@ const VISIBLE: usize = 10;
 
 type Sources = Rc<RefCell<HashMap<String, web_sys::EventSource>>>;
 
+thread_local! {
+    static STREAM_SENDER: RefCell<Option<futures_channel::mpsc::UnboundedSender<(String, Event)>>> =
+        const { RefCell::new(None) };
+}
+
+fn send_event(key: String, event: Event) {
+    STREAM_SENDER.with(|slot| {
+        if let Some(sender) = slot.borrow().as_ref() {
+            let _ = sender.unbounded_send((key, event));
+        }
+    });
+}
+
 impl Default for Tab {
     fn default() -> Self {
         Self {
@@ -31,6 +45,9 @@ impl Default for Tab {
             pending: Vec::new(),
             viewers: Vec::new(),
             typing: String::new(),
+            typing_sent: 0.0,
+            opened: false,
+            retries: 0,
             running: false,
             done: false,
             error: false,
@@ -48,6 +65,9 @@ struct Tab {
     pending: Vec<String>,
     viewers: Vec<String>,
     typing: String,
+    typing_sent: f64,
+    opened: bool,
+    retries: u32,
     running: bool,
     done: bool,
     error: bool,
@@ -519,8 +539,31 @@ fn remove_project(app: Signal<App>, project: api::Project) {
     });
 }
 
-fn apply(app: Signal<App>, key: &str, event: Event) {
-    let mut app = app;
+fn apply(mut app: Signal<App>, key: &str, event: Event) {
+    if let Event::Typing { user } = event.clone() {
+        let me = app.read().state.as_ref().map(|state| state.user.clone());
+        if me.as_deref() == Some(user.as_str()) {
+            return;
+        }
+        if let Some(tab) = app.write().data.get_mut(key) {
+            tab.typing = user.clone();
+        }
+        let key = key.to_string();
+        spawn(async move {
+            let started = js_sys::Date::now();
+            gloo_timers::future::TimeoutFuture::new(4000).await;
+            web_sys::console::log_1(
+                &format!("typing clear a los {}", js_sys::Date::now() - started).into(),
+            );
+            let mut write = app.write();
+            if let Some(tab) = write.data.get_mut(&key) {
+                if tab.typing == user {
+                    tab.typing.clear();
+                }
+            }
+        });
+        return;
+    }
     let mut app = app.write();
     let Some(tab) = app.data.get_mut(key) else {
         return;
@@ -533,7 +576,6 @@ fn apply(app: Signal<App>, key: &str, event: Event) {
             }
         }
         Event::Presence { users } => tab.viewers = users,
-        Event::Typing { user } => tab.typing = user,
         Event::Delta { .. } | Event::ToolDelta { .. } => {
             tab.typing.clear();
             tab.events.push(event);
@@ -564,7 +606,8 @@ fn subscribe(app: Signal<App>, sources: Sources, key: String) {
         return;
     }
     let since = app.read().data.get(&key).map(|tab| tab.count).unwrap_or(0);
-    let Ok(source) = web_sys::EventSource::new(&api::stream_path(&key, since)) else {
+    let path = api::stream_path(&key, since);
+    let Ok(source) = web_sys::EventSource::new(&path) else {
         return;
     };
     let signal = app;
@@ -580,10 +623,70 @@ fn subscribe(app: Signal<App>, sources: Sources, key: String) {
             let Some(event) = Event::parse(&value) else {
                 return;
             };
-            apply(signal, &scope, event);
+            let _ = signal;
+            send_event(scope.clone(), event);
         });
     source.set_onmessage(Some(on.as_ref().unchecked_ref()));
     on.forget();
+
+    let mut opening = app;
+    let opening_sources = sources.clone();
+    let opening_key = key.clone();
+    let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        let mut state = opening.write();
+        let Some(tab) = state.data.get_mut(&opening_key) else {
+            return;
+        };
+        let reconnected = tab.opened;
+        if reconnected {
+            drop(state);
+            unsubscribe(&opening_sources, &opening_key);
+            subscribe(opening, opening_sources.clone(), opening_key.clone());
+            return;
+        }
+        tab.opened = true;
+        tab.retries = 0;
+    });
+    source.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+    on_open.forget();
+
+    let mut failing = app;
+    let failing_sources = sources.clone();
+    let failing_key = key.clone();
+    let failing_source = source.clone();
+    let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+        if failing_source.ready_state() != web_sys::EventSource::CLOSED {
+            return;
+        }
+        let same = failing_sources
+            .borrow()
+            .get(&failing_key)
+            .map(|current| js_sys::Object::is(current.as_ref(), failing_source.as_ref()))
+            .unwrap_or(false);
+        if !same {
+            return;
+        }
+        failing_sources.borrow_mut().remove(&failing_key);
+        let wait = {
+            let mut state = failing.write();
+            let Some(tab) = state.data.get_mut(&failing_key) else {
+                return;
+            };
+            let wait = (1000.0 * 2f64.powi(tab.retries as i32)).min(30000.0);
+            tab.retries += 1;
+            wait
+        };
+        let key = failing_key.clone();
+        let sources = failing_sources.clone();
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(wait as u32).await;
+            if failing.read().data.contains_key(&key) {
+                subscribe(failing, sources, key);
+            }
+        });
+    });
+    source.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    on_error.forget();
     sources.borrow_mut().insert(key, source);
 }
 
@@ -772,11 +875,54 @@ fn refresh(app: Signal<App>) {
             }
             Err(message) if message == "no estás adentro" => {
                 if let Some(window) = web_sys::window() {
-                    let _ = window.location().set_href("/login");
+                    let next = window
+                        .location()
+                        .pathname()
+                        .unwrap_or_else(|_| "/v2".to_string());
+                    let _ = window
+                        .location()
+                        .set_href(&format!("/login?next={}", urlencode(&next)));
                 }
             }
             Err(message) => app.write().error = Some(message),
         }
+    });
+}
+
+fn say_typing(mut app: Signal<App>, key: String) {
+    let now = js_sys::Date::now();
+    let read_only = {
+        let state = app.read();
+        state
+            .state
+            .as_ref()
+            .and_then(|state| {
+                state.projects.iter().find_map(|project| {
+                    project
+                        .conversations
+                        .iter()
+                        .find(|conversation| conversation.key == key)
+                        .map(|conversation| conversation.read_only)
+                })
+            })
+            .unwrap_or(false)
+    };
+    if read_only {
+        return;
+    }
+    {
+        let mut state = app.write();
+        let Some(tab) = state.data.get_mut(&key) else {
+            return;
+        };
+        if now - tab.typing_sent < 2000.0 {
+            return;
+        }
+        tab.typing_sent = now;
+    }
+    spawn(async move {
+        let body = serde_json::json!({ "conversation": key });
+        let _ = api::post_quiet("/api/typing", &body).await;
     });
 }
 
@@ -1118,6 +1264,76 @@ fn walk(
 
 const REFRESH_AT: f64 = 64.0;
 
+fn measure_composer() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(composer) = document
+        .get_element_by_id("composer")
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return;
+    };
+    let Some(root) = document
+        .document_element()
+        .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return;
+    };
+    let _ = root
+        .style()
+        .set_property("--composer-h", &format!("{}px", composer.offset_height()));
+}
+
+fn watch_composer(document: &web_sys::Document) {
+    let Some(composer) = document.get_element_by_id("composer") else {
+        return;
+    };
+    let measure = Closure::<dyn FnMut(js_sys::Array)>::new(move |_| measure_composer());
+    if let Ok(observer) = web_sys::ResizeObserver::new(measure.as_ref().unchecked_ref()) {
+        observer.observe(&composer);
+        std::mem::forget(observer);
+    }
+    measure.forget();
+    measure_composer();
+}
+
+fn grow_composer(document: &web_sys::Document) {
+    let Some(input) = document
+        .get_element_by_id("input")
+        .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+    else {
+        return;
+    };
+    let style = input.style();
+    let _ = style.set_property("height", "auto");
+    let _ = style.set_property(
+        "height",
+        &format!("{}px", (input.scroll_height() as f64).min(240.0)),
+    );
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(computed)) = window.get_computed_style(&input) else {
+        return;
+    };
+    let number = |name: &str| {
+        computed
+            .get_property_value(name)
+            .ok()
+            .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    let lines = (input.scroll_height() as f64 - number("padding-top") - number("padding-bottom"))
+        / number("line-height").max(1.0);
+    if let Some(box_) = document
+        .get_element_by_id("composer")
+        .and_then(|element| element.query_selector(".box").ok().flatten())
+    {
+        let _ = box_.class_list().toggle_with_force("tall", lines > 1.5);
+    }
+}
+
 pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -1220,6 +1436,54 @@ pub(crate) fn events_hook(mut app: Signal<App>, sources: Sources) {
         true,
     );
     scroll.forget();
+
+    let grow = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let is_input = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|element| element.get_attribute("id"))
+            .map(|id| id == "input")
+            .unwrap_or(false);
+        if !is_input {
+            return;
+        }
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            grow_composer(&document);
+        }
+    });
+    let _ = document.add_event_listener_with_callback("input", grow.as_ref().unchecked_ref());
+    grow.forget();
+
+    let measure = Closure::<dyn FnMut(js_sys::Array)>::new(move |_| {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let Some(composer) = document
+            .get_element_by_id("composer")
+            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        else {
+            return;
+        };
+        if let Some(root) = document.document_element() {
+            if let Some(style) = root
+                .dyn_ref::<web_sys::HtmlElement>()
+                .map(|root| root.style())
+            {
+                let _ =
+                    style.set_property("--composer-h", &format!("{}px", composer.offset_height()));
+            }
+        }
+    });
+    if let (Some(window), Some(composer)) =
+        (web_sys::window(), document.get_element_by_id("composer"))
+    {
+        let _ = window;
+        if let Ok(observer) = web_sys::ResizeObserver::new(measure.as_ref().unchecked_ref()) {
+            observer.observe(&composer);
+            std::mem::forget(observer);
+        }
+    }
+    measure.forget();
 
     let pull_from = std::rc::Rc::new(std::cell::Cell::new(None::<f64>));
     let pull_distance = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
@@ -1395,6 +1659,31 @@ fn app() -> Element {
     let mut app = use_signal(App::default);
     let sources =
         use_hook(|| Rc::new(RefCell::new(HashMap::<String, web_sys::EventSource>::new())));
+
+    use_hook(move || {
+        let (sender, mut receiver) = futures_channel::mpsc::unbounded::<(String, Event)>();
+        STREAM_SENDER.with(|slot| *slot.borrow_mut() = Some(sender));
+        spawn(async move {
+            while let Some((key, event)) = receiver.next().await {
+                apply(app, &key, event);
+            }
+        });
+    });
+
+    use_hook(move || {
+        spawn(async move {
+            for _ in 0..100 {
+                let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                    return;
+                };
+                if document.get_element_by_id("composer").is_some() {
+                    watch_composer(&document);
+                    return;
+                }
+                gloo_timers::future::TimeoutFuture::new(100).await;
+            }
+        });
+    });
 
     let sources_hook = sources.clone();
     use_hook(move || events_hook(app, sources_hook));
@@ -2311,6 +2600,7 @@ fn app() -> Element {
                                         if let Some(tab) = app.write().data.get_mut(&conversation) {
                                             tab.draft = event.value();
                                         }
+                                        say_typing(app, conversation.clone());
                                     }
                                 },
                                 onkeydown: {

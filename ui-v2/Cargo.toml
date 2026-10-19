@@ -12,6 +12,8 @@ strip = true
 
 [dependencies]
 dioxus = { version = "0.7", features = ["web"] }
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 gloo-net = { version = "0.6", features = ["http"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
@@ -52,4 +54,9 @@ features = [
   "Url",
   "Location",
   "FilePropertyBag",
+  "console",
+  "CssStyleDeclaration",
+  "HtmlTextAreaElement",
+  "ResizeObserver",
+  "ResizeObserverEntry",
 ]

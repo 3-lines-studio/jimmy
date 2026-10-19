@@ -43,6 +43,18 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
   jpeg 0.85, png se queda png) antes de subirlas; si no achica, sube la original.
 - Pull-to-refresh: tirar del transcript desde arriba muestra `#refresh` con
   «Tirá para recargar» / «Soltá para recargar» y recarga pasados 64 px.
+- Listas y tareas: mismo HTML que la v1, `<li>` sin `<p>` de más y el checkbox
+  `<input type="checkbox" disabled checked> `; probado con anidadas y listas sueltas.
+- Composer: crece con el texto (34 px → 79 px a partir de 2 líneas), `.box.tall` y
+  `--composer-h` medidos igual que la v1 (62 px / 107 px).
+- `/api/typing`: se manda al escribir, como mucho uno cada 2 s, y no desde
+  conversaciones de sólo lectura; el "está escribiendo…" se apaga solo a los 4 s.
+- El SSE ahora entrega los eventos por un canal a una tarea de Dioxus: sin eso, los
+  mensajes que llegan por el stream no repintaban la interfaz.
+- `EventSource` con el backoff de la v1 (1 s, 2 s, 4 s… hasta 30 s) y re-suscripción
+  al reconectar.
+- Login: `/v2` sin sesión va a `/login?next=/v2` y el link devuelve ahí (sólo se
+  aceptan rutas propias).
 - Vault: chip `Vault`, panel con entornos agrupados por proyecto (general primero),
   crear/borrar entorno, claves con revelar/copiar/editar/borrar, etiqueta `var` para
   variables, copiar como `.env`, tokens con alcance, último uso, revocar y token
@@ -62,14 +74,12 @@ Medido contra `web/*.js` (6.910 líneas entre JS y CSS) y probado en Chromium co
 
 1. `web/secret.js` no está commiteado en la v1: la tarjeta de secretos sólo existe
    como archivo suelto, así que no hay paridad que copiar. Falta decidir si se
-   agrega a las dos o se descarta. Después, el gaze de los ojos.
-2. Markdown: resaltado de sintaxis (`highlight`/`highlightDiff`), `table-wrap`, checkboxes.
-3. Fotografías: `shrink` con canvas y nombres `.jpg` equivalentes (>1 MB se suben enteras).
-8. Login propio: la v2 manda a `/login` de la v1 cuando `/api/state` responde 401.
-9. Tests de `event` y `api`; `uicore` tiene 22.
+   agrega a las dos o se descarta.
+2. Nada más del protocolo: `uicore` cubre `event` (parseo, `logged`, agrupado de
+   pasos) y `api` (rutas y escapado) con 45 tests.
 
 ## Divergencias conocidas
 
-- EventSource nativo reconecta solo; la v1 hace backoff propio (sin `onopen` explícito).
-- El "escribiendo" se limpia al llegar un delta; la v1 lo apaga a los 4 s.
-- Sin atajos ni arrastrar-y-soltar.
+- Sin atajos de teclado ni arrastrar-y-soltar (la v1 tampoco los tiene).
+- El botón de copiar mensaje guarda el texto en `data-copy` (la v1 lo tiene en un
+  closure): mismo texto copiado, un atributo invisible de diferencia.

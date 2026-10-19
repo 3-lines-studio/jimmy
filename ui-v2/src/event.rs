@@ -341,10 +341,15 @@ fn Tool(item: Item, workspace: String) -> Element {
 }
 
 #[component]
-pub fn Transcript(conversation: String, workspace: String, events: Vec<Event>) -> Element {
+pub fn Transcript(
+    id: String,
+    conversation: String,
+    workspace: String,
+    events: Vec<Event>,
+) -> Element {
     let blocks = blocks(&events);
     rsx! {
-        div { class: "transcript",
+        div { class: "transcript", id: "{id}",
             for (index, block) in blocks.iter().enumerate() {
                 match block {
                     Block::User { text, author, images } => rsx! {

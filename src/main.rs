@@ -359,8 +359,11 @@ fn serve_web(
         eprintln!("jimmy: JIMMY_WEB_DEV=1: el link de entrada sale en la respuesta");
     }
     let web = web::Web::new(
-        config.root.clone(),
-        PathBuf::from(&config.workspace),
+        web::Paths {
+            root: config.root.clone(),
+            workspace: PathBuf::from(&config.workspace),
+            v2: PathBuf::from(env("WEB_V2_DIR").unwrap_or_else(|| "web-v2".to_string())),
+        },
         bus,
         agent,
         auth,

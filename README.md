@@ -166,22 +166,6 @@ git -C ../axe rev-parse origin/main   # copy the sha into Cargo.toml
 cargo build --release                 # refreshes Cargo.lock
 ```
 
-## UI v2
-
-`ui-v2/` is a Dioxus 0.7 app compiled to WebAssembly. It is the frontend served
-at `/`; the old vanilla-JS one stays reachable at `/clasica` for comparison and
-rollback, and `/v2` redirects to `/`.
-
-```sh
-make v2                       # builds ui-v2/dist with wasm-bindgen
-WEB_V2_DIR=ui-v2/dist cargo run    # http://localhost:8080/ (v1 en /clasica)
-```
-
-It needs the `wasm32-unknown-unknown` target and `wasm-bindgen` 0.2.129 on
-`PATH`, or `WASM_BINDGEN=/path/to/wasm-bindgen make v2`. The image builds it in
-the builder stage and copies `dist` to `/app/web-v2`; `WEB_V2_DIR` is the only
-knob. If the directory is missing the route answers 404 and v1 keeps working.
-
 ## Railway
 
 Deploy as a worker (no exposed port). Railway builds from the `Dockerfile` and
@@ -212,8 +196,7 @@ src/schedule.rs   scheduled tasks: clean-context runs, retried and parked
 src/skill.rs      the skills directory: list and load
 src/markdown.rs   splitting long messages, closing and reopening code fences
 bin/              the CLIs the agent gets: browse, gen-image, stats
-web/              the browser frontend, embedded with include_str!
-ui-v2/            the Dioxus frontend, served from disk at /
+web/              the vanilla-JS frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
 prompts/jimmy.md  the system prompt, compiled in with include_str!
 ```

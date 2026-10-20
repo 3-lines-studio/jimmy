@@ -1,4 +1,4 @@
-.PHONY: build run fmt lint test v2
+.PHONY: build run fmt lint test
 
 build:
 	docker build -t jimmy .
@@ -16,7 +16,4 @@ lint:
 test:
 	node --test web/
 	cargo test
-	cargo test --manifest-path ui-v2/core/Cargo.toml
 
-v2:
-	cd ui-v2 && ./build.sh

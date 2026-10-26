@@ -1,0 +1,11 @@
+services:
+  jimmy:
+    image: ghcr.io/3-lines-studio/jimmy
+    env_file: .env
+    environment:
+      JIMMY_WEB_PORT: "8080"
+    volumes:
+      - data:/data
+
+volumes:
+  data:

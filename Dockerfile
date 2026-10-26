@@ -19,7 +19,7 @@ RUN apt-get update \
 
 ARG BQX_VERSION=v0.3.2
 ARG PGX_VERSION=v0.2.1
-RUN curl -fsSL https://ax.3lines.studio/install.sh -o /tmp/ax-install.sh \
+RUN curl -fsSL https://raw.githubusercontent.com/3-lines-studio/ax/v0.4.10/scripts/install.sh -o /tmp/ax-install.sh \
     && AX_PREFIX=/usr/local VERSION="$BQX_VERSION" sh /tmp/ax-install.sh bqx \
     && AX_PREFIX=/usr/local VERSION="$PGX_VERSION" sh /tmp/ax-install.sh pgx \
     && rm /tmp/ax-install.sh

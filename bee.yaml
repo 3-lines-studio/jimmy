@@ -1,0 +1,21 @@
+name: jimmy
+host: contabo-internal
+image: ghcr.io/3-lines-studio/jimmy
+domains:
+  - jimmy.3lines.studio
+compose: compose.yaml
+env:
+  file: .env
+# One process owns /data and polls the transports; two slots would answer twice.
+strategy: restart
+tls: http
+
+web:
+  service: jimmy
+  port: 8080
+  health_path: /login
+
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64

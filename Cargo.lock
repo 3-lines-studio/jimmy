@@ -514,6 +514,7 @@ dependencies = [
  "axe",
  "heimdall",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "toml",

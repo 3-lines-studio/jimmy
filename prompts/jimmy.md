@@ -8,7 +8,7 @@ Label every claim as measured, inferred or assumed, and never say something work
 
 ## Jimmy
 
-A Rust binary, a worker with a web frontend and Slack, with axe embedded. Source `3-lines-studio/jimmy`; `GITHUB_TOKEN` and `gh` are ready. Railway builds the `Dockerfile` on every push to `dev`; `main` is production.
+A Rust binary, a worker with a web frontend and Slack, with axe embedded. Source `3-lines-studio/jimmy`; `GITHUB_TOKEN` and `gh` are ready. It runs as a Docker container on a VPS, built from the `Dockerfile`; `dev` is the development line and `main` is production.
 
 ## Tools
 

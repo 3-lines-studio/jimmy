@@ -104,7 +104,7 @@ The image ships:
 
 Edit `mise.toml` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
-`/data`, so they do not survive a Railway redeploy.
+`/data`, so they do not survive a container redeploy.
 
 `uv` is pointed at the volume — `UV_PYTHON_INSTALL_DIR=/data/uv/python`,
 `UV_CACHE_DIR=/data/uv/cache`, `UV_PYTHON_PREFERENCE=only-managed` — so
@@ -125,9 +125,6 @@ in `## Proyectos y git` of `prompts/git.md`.
 Deploy branches: `dev` is the development line and backs the owner's instance,
 `main` is production and backs the personal instance. Every agent change lands
 on `dev`; promoting to `main` is a `dev → main` pull request the owner approves.
-So point each Railway service at the branch it should track — the personal
-service at `main`, the owner's at `dev` — and Railway redeploys that branch on
-push.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -166,25 +163,21 @@ git -C ../axe rev-parse origin/main   # copy the sha into Cargo.toml
 cargo build --release                 # refreshes Cargo.lock
 ```
 
-## Railway
+## Deploy
 
-Deploy as a worker (no exposed port). Railway builds from the `Dockerfile` and
-fetches axe from GitHub.
+Jimmy runs as a container on a VPS: no exposed port is needed beyond the web
+frontend, and axe is fetched from GitHub at build time by the `Dockerfile`.
 
-For persistence, attach a Railway volume to the service and choose a mount
-path. Railway passes the path as `RAILWAY_VOLUME_MOUNT_PATH`, and Jimmy uses it
-as `JIMMY_ROOT`, so the sessions and the workspace land on the volume. Set
-`JIMMY_ROOT` to override.
+The workflow in `.github/workflows/release.yml` publishes
+`ghcr.io/3-lines-studio/jimmy` on pushes to `main` and on `v*` tags — a `sha-`
+tag for every build, and `latest` only on `main`.
 
-Attach the volume from the service dashboard (Volumes > New Volume) or the CLI:
+The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
+sessions and the workspace land there. Set `JIMMY_ROOT` to override.
 
-```sh
-railway volume add --mount-path /data
-```
-
-Caveats: a service can have only one volume, replicas cannot be used with a
-volume, and each redeploy briefly stops the service to avoid concurrent mounts.
-The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
+Set `JIMMY_COMMIT_SHA` to the commit the container is running: it shows up in
+`/status`, in the runtime context and in the versioned asset URLs of the web
+frontend.
 
 ## Layout
 

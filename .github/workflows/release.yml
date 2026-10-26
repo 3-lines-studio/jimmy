@@ -21,16 +21,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # axe declares a nightly cargo-features entry, so stable cannot build it.
-      - run: rustup toolchain install nightly --profile minimal && rustup default nightly
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: node --test 'web/**/*.test.js'
+
+  # The machine tests read memory from the container's cgroup, which the bare
+  # runner VM does not have; run them where Jimmy runs, inside a container.
+  cargo:
+    runs-on: ubuntu-latest
+    container: rust:1.98-bookworm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # axe declares a nightly cargo-features entry, so stable cannot build it.
+      - run: rustup toolchain install nightly --profile minimal && rustup default nightly
       - run: cargo test --locked
 
   build:
-    needs: test
+    needs: [test, cargo]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

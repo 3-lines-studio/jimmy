@@ -1,0 +1,149 @@
+.pane.mcp {
+  overflow-y: auto;
+  padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s4) var(--s6);
+}
+
+.mcp-inner {
+  max-width: var(--measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.mcp-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.mcp-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.mcp-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcp-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.mcp-list,
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.mcp-server {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.mcp-server-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mcp-server-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.mcp-server-meta {
+  color: var(--faint);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-actions {
+  display: flex;
+  gap: var(--s1);
+}
+
+.mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.mcp-input {
+  width: 100%;
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.mcp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.mcp-connect,
+.mcp-back {
+  align-self: flex-start;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.mcp-connect:hover,
+.mcp-back:hover {
+  border-color: var(--accent);
+}
+
+.mcp-connect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mcp-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.mcp-tool-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: var(--mono);
+}
+
+.mcp-tool-description {
+  color: var(--faint);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}

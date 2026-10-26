@@ -130,6 +130,12 @@ vaultSlot.className = "slot";
 vaultSlot.append(icon("key", 16));
 vaultEl.prepend(vaultSlot);
 vaultEl.onclick = () => openTab(VAULT);
+const mcpEl = document.getElementById("mcp");
+const mcpSlot = document.createElement("span");
+mcpSlot.className = "slot";
+mcpSlot.append(icon("globe", 16));
+mcpEl.prepend(mcpSlot);
+mcpEl.onclick = () => openTab(MCP);
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);
@@ -209,12 +215,13 @@ function titleOf(id) {
   if (isFiles(id)) return "Archivos: " + projectTitle(filesProject(id));
   if (isAgenda(id)) return "Agenda";
   if (isVault(id)) return "Vault";
+  if (isMcp(id)) return "MCP";
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
 }
 
 function knownTab(id) {
-  return isFiles(id) || isAgenda(id) || isVault(id) || Boolean(conversationById(id));
+  return isFiles(id) || isAgenda(id) || isVault(id) || isMcp(id) || Boolean(conversationById(id));
 }
 
 function isRunning(id) {
@@ -255,7 +262,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id) && !isMcp(id)) closeTab(id);
   }
   renderSidebar();
   renderPreviews();
@@ -734,6 +741,7 @@ function createTab(id) {
   if (isFiles(id)) return createFilesTab(id);
   if (isAgenda(id)) return createAgendaTab(id);
   if (isVault(id)) return createVaultTab(id);
+  if (isMcp(id)) return createMcpTab(id);
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -889,9 +897,10 @@ function activate(id) {
   activeId = id;
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   const tab = tabs.get(id);
-  if (tab && !tab.stream && !tab.files && !tab.agenda && !tab.vault) subscribe(tab);
+  if (tab && !tab.stream && !tab.files && !tab.agenda && !tab.vault && !tab.mcp) subscribe(tab);
   if (isAgenda(id)) loadAgenda();
   if (isVault(id)) loadVault();
+  if (isMcp(id)) loadMcp();
   if (tab) tab.attention = null;
   renderSidebar();
   renderTabs();
@@ -977,7 +986,7 @@ function renderTabs() {
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   const running = Boolean(tab) && isRunning(activeId);
-  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda) || Boolean(tab.vault));
+  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda) || Boolean(tab.vault) || Boolean(tab.mcp));
   tabActionsEl.hidden = !tab || extra;
   composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;

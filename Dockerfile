@@ -46,6 +46,9 @@ ENV UV_PYTHON_INSTALL_DIR=/data/uv/python
 ENV UV_CACHE_DIR=/data/uv/cache
 ENV UV_PYTHON_PREFERENCE=only-managed
 
+ARG BEE_TAG=""
+ENV JIMMY_COMMIT_SHA=$BEE_TAG
+
 RUN git config --system user.name "Jimmy" \
     && git config --system user.email "jimmy@3lines.studio" \
     && git config --system credential."https://github.com".helper '!gh auth git-credential' \
@@ -65,6 +68,8 @@ COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
+RUN --mount=type=bind,source=.git,target=/build/.git \
+    git --git-dir=/build/.git rev-parse --short HEAD > /etc/jimmy-version
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["jimmy"]

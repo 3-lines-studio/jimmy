@@ -8,7 +8,7 @@ Label every claim as measured, inferred or assumed, and never say something work
 
 ## Jimmy
 
-A Rust binary, a worker with a web frontend and Slack, with axe embedded. Source `3-lines-studio/jimmy`; `GITHUB_TOKEN` and `gh` are ready. It runs as a Docker container on a VPS, built from the `Dockerfile`; `dev` is the development line and `main` is production.
+A Rust binary, a worker with a web frontend and Slack, with axe embedded. Source `3-lines-studio/jimmy`; `GITHUB_TOKEN` and `gh` are ready. It runs as a Docker container on a VPS behind Caddy, deployed by hand with `bee` (private) from `main`; nothing deploys on push. `dev` is the development line.
 
 ## Tools
 

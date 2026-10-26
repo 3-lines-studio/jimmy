@@ -122,9 +122,10 @@ request; the workflow — reuse the clone, reset to `dev`, branch,
 `make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
 in `## Proyectos y git` of `prompts/git.md`.
 
-Deploy branches: `dev` is the development line and backs the owner's instance,
-`main` is production and backs the personal instance. Every agent change lands
-on `dev`; promoting to `main` is a `dev → main` pull request the owner approves.
+Deploy branches: `dev` is the development line, `main` is production. Every
+agent change lands on `dev`; promoting to `main` is a `dev → main` pull request
+the owner approves. There is one running instance, and it is deployed from
+`main`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -165,19 +166,28 @@ cargo build --release                 # refreshes Cargo.lock
 
 ## Deploy
 
-Jimmy runs as a container on a VPS: no exposed port is needed beyond the web
-frontend, and axe is fetched from GitHub at build time by the `Dockerfile`.
+Jimmy runs as a container on a VPS behind a shared Caddy edge, deployed with
+[`bee`](https://github.com/3-lines-studio/bee) (private). `bee.yaml` and
+`compose.yaml` on `main` describe it: host `contabo-internal`, domain
+`jimmy.3lines.studio`, `tls: http`, `strategy: restart` and
+`web.health_path: /login`.
 
-The workflow in `.github/workflows/release.yml` publishes
-`ghcr.io/3-lines-studio/jimmy` on pushes to `main` and on `v*` tags — a `sha-`
-tag for every build, and `latest` only on `main`.
+`strategy: restart` is deliberate: Jimmy is one process that owns `/data` and
+polls the transports, so two slots would answer the same message twice.
+
+A release is `bee build --tag <sha>` and then `bee deploy --image ...@sha256:...`
+(or the same from the control plane). bee rsyncs the compose file, uploads
+`.env` from the operator machine with mode 0600, recreates the container and
+waits for the health and smoke checks; if they fail it restores the previous
+image. Nothing deploys on push, and `.github/workflows/release.yml` only
+publishes an image, on `main` and on `v*` tags.
 
 The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
 sessions and the workspace land there. Set `JIMMY_ROOT` to override.
 
-Set `JIMMY_COMMIT_SHA` to the commit the container is running: it shows up in
-`/status`, in the runtime context and in the versioned asset URLs of the web
-frontend.
+Set `JIMMY_COMMIT_SHA` in `.env`: bee does not inject it, and without it
+`/status`, the runtime context and the versioned asset URLs of the web frontend
+have no commit to show.
 
 ## Layout
 

@@ -1,11 +1,3 @@
-//! One worker process per turn, spawned when the turn starts and gone when it
-//! ends.
-//!
-//! The pool owns the children and the JSONL pipes; a turn is a command in and
-//! events out until one of them is terminal. Nothing survives a turn, so the
-//! pool is a record of what is running right now and never a pile of idle
-//! processes.
-
 use crate::conversations::Conversation;
 use crate::protocol::{Command, Event};
 use crate::transport::Session;
@@ -25,8 +17,6 @@ pub enum Turn {
     Failed(String),
 }
 
-/// What the caller wants to do with every event on the way to the end of the
-/// turn: jimmy writes them down as the conversation's log.
 pub type OnEvent<'a> = &'a mut dyn FnMut(&Event);
 
 struct Worker {
@@ -82,8 +72,6 @@ impl Pool {
         }
     }
 
-    /// Interrumpe el turno de esa conversación, si hay uno corriendo. Va por el
-    /// mismo pipe que todo lo demás, así que el worker decide cuándo mirarlo.
     pub fn cancel(&self, key: &str) {
         let worker = self.workers.lock().unwrap().get(key).cloned();
         if let Some(worker) = worker {
@@ -91,8 +79,6 @@ impl Pool {
         }
     }
 
-    /// Baja el worker de esa conversación a la fuerza y espera a que muera,
-    /// para que no siga escribiendo en una carpeta que estamos por borrar.
     pub fn kill(&self, key: &str) {
         let worker = self.workers.lock().unwrap().get(key).cloned();
         let Some(worker) = worker else {
@@ -109,8 +95,10 @@ impl Pool {
         self.workers.lock().unwrap().contains_key(key)
     }
 
-    /// Un proceso nuevo por turno: arranca en milisegundos y rearma su contexto
-    /// desde el transcript, así que no hay nada que guardar entre turnos.
+    pub fn busy(&self) -> bool {
+        !self.workers.lock().unwrap().is_empty()
+    }
+
     fn spawn(&self, session: &Session, conversation: &Conversation) -> Result<Arc<Worker>, String> {
         let key = session.key();
         let exe = match &self.exe {
@@ -150,9 +138,6 @@ impl Pool {
         Ok(worker)
     }
 
-    /// Lo que terminó su turno se saca del registro y se le pide que se vaya:
-    /// muere por su cuenta, con el marcador del turno ya cerrado. El que ya se
-    /// había ido antes no se toca dos veces.
     fn retire(&self, worker: &Arc<Worker>) {
         if !self.forget(worker) {
             return;
@@ -251,16 +236,6 @@ fn unregister(pid: i32) {
     }
 }
 
-/// Si hay algún turno en curso: la tabla la escriben los que spawnean, así que
-/// también la puede leer el vigilante de la memoria.
-pub fn busy() -> bool {
-    WORKER_PIDS
-        .iter()
-        .any(|slot| slot.load(Ordering::Acquire) != 0)
-}
-
-/// Signal every worker to go. Called from the signal handler, so it only
-/// touches the lock-free pid array.
 pub fn kill_all() {
     for slot in &WORKER_PIDS {
         let pid = slot.swap(0, Ordering::AcqRel);
@@ -276,9 +251,6 @@ mod tests {
     use crate::protocol::Command;
     use std::path::Path;
 
-    /// El archivo lo escribe un proceso hijo: si lo escribiera éste, el fork de
-    /// cualquier otro test heredaría su descriptor y el exec daría «Text file
-    /// busy».
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         let mut writer = Process::new("sh")
@@ -313,6 +285,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_idle_pool_is_not_busy() {
+        let pool = Pool::new(Vec::new(), None);
+        assert!(!pool.busy());
+    }
+
+    #[test]
+    fn a_pool_with_a_live_turn_is_busy() {
+        let dir = scratch("live");
+        let exe = script(
+            &dir,
+            "worker.sh",
+            "echo '{\"event\":\"ready\"}'
+while read -r line; do
+  case \"$line\" in *shutdown*) exit 0 ;; esac
+  sleep 0.3
+  echo '{\"event\":\"done\",\"text\":\"ok\"}'
+done
+",
+        );
+        let pool = Pool::new(Vec::new(), Some(exe));
+        let session = Session::channel("test");
+        let conversation = conversation("../workspace");
+        let running = pool.clone();
+        let turn = std::thread::spawn(move || {
+            running
+                .turn(&session, &conversation, Command::Resume, &mut |_| {})
+                .map(|_| ())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let busy = pool.busy();
+        let result = turn.join().unwrap();
+        assert!(result.is_ok(), "el turno falló: {:?}", result.err());
+        assert!(busy, "con un turno vivo el pool tenía que estar ocupado");
+        assert!(!pool.busy());
     }
 
     #[test]
@@ -378,8 +387,6 @@ done
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Al worker se le pide que se vaya en vez de matarlo: así alcanza a cerrar
-    /// su marcador de turno antes de morir.
     #[test]
     fn a_turn_ends_by_asking_the_worker_to_leave() {
         let dir = scratch("leave");

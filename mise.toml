@@ -1,7 +1,7 @@
 [tools]
 go = "latest"
 node = "latest"
-python = "latest"
+python = "3.14.8"
 bun = "latest"
 uv = "latest"
 github-cli = "latest"

@@ -4,8 +4,10 @@ use crate::log::Log;
 use crate::media;
 use crate::pool::{Pool, Turn};
 use crate::protocol::{self, Event};
+use crate::store;
 use crate::transport::{Msg, Session, Transport};
 use crate::worker::Pipe;
+use axe::durable::{Journal, Record, TaskState};
 use axe::run::{self, Outcome, RunOptions, Sink};
 use axe::session::{self, ContextOptions, Entry};
 use axe::{Image, Message, OpenAI, ToolCall, ToolOutput, Usage};
@@ -29,15 +31,16 @@ pub struct Agent {
     base: String,
     model: String,
     api_key: String,
+    effort: String,
+    max_tokens: usize,
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
     cwd: String,
-    fragments: String,
+    system: String,
     context: String,
     pool: Arc<Pool>,
     bus: Arc<Bus>,
-    /// Un candado por conversación: un turno a la vez, el que llega espera.
     turns: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pipe: Option<Arc<Pipe>>,
     cancel: Arc<AtomicBool>,
@@ -51,7 +54,7 @@ impl Agent {
         context_window: Option<usize>,
         root: PathBuf,
         workspace: String,
-        fragments: String,
+        system: String,
     ) -> Self {
         let cwd = workspace.clone();
         let context = runtime_context(&model, &base, &root, &workspace, &cwd);
@@ -63,11 +66,15 @@ impl Agent {
             base,
             model,
             api_key,
+            effort: env("AXE_REASONING_EFFORT").unwrap_or_else(|| "max".into()),
+            max_tokens: env("AXE_MAX_TOKENS")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             context_window,
             root,
             cwd: workspace.clone(),
             workspace,
-            fragments,
+            system,
             context,
             pool,
             bus: Bus::new(),
@@ -77,13 +84,17 @@ impl Agent {
         }
     }
 
-    /// El worker reemplaza esto por un flag propio, que puede levantar mientras
-    /// el turno corre.
+    fn provider(&self, key: &str) -> OpenAI {
+        OpenAI::new(self.base.clone(), self.api_key.clone())
+            .effort(&self.effort)
+            .max_tokens(self.max_tokens)
+            .user_id(&user_id(key))
+    }
+
     pub(crate) fn set_cancel(&mut self, cancel: Arc<AtomicBool>) {
         self.cancel = cancel;
     }
 
-    /// Interrumpe el turno que esté corriendo, y deja dicho quién lo frenó.
     pub fn cancel(&self, session: &Session, author: &str) {
         if !author.is_empty() {
             self.say(
@@ -96,7 +107,6 @@ impl Agent {
         self.pool.cancel(&session.key());
     }
 
-    /// Corta el worker y se lleva la carpeta de la conversación.
     pub fn delete(&self, key: &str) -> Result<(), String> {
         self.pool.kill(key);
         let dir = self.conversation_dir(key);
@@ -110,8 +120,6 @@ impl Agent {
         conversations::get(&self.root, Path::new(&self.workspace), key).dir
     }
 
-    /// Busca en lo que se dijo, no en lo que se escribió en los archivos: es lo
-    /// que uno quiere de un chat.
     pub fn search(&self, needle: &str, limit: usize) -> Vec<Hit> {
         let needle = needle.trim().to_lowercase();
         if needle.chars().count() < 2 {
@@ -120,12 +128,8 @@ impl Agent {
         let mut hits = Vec::new();
         for project in conversations::projects(&self.root, Path::new(&self.workspace)) {
             for conversation in project.conversations {
-                let Ok(text) = std::fs::read_to_string(conversation.dir.join("transcript.jsonl"))
-                else {
-                    continue;
-                };
-                for line in text.lines() {
-                    let Some(hit) = search_line(line, &needle) else {
+                for (role, content) in store::texts(&conversation.dir) {
+                    let Some(snippet) = snippet(&content, &needle) else {
                         continue;
                     };
                     hits.push(Hit {
@@ -135,8 +139,8 @@ impl Agent {
                             .clone()
                             .unwrap_or_else(|| conversation.key.clone()),
                         project: project.name.clone(),
-                        role: hit.0,
-                        snippet: hit.1,
+                        role,
+                        snippet,
                     });
                     if hits.len() >= limit {
                         return hits;
@@ -147,7 +151,6 @@ impl Agent {
         hits
     }
 
-    /// Who is watching the conversations, for the web frontend to attach to.
     pub fn bus(&self) -> Arc<Bus> {
         self.bus.clone()
     }
@@ -156,20 +159,19 @@ impl Agent {
         self.pool.running(key)
     }
 
-    /// Where the tools run. It is the workspace unless the conversation belongs
-    /// to a project, and the runtime context says so, so it is rebuilt here.
+    pub fn busy(&self) -> bool {
+        self.pool.busy()
+    }
+
     pub(crate) fn set_cwd(&mut self, cwd: &str) {
         self.cwd = cwd.to_string();
         self.context = runtime_context(&self.model, &self.base, &self.root, &self.workspace, cwd);
     }
 
-    /// Tell the parent what the turn is doing, event by event. Only the worker
-    /// sets this: it is the one with a pipe at the other end of the process.
     pub(crate) fn set_pipe(&mut self, pipe: Arc<Pipe>) {
         self.pipe = Some(pipe);
     }
 
-    /// Point the pool at a different binary. Tests only.
     #[cfg(test)]
     pub(crate) fn use_worker_exe(&mut self, exe: PathBuf) {
         self.pool = Pool::new(
@@ -185,10 +187,6 @@ impl Agent {
         );
     }
 
-    /// Hand the turn to this conversation's worker and relay what it answers.
-    ///
-    /// El mensaje queda en el log antes de esperar el turno, así que el que
-    /// mira lo ve aunque el turno anterior siga corriendo.
     pub fn respond(
         &self,
         transport: &dyn Transport,
@@ -197,9 +195,29 @@ impl Agent {
         images: Vec<Image>,
         author: &str,
     ) -> Result<(), String> {
-        self.announce(session, text, &images, author);
+        self.respond_with(transport, session, text, images, author, "")
+    }
+
+    pub fn respond_with(
+        &self,
+        transport: &dyn Transport,
+        session: &Session,
+        text: &str,
+        images: Vec<Image>,
+        author: &str,
+        request: &str,
+    ) -> Result<(), String> {
+        if request.is_empty() {
+            self.announce(session, text, &images, author);
+        }
         let turn = self.wait_turn(session);
         let _guard = turn.lock().unwrap();
+        if !request.is_empty() {
+            if self.admitted(session, request) {
+                return Ok(());
+            }
+            self.announce(session, text, &images, author);
+        }
         self.relay(
             transport,
             session,
@@ -207,8 +225,28 @@ impl Agent {
                 text: text.to_string(),
                 images,
                 author: author.to_string(),
+                request: request.to_string(),
             },
         )
+    }
+
+    fn admitted(&self, session: &Session, request: &str) -> bool {
+        let dir = self.conversation(session).dir;
+        if !dir.join("state.json").exists() && !dir.join("journal.jsonl").exists() {
+            return false;
+        }
+        Journal::load_tasks(&dir)
+            .map(|tasks| {
+                tasks.iter().any(|task| {
+                    task.kind == "turn"
+                        && task
+                            .checkpoint
+                            .get("request")
+                            .and_then(|value| value.as_str())
+                            == Some(request)
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub fn resume(&self, transport: &dyn Transport, session: &Session) -> Result<(), String> {
@@ -223,8 +261,15 @@ impl Agent {
         self.relay(transport, session, protocol::Command::Compact)
     }
 
-    /// Deja el mensaje escrito en el log sin esperar turno: es lo que ven los
-    /// demás apenas alguien aprieta enviar.
+    pub fn note(&self, session: &Session, text: &str) {
+        self.say(
+            session,
+            &Event::Done {
+                text: text.to_string(),
+            },
+        );
+    }
+
     pub fn announce(&self, session: &Session, text: &str, images: &[Image], author: &str) {
         self.say(
             session,
@@ -243,9 +288,6 @@ impl Agent {
         self.bus.publish(&conversation.key, &log, event);
     }
 
-    /// Las imágenes que el asistente mandó con `jimmy send` durante el turno. El
-    /// CLI es otro proceso y no puede escribir el log, así que las deja en la
-    /// cola de la conversación y esto las publica.
     fn flush_media(&self, session: &Session) {
         let conversation = self.conversation(session);
         for event in media::drain(&conversation) {
@@ -253,7 +295,6 @@ impl Agent {
         }
     }
 
-    /// Un turno por conversación: el que llega segundo espera.
     fn wait_turn(&self, session: &Session) -> Arc<Mutex<()>> {
         self.turns
             .lock()
@@ -297,7 +338,6 @@ impl Agent {
         }
     }
 
-    /// The turn as the worker runs it, in its own process.
     pub(crate) fn local_prompt(
         &self,
         transport: &dyn Transport,
@@ -305,11 +345,29 @@ impl Agent {
         text: &str,
         images: Vec<Image>,
         author: &str,
+        request: &str,
     ) -> Result<(), String> {
         let dir = self.conversation(session).dir;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-        let mut entries = load_entries(&dir);
+        let mut journal = store::open(&dir)?;
+        let mut entries = store::entries(&mut journal)?;
+        let duplicate = !request.is_empty()
+            && journal.tasks().any(|task| {
+                task.kind == "turn"
+                    && task
+                        .checkpoint
+                        .get("request")
+                        .and_then(|value| value.as_str())
+                        == Some(request)
+            });
+        if duplicate {
+            let history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
+            let reply = final_answer(&history).unwrap_or_default().to_string();
+            transport.answer(session, None, &reply);
+            let _ = std::fs::remove_file(dir.join("inflight"));
+            return Ok(());
+        }
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
 
@@ -323,11 +381,28 @@ impl Agent {
         };
         history.push(user.clone());
         let entry = Entry::Message { message: user };
-        append_entry(&dir, &entry)?;
+        let mut tasks = Vec::new();
+        if let Some(mut old) = store::live_turn(&journal).cloned() {
+            old.state = TaskState::Cancelled;
+            old.phase = "superseded".into();
+            tasks.push(old);
+        }
+        let task = store::new_turn(&mut journal, request);
+        tasks.push(task.clone());
+        journal
+            .commit(vec![entry.clone()], tasks)
+            .map_err(|e| e.to_string())?;
         entries.push(entry);
 
-        self.execute(transport, session, history, entries, Some(dir), false)
-            .map(|_| ())
+        self.execute(
+            transport,
+            session,
+            history,
+            entries,
+            Some((journal, task.id)),
+            false,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn local_compact(
@@ -336,19 +411,21 @@ impl Agent {
         session: &Session,
     ) -> Result<(), String> {
         let dir = self.conversation(session).dir;
-        let mut entries = load_entries(&dir);
-        let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
-        match compact(&provider, &self.model, &mut entries) {
-            Ok(_) => {
-                save_entries(&dir, &mut entries)?;
-                let before = entries
-                    .iter()
-                    .rev()
-                    .find_map(|entry| match entry {
-                        Entry::Compaction { tokens_before, .. } => Some(*tokens_before),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
+        let mut journal = store::open(&dir)?;
+        let entries: Vec<Entry> = journal
+            .entries()
+            .iter()
+            .map(|record| record.entry.clone())
+            .collect();
+        let provider = self.provider(&session.key());
+        match compact(&provider, &self.model, &entries) {
+            Ok(entry) => {
+                let before = match &entry {
+                    Entry::Compaction { tokens_before, .. } => *tokens_before,
+                    _ => 0,
+                };
+                journal.append(vec![entry]).map_err(|e| e.to_string())?;
+                snapshot_now(&mut journal);
                 let report = format!("🧹 compactado: {}K tokens", before / 1000);
                 transport.answer(session, None, &report);
             }
@@ -366,15 +443,39 @@ impl Agent {
         session: &Session,
         dir: &Path,
     ) -> Result<(), String> {
-        let entries = load_entries(dir);
+        let mut journal = store::open(dir)?;
+        let entries = store::entries(&mut journal)?;
         let mut history = session::context_messages_with(&entries, CONTEXT_OPTIONS);
         session::drop_incomplete_tool_calls(&mut history);
+        let mut task = match store::live_turn(&journal).cloned() {
+            Some(task) => task,
+            None => store::new_turn(&mut journal, ""),
+        };
+        task.state = TaskState::Running;
+        task.phase = "request".into();
+        journal
+            .commit(Vec::new(), vec![task.clone()])
+            .map_err(|e| e.to_string())?;
         if let Some(reply) = final_answer(&history) {
+            settle(
+                &mut journal,
+                task.id,
+                TaskState::Done,
+                "done",
+                serde_json::json!({}),
+            );
             transport.answer(session, None, reply);
             let _ = std::fs::remove_file(dir.join("inflight"));
             return Ok(());
         }
         if history.is_empty() {
+            settle(
+                &mut journal,
+                task.id,
+                TaskState::Cancelled,
+                "empty",
+                serde_json::json!({}),
+            );
             let _ = std::fs::remove_file(dir.join("inflight"));
             return Ok(());
         }
@@ -383,7 +484,7 @@ impl Agent {
             session,
             history,
             entries,
-            Some(dir.to_path_buf()),
+            Some((journal, task.id)),
             false,
         )
         .map(|_| ())
@@ -419,63 +520,73 @@ impl Agent {
         session: &Session,
         mut history: Vec<Message>,
         mut entries: Vec<Entry>,
-        dir: Option<PathBuf>,
+        run: Option<(Journal, u64)>,
         silent: bool,
     ) -> Result<String, String> {
-        let mut tools = axe::tools::build_tools(&self.cwd);
+        let (mut journal, task) = match run {
+            Some((journal, task)) => (Some(journal), Some(task)),
+            None => (None, None),
+        };
+        let dir = journal.as_ref().map(|journal| journal.dir().to_path_buf());
+        let mut tools = axe::tools::build_tools_with(
+            Arc::new(axe::machine::Local::new(&self.cwd)),
+            Some(axe::web::Web::at(
+                search_base(&self.base),
+                self.api_key.clone(),
+            )),
+        );
         tools.extend(crate::tools::all());
         let mut system = axe::system_prompt(&tools);
-        if !self.fragments.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&self.fragments);
-        }
+        system.push_str("\n\n");
+        system.push_str(&self.system);
         system.push('\n');
         system.push_str(&self.context);
         system.push_str(&format!(
-            "Chat actual: {}\nTranscript: {}/transcript.jsonl\n",
+            "Chat actual: {}\nHistorial: {}/journal.jsonl\n",
             session.key(),
             self.conversation(session).dir.display()
         ));
         system.push_str(
             "Si un mensaje empieza con un nombre entre corchetes, es quien lo escribió.\n",
         );
-        let memory = crate::memo::render(
-            Path::new(&self.workspace),
-            &self.conversation(session).project,
-        );
-        if !memory.is_empty() {
-            system.push_str("\n## Memoria en contexto\n");
-            system.push_str(&memory);
-            system.push('\n');
-        }
-        let provider = OpenAI::new(self.base.clone(), self.api_key.clone());
+        let provider = self.provider(&session.key());
         let opts = RunOptions {
             model: &self.model,
             system: &system,
             tools: &tools,
-            max_turns: usize::MAX,
+            max_turns: 1,
         };
         let threshold = self
             .context_window
             .map(|w| w.saturating_sub(OUTPUT_RESERVE));
         let cancel = self.cancel.clone();
 
-        let status = if silent {
+        let mut status = if silent {
             None
         } else {
             transport.progress(session)
         };
-        let mut sink = EventSink {
-            threshold,
-            events: dir.clone(),
-            transcript: dir.as_ref().map(|d| d.join("transcript.jsonl")),
-            pipe: self.pipe.clone(),
-        };
 
         let mut overflow_retried = false;
+        let mut turns = 0;
         loop {
+            turns += 1;
             let started = Instant::now();
+            let start = history.len();
+            let mut sink = EventSink {
+                threshold,
+                events: dir.clone(),
+                journal: journal.take(),
+                pipe: self.pipe.clone(),
+                committed: 0,
+                error: None,
+            };
             let end = run::run_stream(&provider, &opts, &history, &cancel, &mut sink);
+            journal = sink.journal.take();
+            if let Some(error) = sink.error.take() {
+                transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                return Err(error);
+            }
             if let Some(dir) = &dir {
                 record(
                     dir,
@@ -491,58 +602,136 @@ impl Agent {
                     }),
                 );
             }
-            for message in &end.messages[history.len()..] {
+            let axe::run::RunEnd {
+                messages,
+                usage,
+                context,
+                outcome,
+            } = end;
+            let fresh = messages.len().saturating_sub(start);
+            let committed = sink.committed.min(fresh);
+            for message in &messages[start..start + committed] {
                 entries.push(Entry::Message {
                     message: message.clone(),
                 });
             }
-            if end.usage.input > 0 || end.usage.output > 0 {
-                entries.push(Entry::Usage {
-                    input: end.usage.input,
-                    output: end.usage.output,
-                    cached_input: end.context.cached_input,
-                    context_input: end.context.input,
-                    context_output: end.context.output,
-                });
+            let mut usage_entry = Vec::new();
+            if usage.input > 0 || usage.output > 0 {
+                let entry = Entry::Usage {
+                    input: usage.input,
+                    output: usage.output,
+                    cached_input: context.cached_input,
+                    context_input: context.input,
+                    context_output: context.output,
+                };
+                entries.push(entry.clone());
+                usage_entry.push(entry);
             }
-            match end.outcome {
-                Outcome::Done | Outcome::MaxTurns => {
-                    save(&dir, &mut entries)?;
+            match outcome {
+                Outcome::Done => {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Done,
+                        "done",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
+                    snapshot(&mut journal);
                     let fallback = if silent { None } else { Some("✅ listo") };
-                    let reply = answer(&end.messages[history.len()..], fallback);
-                    transport.answer(session, status, &reply);
+                    let reply = answer(&messages[start..], fallback);
+                    transport.answer(session, status.take(), &reply);
                     return Ok(reply);
                 }
-                Outcome::Cancelled => {
-                    save(&dir, &mut entries)?;
-                    transport.fail(session, status, "⚠️ interrumpido");
-                    return Err("interrumpido".into());
+                Outcome::MaxTurns => {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Running,
+                        "turn",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
+                    history = messages;
                 }
                 Outcome::Compact => {
-                    history = match compact(&provider, &self.model, &mut entries) {
+                    let value = serde_json::json!({ "turn": turns });
+                    if let Err(error) = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Running,
+                        "turn",
+                        value,
+                    ) {
+                        transport.fail(session, status.take(), &format!("⚠️ {error}"));
+                        return Err(error);
+                    }
+                    history = match compacted(&mut journal, &mut entries, &provider, &self.model) {
                         Ok(history) => history,
                         Err(e) => {
-                            save(&dir, &mut entries)?;
-                            transport.fail(session, status, &format!("⚠️ {e}"));
+                            snapshot(&mut journal);
+                            transport.fail(session, status.take(), &format!("⚠️ {e}"));
                             return Err(e);
                         }
                     };
                 }
+                Outcome::Cancelled => {
+                    let value = serde_json::json!({ "turn": turns });
+                    let _ = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Cancelled,
+                        "cancelled",
+                        value,
+                    );
+                    snapshot(&mut journal);
+                    transport.fail(session, status.take(), "⚠️ interrumpido");
+                    return Err("interrumpido".into());
+                }
                 Outcome::Failed(e) => {
                     if !overflow_retried && session::is_overflow_error(&e) {
                         overflow_retried = true;
-                        history = match compact(&provider, &self.model, &mut entries) {
-                            Ok(history) => history,
-                            Err(e) => {
-                                save(&dir, &mut entries)?;
-                                transport.fail(session, status, &format!("⚠️ {e}"));
-                                return Err(e);
-                            }
-                        };
+                        let value = serde_json::json!({ "turn": turns });
+                        let _ = checkpoint(
+                            &mut journal,
+                            task,
+                            usage_entry,
+                            TaskState::Running,
+                            "compacting",
+                            value,
+                        );
+                        history =
+                            match compacted(&mut journal, &mut entries, &provider, &self.model) {
+                                Ok(history) => history,
+                                Err(e) => {
+                                    snapshot(&mut journal);
+                                    transport.fail(session, status.take(), &format!("⚠️ {e}"));
+                                    return Err(e);
+                                }
+                            };
                         continue;
                     }
-                    save(&dir, &mut entries)?;
-                    transport.fail(session, status, &format!("⚠️ error: {e}"));
+                    let value = serde_json::json!({ "turn": turns, "error": e });
+                    let _ = checkpoint(
+                        &mut journal,
+                        task,
+                        usage_entry,
+                        TaskState::Failed,
+                        "failed",
+                        value,
+                    );
+                    snapshot(&mut journal);
+                    transport.fail(session, status.take(), &format!("⚠️ error: {e}"));
                     return Err(e);
                 }
             }
@@ -561,7 +750,7 @@ impl Agent {
 
     fn status(&self, session: &Session) -> String {
         let dir = self.conversation(session).dir;
-        let entries = load_entries(&dir);
+        let entries = store::load(&dir);
         let used = session::latest_context_tokens(&entries).unwrap_or(0);
         let window = self.context_window.unwrap_or(0);
         let percent = used.saturating_mul(100).checked_div(window).unwrap_or(0);
@@ -582,28 +771,28 @@ impl Agent {
 
     fn clear(&self, session: &Session) -> String {
         let dir = self.conversation(session).dir;
-        let path = dir.join("transcript.jsonl");
-        if !path.exists() {
+        let mut journal = match store::open(&dir) {
+            Ok(journal) => journal,
+            Err(e) => return format!("⚠️ no pude borrar: {e}"),
+        };
+        let entries: Vec<Entry> = journal
+            .entries()
+            .iter()
+            .map(|record| record.entry.clone())
+            .collect();
+        if session::context_messages(&entries).is_empty() {
             return "🧹 no había nada que borrar".into();
         }
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let archive = dir.join(format!("transcript.{stamp}.jsonl"));
-        if let Err(e) = std::fs::rename(&path, &archive) {
-            return format!("⚠️ no pude borrar: {e}");
-        }
-        match gzip(&archive) {
-            Ok(()) => "🧹 contexto borrado".into(),
-            Err(e) => format!("🧹 contexto borrado, pero no comprimí: {e}"),
+        match journal.append(vec![Entry::Reset]) {
+            Ok(_) => {
+                snapshot_now(&mut journal);
+                "🧹 contexto borrado".into()
+            }
+            Err(e) => format!("⚠️ no pude borrar: {e}"),
         }
     }
 }
 
-/// El mensaje que ya está en pantalla, actualizado mientras el turno sigue. No
-/// es streaming: el transporte escucha cada dos minutos como mucho, y lo que
-/// dice es qué está haciendo, no lo que va escribiendo.
 struct Live<'a> {
     transport: &'a dyn Transport,
     session: &'a Session,
@@ -667,7 +856,6 @@ impl<'a> Live<'a> {
     }
 }
 
-/// Qué está haciendo la tool, en una línea que entre en un mensaje.
 fn step(name: &str, args: &str) -> String {
     let args: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let detail = ["path", "file_path", "command", "query", "url", "prompt"]
@@ -698,7 +886,6 @@ fn short(text: &str) -> String {
     cut
 }
 
-/// Un pedazo de conversación que contiene lo que se buscó.
 pub struct Hit {
     pub conversation: String,
     pub title: String,
@@ -707,17 +894,7 @@ pub struct Hit {
     pub snippet: String,
 }
 
-/// Busca en una entrada del transcript y devuelve quién lo dijo y el pedazo
-/// donde aparece.
-fn search_line(line: &str, needle: &str) -> Option<(String, String)> {
-    let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-    let message = entry.get("message")?;
-    let content = message.get("Content")?.as_str()?;
-    let role = message
-        .get("Role")
-        .and_then(|role| role.as_str())
-        .unwrap_or("")
-        .to_string();
+fn snippet(content: &str, needle: &str) -> Option<String> {
     let position = content.to_lowercase().find(needle)?;
     let start = content[..position]
         .char_indices()
@@ -735,14 +912,34 @@ fn search_line(line: &str, needle: &str) -> Option<(String, String)> {
     if end < content.len() {
         snippet.push('…');
     }
-    Some((role, snippet))
+    Some(snippet)
 }
 
 struct EventSink {
     threshold: Option<usize>,
     events: Option<PathBuf>,
-    transcript: Option<PathBuf>,
+    journal: Option<Journal>,
     pipe: Option<Arc<Pipe>>,
+    committed: usize,
+    error: Option<String>,
+}
+
+impl EventSink {
+    fn write(&mut self, entries: Vec<Entry>) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        match &mut self.journal {
+            Some(journal) => match journal.append(entries) {
+                Ok(_) => true,
+                Err(error) => {
+                    self.error = Some(format!("no pude guardar el turno: {error}"));
+                    false
+                }
+            },
+            None => true,
+        }
+    }
 }
 
 pub(crate) struct Inflight {
@@ -751,11 +948,6 @@ pub(crate) struct Inflight {
 }
 
 impl Inflight {
-    /// Toma el turno de esta conversación: mientras este guard viva, ningún
-    /// otro proceso escribe el transcript. El marcador que ya existía es el
-    /// mismo archivo; lo que suma es el lock, que ningún deploy ve, así que
-    /// una instancia que arranca no reanuda un turno que la otra está
-    /// corriendo.
     pub(crate) fn acquire(dir: &Path) -> Result<Self, String> {
         let path = dir.join("inflight");
         let file = std::fs::OpenOptions::new()
@@ -841,7 +1033,19 @@ impl Sink for EventSink {
     }
 
     fn assistant(&mut self, _turn: usize, message: &Message, _usage: Usage) {
-        append_message(&self.transcript, message);
+        let mut entries = vec![Entry::Message {
+            message: message.clone(),
+        }];
+        for call in &message.tool_calls {
+            entries.push(Entry::ToolIntent {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            });
+        }
+        if self.write(entries) {
+            self.committed += 1;
+        }
         if message.content.is_empty() {
             return;
         }
@@ -854,12 +1058,14 @@ impl Sink for EventSink {
     }
 
     fn tool(&mut self, _turn: usize, message: &Message) {
-        append_message(&self.transcript, message);
+        if self.write(vec![Entry::Message {
+            message: message.clone(),
+        }]) {
+            self.committed += 1;
+        }
     }
 }
 
-/// What the worker needs to rebuild the same agent on the other side of the
-/// pipe. Everything else it inherits.
 fn worker_env(
     base: &str,
     model: &str,
@@ -908,25 +1114,190 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &
 }
 
 fn env(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
-fn compact(
-    provider: &OpenAI,
-    model: &str,
-    entries: &mut Vec<Entry>,
-) -> Result<Vec<Message>, String> {
+fn search_base(base: &str) -> &str {
+    let Some((scheme, rest)) = base.split_once("://") else {
+        return base;
+    };
+    let origin = scheme.len() + 3;
+    match rest.find('/') {
+        Some(path) => &base[..origin + path],
+        None => base,
+    }
+}
+
+fn user_id(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(512)
+        .collect()
+}
+
+fn compact(provider: &OpenAI, model: &str, entries: &[Entry]) -> Result<Entry, String> {
     let (summary, tokens_before, retained) =
         session::compact_with(provider, model, entries, CONTEXT_OPTIONS)?;
-    entries.push(Entry::Compaction {
+    Ok(Entry::Compaction {
         summary,
         tokens_before,
         timestamp: session::now_ms(),
         retained,
-    });
-    let mut out = session::context_messages_with(entries, CONTEXT_OPTIONS);
-    session::drop_incomplete_tool_calls(&mut out);
-    Ok(out)
+    })
+}
+
+fn compacted(
+    journal: &mut Option<Journal>,
+    entries: &mut Vec<Entry>,
+    provider: &OpenAI,
+    model: &str,
+) -> Result<Vec<Message>, String> {
+    let entry = compact(provider, model, entries)?;
+    commit(journal, entry.clone())?;
+    entries.push(entry);
+    let mut history = session::context_messages_with(entries, CONTEXT_OPTIONS);
+    session::drop_incomplete_tool_calls(&mut history);
+    Ok(history)
+}
+
+fn commit(journal: &mut Option<Journal>, entry: Entry) -> Result<(), String> {
+    match journal {
+        Some(journal) => journal
+            .append(vec![entry])
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
+fn checkpoint(
+    journal: &mut Option<Journal>,
+    task: Option<u64>,
+    entries: Vec<Entry>,
+    state: TaskState,
+    phase: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let Some(journal) = journal else {
+        return Ok(());
+    };
+    let tasks = match task {
+        Some(id) => match journal.task(id).cloned() {
+            Some(mut record) => {
+                record.state = state;
+                record.phase = phase.into();
+                merge(&mut record, value);
+                if !matches!(state, TaskState::Failed | TaskState::Blocked) {
+                    record.attempts = 0;
+                }
+                vec![record]
+            }
+            None => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    if entries.is_empty() && tasks.is_empty() {
+        return Ok(());
+    }
+    journal
+        .commit(entries, tasks)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn settle(
+    journal: &mut Journal,
+    task: u64,
+    state: TaskState,
+    phase: &str,
+    value: serde_json::Value,
+) {
+    if let Some(mut record) = journal.task(task).cloned() {
+        record.state = state;
+        record.phase = phase.into();
+        merge(&mut record, value);
+        let _ = journal.commit(Vec::new(), vec![record]);
+    }
+}
+
+fn merge(record: &mut axe::durable::TaskRecord, value: serde_json::Value) {
+    if value.is_null() {
+        return;
+    }
+    match (record.checkpoint.as_object_mut(), value.as_object()) {
+        (Some(current), Some(next)) => {
+            for (key, value) in next {
+                current.insert(key.clone(), value.clone());
+            }
+        }
+        _ => record.checkpoint = value,
+    }
+}
+
+const KEPT_TURNS: usize = 32;
+
+fn snapshot_now(journal: &mut Journal) {
+    prune_tasks(journal);
+    let _ = journal.snapshot_with(drop_superseded_images);
+}
+
+fn snapshot(journal: &mut Option<Journal>) {
+    if let Some(journal) = journal {
+        prune_tasks(journal);
+        if let Err(error) = journal.maybe_snapshot_with(drop_superseded_images) {
+            eprintln!("jimmy: no pude guardar el snapshot: {error}");
+        }
+    }
+}
+
+fn prune_tasks(journal: &mut Journal) {
+    let mut finished: Vec<u64> = journal
+        .tasks()
+        .filter(|task| task.kind == "turn" && finished(task.state))
+        .map(|task| task.id)
+        .collect();
+    if finished.len() <= KEPT_TURNS {
+        return;
+    }
+    finished.sort_unstable();
+    let cut = finished[finished.len() - KEPT_TURNS];
+    journal
+        .retain_tasks(|task| task.kind != "turn" || !finished_state(task.state) || task.id >= cut);
+}
+
+fn finished(state: TaskState) -> bool {
+    finished_state(state)
+}
+
+fn finished_state(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Done | TaskState::Failed | TaskState::Cancelled
+    )
+}
+
+fn drop_superseded_images(records: &mut [Record]) {
+    let Some(boundary) = records
+        .iter()
+        .rposition(|record| matches!(record.entry, Entry::Compaction { .. } | Entry::Reset))
+    else {
+        return;
+    };
+    for record in &mut records[..boundary] {
+        if let Entry::Message { message } = &mut record.entry {
+            for image in &mut message.images {
+                image.url.clear();
+            }
+        }
+    }
 }
 
 fn final_answer(history: &[Message]) -> Option<&str> {
@@ -948,106 +1319,27 @@ fn answer(messages: &[Message], fallback: Option<&str>) -> String {
     fallback.unwrap_or_default().to_string()
 }
 
-fn save(dir: &Option<PathBuf>, entries: &mut [Entry]) -> Result<(), String> {
-    match dir {
-        Some(dir) => save_entries(dir, entries),
-        None => Ok(()),
-    }
-}
-
-/// Los adjuntos que el log guarda: el nombre de cada archivo subido a
-/// `uploads/` de la conversación, que es lo que la web puede servir después. Un
-/// archivo de otro lado (una foto que bajó Telegram, por ejemplo) no se puede
-/// mostrar y se queda afuera.
 fn attachments(dir: &Path, images: &[Image]) -> Vec<String> {
     let uploads = dir.join(media::UPLOADS);
     images
         .iter()
-        .filter(|image| Path::new(&image.path).parent() == Some(uploads.as_path()))
-        .filter_map(|image| Path::new(&image.path).file_name())
-        .map(|name| name.to_string_lossy().into_owned())
+        .filter_map(|image| {
+            let path = Path::new(&image.path);
+            let parent = path.parent()?;
+            if parent != uploads.as_path() && parent != Path::new(media::UPLOADS) {
+                return None;
+            }
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect()
 }
 
-fn drop_superseded_images(entries: &mut [Entry]) {
-    let Some(last) = entries
-        .iter()
-        .rposition(|entry| matches!(entry, Entry::Compaction { .. }))
-    else {
-        return;
-    };
-    for entry in &mut entries[..last] {
-        if let Entry::Message { message } = entry {
-            for image in &mut message.images {
-                image.url.clear();
-            }
-        }
-    }
-}
-
-fn gzip(path: &Path) -> Result<(), String> {
-    let out = std::process::Command::new("gzip")
-        .arg(path)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(());
-    }
-    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-}
-
-/// El nombre de quien escribe, delante del mensaje: sin eso el modelo lee
-/// "hola" y no sabe a quién le está contestando.
 fn signed(text: &str, author: &str) -> String {
     if author.is_empty() {
         return text.to_string();
     }
     format!("[{author}] {text}")
-}
-
-fn load_entries(dir: &Path) -> Vec<Entry> {
-    let Ok(text) = std::fs::read_to_string(dir.join("transcript.jsonl")) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn save_entries(dir: &Path, entries: &mut [Entry]) -> Result<(), String> {
-    drop_superseded_images(entries);
-    let mut out = String::new();
-    for entry in entries {
-        out.push_str(&serde_json::to_string(entry).map_err(|e| e.to_string())?);
-        out.push('\n');
-    }
-    axe::atomic_write(&dir.join("transcript.jsonl"), out.as_bytes()).map_err(|e| e.to_string())
-}
-
-fn append_entry(dir: &Path, entry: &Entry) -> Result<(), String> {
-    append_line(&dir.join("transcript.jsonl"), entry)
-}
-
-fn append_message(path: &Option<PathBuf>, message: &Message) {
-    if let Some(path) = path {
-        let _ = append_line(
-            path,
-            &Entry::Message {
-                message: message.clone(),
-            },
-        );
-    }
-}
-
-fn append_line(path: &Path, entry: &Entry) -> Result<(), String> {
-    let mut line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
-    line.push('\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(line.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn record(dir: &Path, event: serde_json::Value) {
@@ -1107,18 +1399,35 @@ mod tests {
     }
 
     #[test]
-    fn gzip_compresses_and_removes_the_original() {
-        let dir = std::env::temp_dir().join(format!("jimmy-gzip-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("a.jsonl");
-        std::fs::write(&path, "hola\n").unwrap();
-        gzip(&path).unwrap();
-        assert!(!path.exists());
+    fn the_search_base_drops_every_path() {
         assert_eq!(
-            std::fs::read(dir.join("a.jsonl.gz")).unwrap()[..2],
-            [0x1f, 0x8b]
+            search_base("https://api.deepseek.com"),
+            "https://api.deepseek.com"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            search_base("https://api.deepseek.com/"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            search_base("https://api.deepseek.com/beta"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            search_base("http://127.0.0.1:8787"),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(search_base("nonsense"), "nonsense");
+    }
+
+    #[test]
+    fn a_chat_key_becomes_a_spec_compliant_user_id() {
+        assert_eq!(user_id("chat:123456"), "chat-123456");
+        assert_eq!(
+            user_id("web-1792285574758-d12bc10c"),
+            "web-1792285574758-d12bc10c"
+        );
+        assert_eq!(user_id("slack/C01 2"), "slack-C01-2");
+        assert_eq!(user_id(&"a".repeat(600)).len(), 512);
     }
 
     #[test]
@@ -1158,72 +1467,18 @@ mod tests {
             path: "/data/chats/web-1/uploads/17-foto.png".into(),
             url: "data:image/png;base64,QUJD".into(),
         };
+        let relative = Image {
+            path: "uploads/18-foto.png".into(),
+            url: "data:image/png;base64,QUJD".into(),
+        };
         let temporary = Image {
             path: "/tmp/jimmy-image-17.png".into(),
             url: "data:image/png;base64,QUJD".into(),
         };
-        assert_eq!(attachments(dir, &[uploaded, temporary]), ["17-foto.png"]);
-    }
-
-    fn image(url: &str) -> Image {
-        Image {
-            path: "/data/files/a.png".into(),
-            url: url.into(),
-        }
-    }
-
-    fn photo(url: &str) -> Entry {
-        let mut message = assistant("mirá", Vec::new());
-        message.images = vec![image(url)];
-        Entry::Message { message }
-    }
-
-    fn compaction(retained: Vec<Message>) -> Entry {
-        Entry::Compaction {
-            summary: "resumen".into(),
-            tokens_before: 0,
-            timestamp: 0,
-            retained,
-        }
-    }
-
-    fn urls(entries: &[Entry]) -> Vec<String> {
-        entries
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Message { message } => Some(message),
-                _ => None,
-            })
-            .flat_map(|message| message.images.iter())
-            .map(|image| image.url.clone())
-            .collect()
-    }
-
-    #[test]
-    fn images_before_a_compaction_lose_their_bytes() {
-        let mut retained = assistant("quedate", Vec::new());
-        retained.images = vec![image("data:image/png;base64,QUJD")];
-        let mut entries = vec![
-            photo("data:image/png;base64,QUJD"),
-            compaction(vec![retained]),
-            photo("data:image/png;base64,REVG"),
-        ];
-        drop_superseded_images(&mut entries);
-        assert_eq!(urls(&entries), ["", "data:image/png;base64,REVG"]);
-        assert_eq!(entries[0].clone(), photo("").clone());
-        match &entries[1] {
-            Entry::Compaction { retained, .. } => {
-                assert_eq!(retained[0].images[0].url, "data:image/png;base64,QUJD");
-            }
-            _ => panic!("esperaba una compactación"),
-        }
-    }
-
-    #[test]
-    fn images_survive_without_a_compaction() {
-        let mut entries = vec![photo("data:image/png;base64,QUJD")];
-        drop_superseded_images(&mut entries);
-        assert_eq!(urls(&entries), ["data:image/png;base64,QUJD"]);
+        assert_eq!(
+            attachments(dir, &[uploaded, relative, temporary]),
+            ["17-foto.png", "18-foto.png"]
+        );
     }
 
     #[test]
@@ -1320,8 +1575,6 @@ mod tests {
         )
     }
 
-    /// Cada llamada escribe un archivo nuevo: reescribir uno que otro proceso
-    /// todavía está ejecutando da «Text file busy».
     fn worker_script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = resume_dir(name);
@@ -1620,23 +1873,165 @@ done
         assert!(fake.statuses.lock().unwrap().is_empty());
     }
 
+    fn image(name: &str, url: &str) -> Image {
+        Image {
+            path: format!("/chats/x/uploads/{name}"),
+            url: url.into(),
+        }
+    }
+
     #[test]
-    fn the_sink_appends_each_message_to_the_transcript() {
+    fn a_snapshot_keeps_only_the_newest_finished_turns() {
+        let dir = resume_dir("turns");
+        let mut journal = store::open(&dir).unwrap();
+        let mut tasks = Vec::new();
+        for _ in 0..KEPT_TURNS + 8 {
+            let mut task = store::new_turn(&mut journal, "");
+            task.state = TaskState::Done;
+            tasks.push(task);
+        }
+        let live = store::new_turn(&mut journal, "");
+        tasks.push(live.clone());
+        journal.commit(Vec::new(), tasks).unwrap();
+        snapshot_now(&mut journal);
+        drop(journal);
+
+        let kept = Journal::load_tasks(&dir).unwrap();
+        assert_eq!(kept.len(), KEPT_TURNS + 1);
+        assert!(kept.iter().any(|task| task.id == live.id));
+        assert_eq!(
+            kept.iter().map(|task| task.id).min().unwrap(),
+            live.id - KEPT_TURNS as u64
+        );
+    }
+
+    #[test]
+    fn a_snapshot_drops_the_images_before_a_compaction() {
+        let dir = resume_dir("prune");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        let mut kept = assistant("nuevo", Vec::new());
+        kept.images = vec![image("b.png", "data:image/png;base64,REVG")];
+        journal
+            .append(vec![
+                Entry::Message { message: old },
+                Entry::Compaction {
+                    summary: "resumen".into(),
+                    tokens_before: 0,
+                    timestamp: 0,
+                    retained: vec![kept],
+                },
+            ])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => {
+                assert!(message.images[0].url.is_empty());
+                assert!(message.images[0].path.ends_with("a.png"));
+            }
+            _ => panic!("esperaba un mensaje"),
+        }
+        match &records[1].entry {
+            Entry::Compaction { retained, .. } => {
+                assert_eq!(retained[0].images[0].url, "data:image/png;base64,REVG");
+            }
+            _ => panic!("esperaba una compactación"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reset_drops_every_image() {
+        let dir = resume_dir("prune-reset");
+        let mut journal = store::open(&dir).unwrap();
+        let mut old = assistant("viejo", Vec::new());
+        old.images = vec![image("a.png", "data:image/png;base64,QUJD")];
+        journal
+            .append(vec![Entry::Message { message: old }, Entry::Reset])
+            .unwrap();
+        journal.snapshot_with(drop_superseded_images).unwrap();
+        drop(journal);
+
+        let records = Journal::load(&dir).unwrap();
+        match &records[0].entry {
+            Entry::Message { message } => assert!(message.images[0].url.is_empty()),
+            _ => panic!("esperaba un mensaje"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_lands_in_uploads_with_its_bytes() {
+        let dir = resume_dir("image");
+        let image = crate::save_image(&dir, "foto.png", b"\x89PNG").unwrap();
+        let name = Path::new(&image.path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(name.ends_with("foto.png"), "{name}");
+        assert!(dir.join(name).is_file());
+        assert!(image.url.starts_with("data:image/png;base64,"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clear_appends_a_reset_instead_of_rewriting_the_history() {
+        let root = resume_dir("clear");
+        let session = Session::channel("x");
+        let agent = agent_in(&root);
+        let dir = agent.conversation(&session).dir;
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = store::open(&dir).unwrap();
+        journal
+            .append(vec![Entry::Message {
+                message: assistant("hola", Vec::new()),
+            }])
+            .unwrap();
+        drop(journal);
+
+        let reply = agent.command(&session, "/clear").unwrap();
+        assert!(reply.contains("borrado"), "{reply}");
+
+        let records = Journal::load(&dir).unwrap();
+        assert!(matches!(records.last().unwrap().entry, Entry::Reset));
+        let entries: Vec<Entry> = records.into_iter().map(|record| record.entry).collect();
+        assert!(session::context_messages(&entries).is_empty());
+        assert!(agent.command(&session, "/clear").unwrap().contains("nada"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_sink_commits_each_message_to_the_journal() {
         let dir = resume_dir("sink");
         let mut sink = EventSink {
             threshold: None,
             events: None,
-            transcript: Some(dir.join("transcript.jsonl")),
+            journal: Some(store::open(&dir).unwrap()),
             pipe: None,
+            committed: 0,
+            error: None,
         };
         sink.assistant(0, &assistant("uno", vec![call()]), axe::Usage::default());
         sink.tool(0, &message("tool", "dos"));
-        let text = std::fs::read_to_string(dir.join("transcript.jsonl")).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2);
-        for line in lines {
-            serde_json::from_str::<Entry>(line).unwrap();
-        }
+        assert_eq!(sink.committed, 2);
+        assert!(sink.error.is_none());
+        let records = Journal::load(&dir).unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(
+            records[1].entry,
+            Entry::ToolIntent { ref id, .. } if id == "1"
+        ));
+        assert_eq!(
+            records[2].entry,
+            Entry::Message {
+                message: message("tool", "dos")
+            }
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

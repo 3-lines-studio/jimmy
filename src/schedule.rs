@@ -1,5 +1,7 @@
 use crate::agent::Agent;
+use crate::store::RESTART_LIMIT;
 use crate::transport::{Null, Session, Transport};
+use axe::durable::{Journal, TaskRecord, TaskState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,7 @@ const DAY: i64 = 86_400;
 const MAX_RUNS_PER_HOUR: usize = 6;
 const KEEP: usize = 20;
 const DIR: &str = "schedule";
+const DURABLE: &str = "durable";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
@@ -76,8 +79,6 @@ pub fn list(dir: &Path) -> Vec<Entry> {
     entries
 }
 
-/// Marca leída la última corrida de una tarea, o la de todas. Lo leído se
-/// guarda por tarea como el momento: todo lo que llegó después es nuevo.
 pub fn mark_read(dir: &Path, name: Option<&str>) -> Result<(), String> {
     let mut seen = read_seen(dir);
     let names: Vec<String> = match name {
@@ -123,6 +124,14 @@ pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) ->
     std::thread::spawn(move || {
         let dir = workspace.join("state").join(DIR);
         migrate(&dir);
+        let mut journal = match Journal::open(&durable_path(&dir)) {
+            Ok(journal) => journal,
+            Err(error) => {
+                eprintln!("jimmy: agenda: no arranco: {error}");
+                return;
+            }
+        };
+        reconcile(&mut journal);
         let offset = std::env::var("JIMMY_TZ_OFFSET")
             .ok()
             .and_then(|value| value.trim().parse().ok())
@@ -135,21 +144,44 @@ pub fn spawn(transport: Arc<dyn Transport>, agent: Agent, workspace: PathBuf) ->
             }
             asked.sort();
             asked.dedup();
-            tick(transport.as_ref(), &agent, &dir, offset, &asked);
+            tick(
+                transport.as_ref(),
+                &agent,
+                &dir,
+                offset,
+                &asked,
+                &mut journal,
+            );
             pending = runner.recv_timeout(TICK).ok();
         }
     });
     sender
 }
 
-fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64, asked: &[String]) {
+fn tick(
+    transport: &dyn Transport,
+    agent: &Agent,
+    dir: &Path,
+    offset: i64,
+    asked: &[String],
+    journal: &mut Journal,
+) {
     let now = now_secs();
     let (date, time) = local_parts(now, offset);
-    for entry in list(dir) {
+    let entries = list(dir);
+    let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
+    ensure(journal, &names);
+    for entry in entries {
+        let Some(task) = agenda_task(journal, &entry.name).cloned() else {
+            continue;
+        };
+        let manual = asked.contains(&entry.name);
+        if task.state == TaskState::Blocked && !manual {
+            continue;
+        }
         if entry.task.paused {
             continue;
         }
-        let manual = asked.contains(&entry.name);
         if !manual && !due(&entry.task, &entry.runs, now, &date, &time) {
             continue;
         }
@@ -158,9 +190,132 @@ fn tick(transport: &dyn Transport, agent: &Agent, dir: &Path, offset: i64, asked
             eprintln!("jimmy: agenda: {} superó el tope por hora", entry.name);
             continue;
         }
+        if manual {
+            mark(journal, &entry.name, TaskState::Pending, "manual", 0, now);
+        }
         eprintln!("jimmy: agenda: corriendo {}", entry.name);
+        mark(
+            journal,
+            &entry.name,
+            TaskState::Running,
+            "run",
+            if manual { 0 } else { task.attempts },
+            now,
+        );
         run(transport, agent, dir, &entry, &date, now);
+        mark(journal, &entry.name, TaskState::Pending, "idle", 0, now);
     }
+}
+
+fn durable_path(dir: &Path) -> PathBuf {
+    dir.join(DURABLE)
+}
+
+pub fn states(dir: &Path) -> HashMap<String, (bool, u32)> {
+    let Ok(tasks) = Journal::load_tasks(&durable_path(dir)) else {
+        return HashMap::new();
+    };
+    tasks
+        .into_iter()
+        .filter(|task| task.kind == "agenda")
+        .filter_map(|task| {
+            let name = task.checkpoint.get("name")?.as_str()?.to_string();
+            let blocked = task.state == TaskState::Blocked;
+            Some((name, (blocked, task.attempts)))
+        })
+        .collect()
+}
+
+fn agenda_task<'a>(journal: &'a Journal, name: &str) -> Option<&'a TaskRecord> {
+    journal.tasks().find(|task| {
+        task.kind == "agenda"
+            && task.checkpoint.get("name").and_then(|value| value.as_str()) == Some(name)
+    })
+}
+
+fn ensure(journal: &mut Journal, names: &[String]) {
+    let missing: Vec<String> = names
+        .iter()
+        .filter(|name| agenda_task(journal, name).is_none())
+        .cloned()
+        .collect();
+    let mut records = Vec::new();
+    for name in missing {
+        let id = journal.new_task();
+        records.push(TaskRecord {
+            id,
+            kind: "agenda".into(),
+            state: TaskState::Pending,
+            phase: "idle".into(),
+            checkpoint: serde_json::json!({ "name": name }),
+            attempts: 0,
+            updated: 0,
+        });
+    }
+    if !records.is_empty() {
+        if let Err(error) = journal.commit(Vec::new(), records) {
+            eprintln!("jimmy: agenda: no pude crear las tareas: {error}");
+        }
+    }
+}
+
+fn reconcile(journal: &mut Journal) {
+    let running: Vec<TaskRecord> = journal
+        .tasks()
+        .filter(|task| task.kind == "agenda" && task.state == TaskState::Running)
+        .cloned()
+        .collect();
+    let mut updates = Vec::new();
+    for mut task in running {
+        task.attempts += 1;
+        if task.attempts >= RESTART_LIMIT {
+            task.state = TaskState::Blocked;
+            task.phase = "blocked".into();
+            eprintln!(
+                "jimmy: agenda: {} quedó bloqueado tras {} reinicios",
+                task_name(&task),
+                task.attempts
+            );
+        } else {
+            task.state = TaskState::Pending;
+            task.phase = "retry".into();
+        }
+        updates.push(task);
+    }
+    if !updates.is_empty() {
+        if let Err(error) = journal.commit(Vec::new(), updates) {
+            eprintln!("jimmy: agenda: no pude contar los reinicios: {error}");
+        }
+    }
+}
+
+fn mark(
+    journal: &mut Journal,
+    name: &str,
+    state: TaskState,
+    phase: &str,
+    attempts: u32,
+    last: i64,
+) {
+    let Some(mut task) = agenda_task(journal, name).cloned() else {
+        return;
+    };
+    task.state = state;
+    task.phase = phase.into();
+    task.attempts = attempts;
+    if let Some(checkpoint) = task.checkpoint.as_object_mut() {
+        checkpoint.insert("last".into(), serde_json::json!(last));
+    }
+    if let Err(error) = journal.commit(Vec::new(), vec![task]) {
+        eprintln!("jimmy: agenda: no pude guardar {name}: {error}");
+    }
+}
+
+fn task_name(task: &TaskRecord) -> &str {
+    task.checkpoint
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("?")
 }
 
 fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date: &str, now: i64) {
@@ -190,9 +345,6 @@ fn run(transport: &dyn Transport, agent: &Agent, dir: &Path, entry: &Entry, date
     );
 }
 
-/// A dónde sale la corrida: al chat del target si el transporte lo conoce, y si
-/// no a ningún lado. Un target que no existe no se lleva puesta la corrida: se
-/// hace igual, queda en el historial y ahí dice por qué no salió.
 fn outbound<'a>(
     transport: &'a dyn Transport,
     entry: &Entry,
@@ -663,5 +815,60 @@ mod tests {
         migrate(&dir);
         assert_eq!(list(&dir).len(), 2);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn open_journal(dir: &Path) -> Journal {
+        Journal::open(&durable_path(dir)).unwrap()
+    }
+
+    #[test]
+    fn a_task_is_created_once_per_name() {
+        let dir = scratch("durable-ensure");
+        let mut journal = open_journal(&dir);
+        ensure(&mut journal, &["uno".into(), "dos".into()]);
+        assert_eq!(journal.tasks().count(), 2);
+        ensure(&mut journal, &["uno".into(), "dos".into()]);
+        assert_eq!(journal.tasks().count(), 2);
+        assert_eq!(
+            agenda_task(&journal, "uno").unwrap().state,
+            TaskState::Pending
+        );
+        drop(journal);
+
+        let mut journal = open_journal(&dir);
+        ensure(&mut journal, &["uno".into()]);
+        assert_eq!(journal.tasks().count(), 2);
+        drop(journal);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_running_task_counts_restarts_and_parks() {
+        let dir = scratch("durable-restarts");
+        let mut journal = open_journal(&dir);
+        ensure(&mut journal, &["uno".into()]);
+        mark(&mut journal, "uno", TaskState::Running, "run", 0, 0);
+        for attempt in 1..RESTART_LIMIT {
+            reconcile(&mut journal);
+            let (state, attempts) = {
+                let task = agenda_task(&journal, "uno").unwrap();
+                (task.state, task.attempts)
+            };
+            assert_eq!(state, TaskState::Pending);
+            assert_eq!(attempts, attempt);
+            mark(&mut journal, "uno", TaskState::Running, "run", attempts, 0);
+        }
+        reconcile(&mut journal);
+        assert_eq!(
+            agenda_task(&journal, "uno").unwrap().state,
+            TaskState::Blocked
+        );
+
+        mark(&mut journal, "uno", TaskState::Pending, "manual", 0, 0);
+        let task = agenda_task(&journal, "uno").unwrap();
+        assert_eq!(task.state, TaskState::Pending);
+        assert_eq!(task.attempts, 0);
+        drop(journal);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

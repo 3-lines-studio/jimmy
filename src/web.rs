@@ -1,16 +1,10 @@
-//! The web frontend: the same conversations the transports have, served to a
-//! browser over HTTP and SSE.
-//!
-//! What arrives through a transport is watched, not written; the conversations
-//! the web creates are its own and can be written from here.
-
 use crate::agent::Agent;
 use crate::auth::{self, Auth};
 use crate::bus::Bus;
 use crate::conversations;
 use crate::files;
 use crate::http::{self, Request};
-use crate::log::{Log, Window};
+use crate::log::Log;
 use crate::machine;
 use crate::media;
 use crate::preview::{self, Previews};
@@ -26,9 +20,6 @@ use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// El final del backlog: lo de antes ya está en pantalla. Lleva cuántos eventos
-/// tiene el log, para que el que mira guarde el número y al volver a la
-/// conversación pida desde ahí en vez de bajar todo de nuevo.
 fn synced(total: usize, first: usize) -> String {
     format!(r#"{{"event":"synced","count":{total},"first":{first}}}"#)
 }
@@ -47,11 +38,18 @@ const TOOL: &str = include_str!("../web/tool.js");
 const AVATAR: &str = include_str!("../web/avatar.js");
 const VAULT_JS: &str = include_str!("../web/vault.js");
 const VAULT_CSS: &str = include_str!("../web/vault.css");
+const MCP_JS: &str = include_str!("../web/mcp.js");
+const MCP_CSS: &str = include_str!("../web/mcp.css");
 const AVATAR_STYLE: &str = include_str!("../web/avatar.css");
 const ICON: &str = include_str!("../web/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../web/icon-512.png");
 const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
+
+pub struct Paths {
+    pub root: PathBuf,
+    pub workspace: PathBuf,
+}
 
 pub struct Web {
     root: PathBuf,
@@ -61,12 +59,12 @@ pub struct Web {
     auth: Auth,
     previews: Arc<Previews>,
     agenda: Sender<String>,
+    listing: conversations::Listing,
 }
 
 impl Web {
     pub fn new(
-        root: PathBuf,
-        workspace: PathBuf,
+        paths: Paths,
         bus: Arc<Bus>,
         agent: Agent,
         auth: Auth,
@@ -74,22 +72,21 @@ impl Web {
         agenda: Sender<String>,
     ) -> Arc<Web> {
         Arc::new(Web {
-            root,
-            workspace,
+            root: paths.root,
+            workspace: paths.workspace,
             bus,
             agent,
             auth,
             previews,
             agenda,
+            listing: conversations::Listing::new(),
         })
     }
 
-    /// El nombre para mostrar: la parte del mail antes del arroba.
     fn user(&self, request: &Request) -> Option<String> {
         Some(user_name(self.auth.user(&request.cookie(auth::COOKIE)?)?))
     }
 
-    /// El mail del que entró, que es el actor del audit del vault.
     fn actor(&self, request: &Request) -> Option<String> {
         self.auth.user(&request.cookie(auth::COOKIE)?)
     }
@@ -111,32 +108,49 @@ pub fn listen(port: u16) -> Result<TcpListener, String> {
         .map_err(|e| format!("no pude escuchar en el puerto {port}: {e}"))
 }
 
-/// Un thread por conexión: con la web expuesta, un tope es la diferencia entre
-/// atender y quedarse sin memoria por una cola de pedidos.
 const MAX_CONNECTIONS: usize = 64;
 
 pub fn serve(web: Arc<Web>, listener: TcpListener) {
     let live = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming().flatten() {
+    for mut stream in listener.incoming().flatten() {
         if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-            let mut stream = stream;
             let _ = http::send_error(&mut stream, 503, "demasiados pedidos a la vez");
             continue;
         }
-        live.fetch_add(1, Ordering::Relaxed);
+        let (handoff, incoming) = std::sync::mpsc::channel();
         let web = web.clone();
         let live = live.clone();
-        std::thread::spawn(move || {
-            let _live = Live(live);
-            let mut stream = stream;
-            if let Err(e) = handle(&web, &mut stream) {
-                eprintln!("jimmy web: {e}");
+        let atendida = std::thread::Builder::new()
+            .name("web-conn".into())
+            .spawn(move || {
+                let _live = Live::new(live);
+                let Ok(mut stream) = incoming.recv() else {
+                    return;
+                };
+                if let Err(e) = handle(&web, &mut stream) {
+                    eprintln!("jimmy web: {e}");
+                }
+            });
+        match atendida {
+            Ok(_) => {
+                let _ = handoff.send(stream);
             }
-        });
+            Err(e) => {
+                eprintln!("jimmy web: no pude atender la conexión: {e}");
+                let _ = http::send_error(&mut stream, 503, "no puedo atender más pedidos");
+            }
+        }
     }
 }
 
 struct Live(Arc<AtomicUsize>);
+
+impl Live {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Live(counter)
+    }
+}
 
 impl Drop for Live {
     fn drop(&mut self) {
@@ -168,7 +182,9 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         return http::send_error(stream, 400, "esa conversación no existe");
     }
     match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/health") => http::send_text(stream, 200, "text/plain", "ok"),
         ("GET", "/") => app_page(web, &request, stream),
+        ("GET", "/clasica") => http::respond(stream, 301, "text/plain", &[("Location", "/")], b""),
         ("GET", "/login") => http::send_text(stream, 200, HTML, &versioned(LOGIN)),
         ("GET", "/theme.css") => asset(stream, CSS, versioned(THEME).as_bytes()),
         ("GET", "/style.css") => asset(stream, CSS, STYLE.as_bytes()),
@@ -183,6 +199,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/avatar.js") => asset(stream, JS, AVATAR.as_bytes()),
         ("GET", "/vault.js") => asset(stream, JS, VAULT_JS.as_bytes()),
         ("GET", "/vault.css") => asset(stream, CSS, VAULT_CSS.as_bytes()),
+        ("GET", "/mcp.js") => asset(stream, JS, MCP_JS.as_bytes()),
+        ("GET", "/mcp.css") => asset(stream, CSS, MCP_CSS.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
         ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
@@ -191,6 +209,12 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             "application/manifest+json",
             versioned(MANIFEST).as_bytes(),
         ),
+        ("GET", "/oauth/callback") => oauth_callback(web, &request, stream),
+        ("GET", "/mcp/start") => mcp_start(web, &request, stream),
+        ("GET", "/mcp/tools") => mcp_tools(web, &request, stream),
+        ("POST", "/mcp/call") => mcp_call(web, &request, stream),
+        ("GET", "/api/mcp") => mcp_list(web, &request, stream),
+        ("POST", "/api/mcp/disconnect") => mcp_disconnect(web, &request, stream),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -231,8 +255,6 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
 const HTML: &str = "text/html; charset=utf-8";
 const TEXT: &str = "text/plain; charset=utf-8";
 
-/// Un preview se sirve crudo: la cabecera se reenvía sin tocarla y lo que sigue
-/// se copia tal cual, así el streaming y el WebSocket de un HMR pasan igual.
 fn preview_page(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(head) = preview::read_head(stream)? else {
         return Ok(());
@@ -281,9 +303,6 @@ const CSS: &str = "text/css; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// El HTML y los íconos se piden por su nombre pelado, así que revalidan siempre.
-/// Todo lo que sale con la versión en la URL se puede guardar para siempre: un
-/// deploy cambia la versión y con ella la URL.
 fn asset(stream: &mut TcpStream, content_type: &str, body: &[u8]) -> std::io::Result<()> {
     http::respond(
         stream,
@@ -301,8 +320,6 @@ fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
     http::send_text(stream, 200, HTML, &versioned(INDEX))
 }
 
-/// Los assets llevan la versión en la URL: cada deploy cambia la URL, así que ni
-/// un proxy ni el navegador pueden seguir sirviendo los viejos.
 fn versioned(page: &str) -> String {
     let version = crate::env("JIMMY_COMMIT_SHA")
         .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
@@ -320,6 +337,8 @@ fn versioned(page: &str) -> String {
         .replace("/style.css", &format!("/style.css?v={version}"))
         .replace("/avatar.css", &format!("/avatar.css?v={version}"))
         .replace("/vault.css", &format!("/vault.css?v={version}"))
+        .replace("/mcp.js", &format!("/mcp.js?v={version}"))
+        .replace("/mcp.css", &format!("/mcp.css?v={version}"))
         .replace("/icon.svg", &format!("/icon.svg?v={version}"))
         .replace("/icon-192.png", &format!("/icon-192.png?v={version}"))
         .replace(
@@ -328,15 +347,21 @@ fn versioned(page: &str) -> String {
         )
 }
 
-/// Pedir el link. La respuesta es siempre la misma, esté o no el mail en la
-/// lista: si no está, no se manda nada y desde afuera no se nota.
 fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let email = request.field("email").unwrap_or_default();
+    let next = request.field("next").unwrap_or_default();
     let sent = serde_json::json!({ "sent": true });
     let Some(token) = web.auth.request_link(&email) else {
         return http::send_json(stream, 200, &sent);
     };
-    let link = format!("{}/auth?token={token}", web.base_url(request));
+    let link = match safe_next(&next) {
+        Some(next) => format!(
+            "{}/auth?token={token}&next={}",
+            web.base_url(request),
+            encode_path(&next)
+        ),
+        None => format!("{}/auth?token={token}", web.base_url(request)),
+    };
     let Some(mail) = &web.auth.mail else {
         if !web.auth.dev {
             eprintln!("jimmy web: sin proveedor de mail, no puedo mandarle el link a {email}");
@@ -353,7 +378,6 @@ fn login(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     http::send_json(stream, 200, &sent)
 }
 
-/// El link del mail: sirve una vez, deja la cookie y manda al principio.
 fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let Some(token) = request.param("token") else {
         return http::send_error(stream, 400, "falta el token");
@@ -373,8 +397,311 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         auth::COOKIE,
         auth::SESSION_TTL
     );
-    let headers = [("Set-Cookie", cookie.as_str()), ("Location", "/")];
+    let target = request.param("next").unwrap_or_default();
+    let location = safe_next(target).unwrap_or_else(|| "/".to_string());
+    let headers = [
+        ("Set-Cookie", cookie.as_str()),
+        ("Location", location.as_str()),
+    ];
     http::respond(stream, 303, "text/plain", &headers, b"")
+}
+
+/// Arranca la conexión de un servidor MCP: descubre sus endpoints, registra el
+/// cliente (RFC 7591) y manda al proveedor con PKCE.
+fn mcp_start(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let (Some(name), Some(url), Some(account)) = (
+        request.param("name"),
+        request.param("url"),
+        request.param("account"),
+    ) else {
+        return http::send_error(stream, 400, "faltan name, url o account");
+    };
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let outcome = connect(web, name, url, account, &redirect);
+    let body = match outcome {
+        Ok(location) => {
+            return http::respond(
+                stream,
+                303,
+                "text/plain",
+                &[("Location", location.as_str())],
+                b"",
+            )
+        }
+        Err(error) => error,
+    };
+    http::send_error(stream, 400, &body)
+}
+
+fn connect(
+    web: &Arc<Web>,
+    name: &str,
+    url: &str,
+    account: &str,
+    redirect: &str,
+) -> Result<String, String> {
+    let discovery = crate::oauth::discover(url)?;
+    let registration = crate::oauth::register(&discovery.metadata, redirect, name)?;
+    let verifier = crate::random::hex(32);
+    let state = crate::random::hex(24);
+    let location = crate::oauth::authorize_url(
+        &discovery.metadata,
+        &registration,
+        redirect,
+        &state,
+        &crate::oauth::challenge(&verifier),
+        &discovery.scopes,
+        &discovery.resource,
+    );
+    crate::oauth::remember(
+        &state,
+        name,
+        account,
+        &verifier,
+        discovery.metadata.clone(),
+        registration.clone(),
+        &discovery.resource,
+    );
+    let Some(held) = crate::vault::store() else {
+        return Err("el vault no arrancó".to_string());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    crate::servers::remember(&store, name, account, &registration)?;
+    crate::servers::save(
+        &web.root,
+        &crate::servers::Server {
+            name: name.to_string(),
+            url: url.to_string(),
+            account: account.to_string(),
+            resource: discovery.resource.clone(),
+            issuer: discovery.metadata.issuer.clone(),
+            authorize: discovery.metadata.authorization_endpoint.clone(),
+            token: discovery.metadata.token_endpoint.clone(),
+            register: discovery.metadata.registration_endpoint.clone(),
+            client_id: registration.client_id.clone(),
+            scopes: discovery.scopes.clone(),
+        },
+    )?;
+    Ok(location)
+}
+
+/// La vuelta del proveedor: canjea el código con el verifier guardado y deja
+/// los tokens en el vault.
+fn oauth_callback(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    let state = request.param("state").unwrap_or_default();
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let page = match (request.param("code"), request.param("error")) {
+        (_, Some(error)) => ("No se conectó", error.to_string()),
+        (Some(code), None) => match crate::oauth::complete(state, code, &redirect) {
+            Ok(authorized) => match save(&authorized) {
+                Ok(()) => (
+                    "Listo",
+                    format!(
+                        "{} quedó conectado como {}",
+                        authorized.server, authorized.account
+                    ),
+                ),
+                Err(error) => ("No se pudo", error),
+            },
+            Err(error) => ("No se pudo", error),
+        },
+        (None, None) => ("No se pudo", "volvió sin código".to_string()),
+    };
+    http::respond(
+        stream,
+        200,
+        HTML,
+        &[],
+        page_html(page.0, &page.1).as_bytes(),
+    )
+}
+
+fn save(authorized: &crate::oauth::Authorized) -> Result<(), String> {
+    let Some(held) = crate::vault::store() else {
+        return Err("el vault no arrancó".to_string());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    crate::servers::save_tokens(
+        &store,
+        &authorized.server,
+        &authorized.account,
+        &authorized.tokens,
+    )
+}
+
+fn page_html(title: &str, message: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title>\
+<body style=\"font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem\">\
+<h1>{title}</h1><p>{message}</p><p><a href=\"/\">Volver a Jimmy</a></p>"
+    )
+}
+
+fn mcp_list(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let servers: Vec<serde_json::Value> = crate::servers::list(&web.root)
+        .into_iter()
+        .map(|server| {
+            serde_json::json!({
+                "name": server.name,
+                "url": server.url,
+                "account": server.account,
+            })
+        })
+        .collect();
+    http::send_json(stream, 200, &serde_json::json!({ "servers": servers }))
+}
+
+fn mcp_disconnect(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(name) = request.field("name") else {
+        return http::send_error(stream, 400, "falta el nombre");
+    };
+    let kept: Vec<crate::servers::Server> = crate::servers::list(&web.root)
+        .into_iter()
+        .filter(|server| server.name != name)
+        .collect();
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    let removed = crate::servers::list(&web.root)
+        .into_iter()
+        .find(|server| server.name == name);
+    if let Some(server) = &removed {
+        for key in [
+            "OAUTH_ACCESS_TOKEN",
+            "OAUTH_REFRESH_TOKEN",
+            "OAUTH_EXPIRES_AT",
+            "OAUTH_CLIENT_ID",
+            "OAUTH_CLIENT_SECRET",
+        ] {
+            let _ = store.unset(&server.name, &server.account, key, "mcp");
+        }
+    }
+    if let Err(error) = crate::servers::write(&web.root, &kept) {
+        return http::send_error(stream, 400, &error);
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "removed": name }))
+}
+
+/// Llama una tool de un servidor conectado.
+fn mcp_call(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let (Some(name), Some(tool)) = (request.field("server"), request.field("tool")) else {
+        return http::send_error(stream, 400, "faltan server o tool");
+    };
+    let Some(server) = crate::servers::find(&web.root, &name) else {
+        return http::send_error(stream, 404, "ese servidor no está conectado");
+    };
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let token = {
+        let store = held.lock().unwrap_or_else(|error| error.into_inner());
+        match crate::servers::access_token(&store, &server) {
+            Ok(token) => token,
+            Err(error) => return http::send_error(stream, 400, &error),
+        }
+    };
+    let arguments = request
+        .json()
+        .and_then(|json| json.get("arguments").map(ToString::to_string))
+        .unwrap_or_else(|| "{}".to_string());
+    let mut session = match crate::mcp::Session::connect(&server.url, &token) {
+        Ok(session) => session,
+        Err(error) => return http::send_error(stream, 502, &error),
+    };
+    match session.call_tool(&tool, &arguments) {
+        Ok(text) => http::send_json(stream, 200, &serde_json::json!({ "text": text })),
+        Err(error) => http::send_error(stream, 502, &error),
+    }
+}
+
+/// Lista las tools que expone un servidor conectado, para verificar la sesión.
+fn mcp_tools(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(name) = request.param("name") else {
+        return http::send_error(stream, 400, "falta el nombre");
+    };
+    let Some(server) = crate::servers::find(&web.root, name) else {
+        return http::send_error(stream, 404, "ese servidor no está conectado");
+    };
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let token = {
+        let store = held.lock().unwrap_or_else(|error| error.into_inner());
+        match crate::servers::access_token(&store, &server) {
+            Ok(token) => token,
+            Err(error) => return http::send_error(stream, 400, &error),
+        }
+    };
+    let mut session = match crate::mcp::Session::connect(&server.url, &token) {
+        Ok(session) => session,
+        Err(error) => return http::send_error(stream, 502, &error),
+    };
+    match session.tools() {
+        Ok(tools) => {
+            let tools: Vec<serde_json::Value> = tools
+                .into_iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "schema": tool.schema,
+                    })
+                })
+                .collect();
+            http::send_json(stream, 200, &serde_json::json!({ "tools": tools }))
+        }
+        Err(error) => http::send_error(stream, 502, &error),
+    }
+}
+
+fn encode_path(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let plain =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~');
+        match plain {
+            true => out.push(byte as char),
+            false => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn safe_next(next: &str) -> Option<String> {
+    let ok = next.starts_with('/')
+        && !next.starts_with("//")
+        && next.len() <= 200
+        && next
+            .chars()
+            .all(|char| char.is_ascii_graphic() && char != '"' && char != '\\');
+    match ok {
+        true => Some(next.to_string()),
+        false => None,
+    }
 }
 
 fn logout(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -398,8 +725,10 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
     let Some(user) = web.user(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let projects: Vec<serde_json::Value> = conversations::projects(&web.root, &web.workspace)
-        .into_iter()
+    let projects: Vec<serde_json::Value> = web
+        .listing
+        .projects(&web.root, &web.workspace, web.bus.version())
+        .iter()
         .map(|project| {
             let conversations: Vec<serde_json::Value> = project
                 .conversations
@@ -425,7 +754,7 @@ fn state(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::
                 "last": project
                     .conversations
                     .iter()
-                    .find_map(|conversation| conversations::last_message(&conversation.dir)),
+                    .find_map(|conversation| web.listing.last(&conversation.dir)),
                 "conversations": conversations,
             })
         })
@@ -465,7 +794,10 @@ fn create(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         .field("title")
         .unwrap_or_else(|| conversations::NEW_TITLE.to_string());
     match conversations::create(&web.root, &web.workspace, &project, &title) {
-        Ok(key) => http::send_json(stream, 200, &serde_json::json!({ "key": key })),
+        Ok(key) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "key": key }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -494,6 +826,7 @@ fn create_project(
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return http::send_error(stream, 500, &error.to_string());
     }
+    web.listing.invalidate();
     http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
@@ -507,11 +840,14 @@ fn rename(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     match conversations::rename(&web.root, &key, &title) {
-        Ok(()) => http::send_json(
-            stream,
-            200,
-            &serde_json::json!({ "key": key, "title": title }),
-        ),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(
+                stream,
+                200,
+                &serde_json::json!({ "key": key, "title": title }),
+            )
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -529,7 +865,10 @@ fn delete_conversation(
         return http::send_error(stream, 400, "esa conversación no se escribe desde acá");
     }
     match web.agent.delete(&key) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "deleted": true }))
+        }
         Err(error) => http::send_error(stream, 500, &error),
     }
 }
@@ -549,7 +888,10 @@ fn rename_project(
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
     match conversations::rename_project(&web.root, &web.workspace, from.trim(), to) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "name": to }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -569,7 +911,10 @@ fn duplicate_project(
         return http::send_error(stream, 400, "ese nombre no sirve para un proyecto");
     }
     match conversations::duplicate(&web.workspace, from.trim(), to) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "name": to })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "name": to }))
+        }
         Err(error) => http::send_error(stream, 400, &error),
     }
 }
@@ -598,23 +943,25 @@ fn delete_project(
     if let Err(why) = disposable(&dir, request.flag("force")) {
         return http::send_error(stream, 400, &format!("no lo borro: {why}"));
     }
-    let conversations = conversations::projects(&web.root, &web.workspace)
-        .into_iter()
+    let conversations = web
+        .listing
+        .projects(&web.root, &web.workspace, web.bus.version())
+        .iter()
         .find(|project| project.name == name)
-        .map(|project| project.conversations)
+        .map(|project| project.conversations.clone())
         .unwrap_or_default();
     for conversation in conversations {
         let _ = web.agent.delete(&conversation.key);
     }
     match std::fs::remove_dir_all(&dir) {
-        Ok(()) => http::send_json(stream, 200, &serde_json::json!({ "deleted": true })),
+        Ok(()) => {
+            web.listing.invalidate();
+            http::send_json(stream, 200, &serde_json::json!({ "deleted": true }))
+        }
         Err(error) => http::send_error(stream, 500, &error.to_string()),
     }
 }
 
-/// Un proyecto se borra si está vacío o si es un clon con todo commiteado y
-/// pusheado. Lo que no está en git se borra solo si el pedido se hace cargo
-/// (`force`): puede tener trabajo adentro que no existe en ningún otro lado.
 fn disposable(dir: &Path, force: bool) -> Result<(), String> {
     if empty(dir) {
         return Ok(());
@@ -640,8 +987,6 @@ fn disposable(dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Un proyecto sin git y con algo adentro: no hay copia en ningún otro lado,
-/// así que borrarlo es una decisión del que lo pide.
 fn unversioned(dir: &Path) -> bool {
     !empty(dir) && !dir.join(".git").exists()
 }
@@ -702,7 +1047,6 @@ fn cancel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "cancelled": true }))
 }
 
-/// Un adjunto no puede pesar más que una foto de Telegram.
 const MAX_UPLOAD: usize = 10 * 1024 * 1024;
 
 fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
@@ -721,8 +1065,13 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     if text.trim().is_empty() && images.is_empty() {
         return http::send_error(stream, 400, "el mensaje está vacío");
     }
-    if conversation.title.is_none()
-        || conversation.title.as_deref() == Some(conversations::NEW_TITLE)
+    let command = matches!(
+        text.split_whitespace().next(),
+        Some("/start" | "/help" | "/status" | "/clear" | "/compact")
+    );
+    if !command
+        && (conversation.title.is_none()
+            || conversation.title.as_deref() == Some(conversations::NEW_TITLE))
     {
         let title = if text.trim().is_empty() {
             "imagen".to_string()
@@ -734,18 +1083,30 @@ fn send(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     let Some(session) = crate::session_from_key(&key) else {
         return http::send_error(stream, 400, "clave de conversación inválida");
     };
+    let request_id = request.field("request_id").unwrap_or_default();
 
     let web = web.clone();
     std::thread::spawn(move || {
-        if let Err(error) = web.agent.respond(&Null, &session, &text, images, &user) {
+        if let Some(reply) = web.agent.command(&session, &text) {
+            web.agent.note(&session, &reply);
+            return;
+        }
+        if text.split_whitespace().next() == Some("/compact") {
+            if let Err(error) = web.agent.compact(&Null, &session) {
+                eprintln!("jimmy web: {error}");
+            }
+            return;
+        }
+        if let Err(error) =
+            web.agent
+                .respond_with(&Null, &session, &text, images, &user, &request_id)
+        {
             eprintln!("jimmy web: {error}");
         }
     });
     http::send_json(stream, 202, &serde_json::json!({ "started": true }))
 }
 
-/// Los adjuntos ya subidos, leídos del disco: el mensaje viaja con los bytes del
-/// archivo, no con su nombre.
 fn read_attachments(
     conversation: &conversations::Conversation,
     names: &[String],
@@ -755,13 +1116,13 @@ fn read_attachments(
         .iter()
         .map(|name| {
             let name = media::safe_name(name).ok_or_else(|| "ese adjunto no sirve".to_string())?;
-            axe::image::attach(&uploads.join(name).display().to_string())
+            let mut image = axe::image::attach(&uploads.join(name).display().to_string())?;
+            image.path = format!("{}/{name}", media::UPLOADS);
+            Ok(image)
         })
         .collect()
 }
 
-/// Los bytes crudos del adjunto, con el nombre aparte en la query: el cuerpo es
-/// el archivo, no lo envuelve ningún JSON.
 fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -787,8 +1148,6 @@ fn upload(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "name": name }))
 }
 
-/// Un adjunto de la conversación. Cualquiera adentro puede mirarlo: es lo que
-/// hay en el chat.
 fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -804,8 +1163,6 @@ fn file(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     http::respond(stream, 200, media::content_type(name), &[], &data)
 }
 
-/// El directorio de un proyecto, o nada si ese nombre no puede ser uno. El
-/// proyecto `general` es el workspace entero: ahí se ve todo lo que hay.
 fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {
         return None;
@@ -814,8 +1171,6 @@ fn project_dir(web: &Web, name: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Una carpeta del proyecto, un nivel. Cada carpeta la pide el que mira cuando
-/// la abre.
 fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -846,9 +1201,6 @@ fn tree(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::R
     )
 }
 
-/// Un archivo del proyecto. Las imágenes van enteras porque el navegador las
-/// muestra; el texto va cortado en el tope y lo avisa; lo que no es texto sale
-/// como binario, para que el navegador no lo muestre como si fuera una página.
 fn raw(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -900,8 +1252,6 @@ fn typing(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     http::send_json(stream, 200, &serde_json::json!({ "typing": true }))
 }
 
-/// Cuántas corridas de cada tarea se le muestran a la web: el archivo guarda
-/// muchas más, la vista muestra las últimas.
 const SHOWN: usize = 5;
 
 fn agenda_dir(web: &Web) -> PathBuf {
@@ -912,10 +1262,12 @@ fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
+    let durable = schedule::states(&agenda_dir(web));
     let tasks: Vec<serde_json::Value> = schedule::list(&agenda_dir(web))
         .into_iter()
         .map(|entry| {
             let shown: Vec<&schedule::Run> = entry.runs.iter().rev().take(SHOWN).collect();
+            let (blocked, attempts) = durable.get(&entry.name).copied().unwrap_or((false, 0));
             serde_json::json!({
                 "name": entry.name,
                 "when": entry.task.when,
@@ -925,6 +1277,8 @@ fn agenda(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
                 "silent": entry.task.silent,
                 "paused": entry.task.paused,
                 "unread": entry.unread,
+                "blocked": blocked,
+                "attempts": attempts,
                 "runs": shown,
             })
         })
@@ -961,7 +1315,6 @@ fn agenda_pause(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> st
     }
 }
 
-/// Marca leída una tarea, o todas si no viene el nombre.
 fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -973,9 +1326,6 @@ fn agenda_read(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
     }
 }
 
-/// El vault no tiene login propio: entra el mismo mail que ya entró a jimmy, y
-/// ese mail es el actor del audit. Lo que el store rechaza es un 400, porque lo
-/// pidió mal el pedido.
 const AUDIT: usize = 200;
 
 fn vault_call<F>(
@@ -990,27 +1340,25 @@ where
     let Some(actor) = web.actor(request) else {
         return http::send_error(stream, 401, "no estás adentro");
     };
-    let Some(server) = vault::server() else {
+    let Some(held) = vault::store() else {
         return http::send_error(stream, 503, vault::message());
     };
-    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = held.lock().unwrap_or_else(|e| e.into_inner());
     match run(&store, &actor) {
         Ok(body) => http::send_json(stream, 200, &body),
         Err(e) => http::send_error(stream, 400, &vault::text(e)),
     }
 }
 
-/// Con el vault caído el tab no tiene a dónde entrar, y el motivo es lo que hay
-/// que mostrar: por eso esta ruta contesta 200 y no un error.
 fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.actor(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
     }
-    let Some(server) = vault::server() else {
+    let Some(held) = vault::store() else {
         let body = serde_json::json!({ "enabled": false, "error": vault::message() });
         return http::send_json(stream, 200, &body);
     };
-    let store = server.store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = held.lock().unwrap_or_else(|e| e.into_inner());
     match panel(&store) {
         Ok(body) => http::send_json(stream, 200, &body),
         Err(e) => http::send_error(stream, 400, &vault::text(e)),
@@ -1018,15 +1366,26 @@ fn vault_panel(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
 }
 
 fn panel(store: &Store) -> store::Result<serde_json::Value> {
+    let mut pairs: std::collections::BTreeSet<(String, String)> = store
+        .names()?
+        .iter()
+        .filter_map(|name| name.split_once('/'))
+        .map(|(project, env)| (project.to_string(), env.to_string()))
+        .collect();
+    let envs: std::collections::BTreeSet<String> = if pairs.is_empty() {
+        ["dev".to_string()].into_iter().collect()
+    } else {
+        pairs.iter().map(|(_, env)| env.clone()).collect()
+    };
+    for env in envs {
+        pairs.insert(("general".to_string(), env));
+    }
     let mut environments = Vec::new();
-    for name in store.names()? {
-        let Some((project, env)) = name.split_once('/') else {
-            continue;
-        };
+    for (project, env) in pairs {
         environments.push(serde_json::json!({
             "project": project,
             "env": env,
-            "keys": store.secrets(project, env)?.len(),
+            "keys": store.secrets(&project, &env)?.len(),
         }));
     }
     Ok(serde_json::json!({
@@ -1043,8 +1402,9 @@ fn vault_secrets(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> s
         let project = request.param("project").unwrap_or_default();
         let env = request.param("env").unwrap_or_default();
         let secrets = store.secrets(project, env)?;
+        let plain = store.plain(project, env)?;
         store.audit(actor, "get-secrets", project, env, None)?;
-        Ok(serde_json::json!({ "secrets": secrets }))
+        Ok(serde_json::json!({ "secrets": secrets, "plain": plain }))
     })
 }
 
@@ -1054,7 +1414,11 @@ fn vault_set(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         let env = request.field("env").unwrap_or_default();
         let name = request.field("name").unwrap_or_default();
         let value = request.field("value").unwrap_or_default();
-        store.set(&project, &env, &name, &value, actor)?;
+        if request.flag_or("secret", true) {
+            store.set(&project, &env, &name, &value, actor)?;
+        } else {
+            store.set_var(&project, &env, &name, &value, actor)?;
+        }
         Ok(serde_json::json!({ "saved": name }))
     })
 }
@@ -1112,8 +1476,6 @@ fn vault_token(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std
     })
 }
 
-/// Una conversación sin nombre se llama como su primer mensaje, que es lo que
-/// va a buscar el ojo en la lista.
 fn title_from(text: &str) -> String {
     let line = text
         .lines()
@@ -1150,15 +1512,16 @@ fn events(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         .param("since")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let window = Log::in_dir(&conversation.dir).window(usize::MAX);
+    let log = Log::in_dir(&conversation.dir);
     let (id, live) = web.bus.attach(key, &user);
-    let result = follow(stream, &window, since, &live);
+    let result = follow(stream, &live, &mut |out| {
+        let span = log.replay(since, &mut |line| http::sse_json(out, line))?;
+        Ok((span.total, span.first))
+    });
     web.bus.detach(key, id);
     result
 }
 
-/// Los eventos anteriores al tramo que el cliente tiene: con eso se desplaza
-/// hacia arriba en el hilo sin volver a bajar lo que ya vio.
 fn history(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     if web.user(request).is_none() {
         return http::send_error(stream, 401, "no estás adentro");
@@ -1187,28 +1550,31 @@ fn online(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io:
         return http::send_error(stream, 401, "no estás adentro");
     };
     let (id, live) = web.bus.watch(&user);
-    let result = follow(stream, &Window::default(), 0, &live);
+    let result = follow(stream, &live, &mut |_| Ok((0, 0)));
     web.bus.detach_watch(id);
     result
 }
 
 fn follow(
     stream: &mut TcpStream,
-    window: &Window,
-    since: usize,
     live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
+    replay: &mut dyn FnMut(&mut TcpStream) -> std::io::Result<(usize, usize)>,
+) -> std::io::Result<()> {
+    let result = tail(stream, live, replay);
+    match result {
+        Err(error) if http::gone(&error) => Ok(()),
+        other => other,
+    }
+}
+
+fn tail(
+    stream: &mut TcpStream,
+    live: &std::sync::mpsc::Receiver<crate::protocol::Event>,
+    replay: &mut dyn FnMut(&mut TcpStream) -> std::io::Result<(usize, usize)>,
 ) -> std::io::Result<()> {
     http::sse_open(stream)?;
-    for event in window
-        .events
-        .iter()
-        .skip(since.saturating_sub(window.first))
-    {
-        if let Ok(json) = serde_json::to_string(event) {
-            http::sse_data(stream, &json)?;
-        }
-    }
-    http::sse_data(stream, &synced(window.total, window.first))?;
+    let (total, first) = replay(stream)?;
+    http::sse_data(stream, &synced(total, first))?;
     loop {
         match live.recv_timeout(Duration::from_secs(25)) {
             Ok(event) => {
@@ -1291,8 +1657,10 @@ done
         let previews = crate::preview::Previews::new(&workspace);
         let (agenda, runner) = std::sync::mpsc::channel();
         let web = Web::new(
-            root.clone(),
-            workspace.clone(),
+            Paths {
+                root: root.clone(),
+                workspace: workspace.clone(),
+            },
             bus.clone(),
             agent,
             auth,
@@ -1319,7 +1687,6 @@ done
     fn whole(mut stream: TcpStream) -> String {
         let mut out = Vec::new();
         stream.read_to_end(&mut out).unwrap();
-        // Un adjunto vuelve como bytes, y para mirar el encabezado alcanza.
         String::from_utf8_lossy(&out).to_string()
     }
 
@@ -1350,7 +1717,6 @@ done
         whole(stream)
     }
 
-    /// Un cuerpo crudo, como el que manda el navegador con el archivo adjunto.
     fn post_bytes(port: u16, path: &str, body: &[u8], cookie: Option<&str>) -> String {
         let mut stream = connect(port);
         let cookie = cookie
@@ -1396,7 +1762,6 @@ done
         json_in(&created)["key"].as_str().unwrap().to_string()
     }
 
-    /// El log lo escribe el hilo del turno, así que hay que esperarlo.
     fn wait_for(root: &Path, key: &str, needle: &str) -> String {
         let path = root.join("chats").join(key).join("conversation.jsonl");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1409,8 +1774,6 @@ done
         }
     }
 
-    /// Pedir el link y seguirlo, como el que abre el mail. En las pruebas no
-    /// hay proveedor, así que el link vuelve en la misma respuesta.
     fn login(port: u16, email: &str) -> String {
         let response = post(port, "/api/login", &format!(r#"{{"email":"{email}"}}"#));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -1446,11 +1809,19 @@ done
     }
 
     #[test]
+    fn health_answers_without_a_session() {
+        let server = start("assets");
+        let health = get(server.port, "/health", None);
+        assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+        assert!(health.ends_with("ok"), "{health}");
+    }
+
+    #[test]
     fn the_page_is_served_only_with_a_session() {
         let server = start("assets");
         let redirect = get(server.port, "/", None);
         assert!(redirect.starts_with("HTTP/1.1 303"), "{redirect}");
-        assert!(redirect.contains("Location: /login"), "{redirect}");
+        assert!(redirect.contains("Location: /login\r"), "{redirect}");
 
         let page = get(server.port, "/login", None);
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
@@ -1566,6 +1937,69 @@ done
                 "{asset} viaja sin versión: los assets van con caché immutable, así que el navegador lo revive viejo"
             );
         }
+    }
+
+    #[test]
+    fn the_link_carries_a_safe_next_and_the_login_returns_there() {
+        let server = start("next");
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"bob@ejemplo.com","next":"/clasica"}"#,
+        );
+        let link = link_in(&answer);
+        assert!(link.contains("next=/clasica"), "el link no lleva el next");
+        let token = link
+            .split_once("token=")
+            .and_then(|(_, rest)| rest.split('&').next())
+            .unwrap();
+        let followed = get(
+            server.port,
+            &format!("/auth?token={token}&next=/clasica"),
+            None,
+        );
+        assert!(followed.starts_with("HTTP/1.1 303"), "{followed}");
+        assert!(followed.contains("Location: /clasica"), "{followed}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_next_that_leaves_the_site_is_ignored() {
+        let server = start("next-bad");
+        let answer = post(
+            server.port,
+            "/api/login",
+            r#"{"email":"bob@ejemplo.com","next":"//evil.example"}"#,
+        );
+        let link = link_in(&answer);
+        assert!(!link.contains("next="), "{link}");
+        let token = link.split_once("token=").unwrap().1;
+        let followed = get(
+            server.port,
+            &format!("/auth?token={token}&next=//evil.example"),
+            None,
+        );
+        assert!(followed.contains("Location: /\r"), "{followed}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn the_root_serves_the_vanilla_page_and_clasica_goes_home() {
+        let server = start("root");
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let page = get(server.port, "/", Some(&cookie));
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("id=\"panes\""), "{page}");
+        assert!(page.contains("no-store"), "{page}");
+        assert!(page.contains("/app.js?v="), "{page}");
+
+        let moved = get(server.port, "/clasica", Some(&cookie));
+        assert!(moved.starts_with("HTTP/1.1 301"), "{moved}");
+        assert!(moved.contains("Location: /\r"), "{moved}");
+
+        let gone = get(server.port, "/v2", Some(&cookie));
+        assert!(gone.starts_with("HTTP/1.1 404"), "{gone}");
+        let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
     #[test]
@@ -2034,6 +2468,25 @@ done
     }
 
     #[test]
+    fn an_attachment_is_recorded_relative_to_the_conversation() {
+        let base = std::env::temp_dir().join(format!("jimmy-attach-{}", std::process::id()));
+        let dir = base.join("chats/x");
+        std::fs::create_dir_all(dir.join("uploads")).unwrap();
+        std::fs::write(dir.join("uploads/foto.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let conversation = conversations::Conversation {
+            key: "x".into(),
+            dir: dir.clone(),
+            cwd: dir.clone(),
+            project: "x".into(),
+            title: None,
+            read_only: false,
+        };
+        let images = read_attachments(&conversation, &["foto.png".to_string()]).unwrap();
+        assert_eq!(images[0].path, "uploads/foto.png");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn an_upload_only_touches_its_own_conversation() {
         let server = start("traversal");
         let cookie = login(server.port, "bob@ejemplo.com");
@@ -2123,7 +2576,7 @@ done
         std::fs::create_dir_all(ken.join("target")).unwrap();
         std::fs::create_dir_all(ken.join(".git")).unwrap();
         std::fs::write(ken.join("src/web.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(ken.join("src/transport/telegram.rs"), "// nada\n").unwrap();
+        std::fs::write(ken.join("src/transport/slack.rs"), "// nada\n").unwrap();
         std::fs::write(ken.join("target/gordo"), "no se lista").unwrap();
         std::fs::write(ken.join("README.md"), "# ken\n").unwrap();
         std::fs::write(ken.join(".env"), "SECRETO=1\n").unwrap();
@@ -2529,6 +2982,12 @@ done
     fn search_looks_in_what_was_said() {
         let server = start("search");
         let cookie = login(server.port, "bob@ejemplo.com");
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(server.root.join("chats/123456789/conversation.jsonl"))
+            .unwrap();
+        log.write_all(b"{\"event\":\"user\",\"text\":\"el gato duerme\"}\n")
+            .unwrap();
 
         let found = get(server.port, "/api/search?q=gato", Some(&cookie));
         assert!(found.contains("el gato duerme"), "{found}");
@@ -2734,6 +3193,28 @@ done
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
     }
 
+    #[test]
+    fn a_client_that_hangs_up_is_not_an_error() {
+        let listener = listen(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = connect(port);
+        let (mut server, _) = listener.accept().unwrap();
+        server.write_all(b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        client.read_exact(&mut [0u8; 1]).unwrap();
+        server.write_all(b"y").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100));
+
+        let (tx, live) = std::sync::mpsc::channel();
+        for text in ["uno", "dos", "tres"] {
+            tx.send(Event::Assistant { text: text.into() }).unwrap();
+        }
+        let result = follow(&mut server, &live, &mut |_| Ok((0, 0)));
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
     fn variable(css: &str, name: &str) -> String {
         let prefix = format!("--{name}:");
         css.lines()
@@ -2859,6 +3340,25 @@ done
             })
             .collect();
         std::fs::write(server.workspace.join("state/schedule/memoria.jsonl"), runs).unwrap();
+        {
+            let durable = server.workspace.join("state/schedule/durable");
+            let mut journal = axe::durable::Journal::open(&durable).unwrap();
+            let id = journal.new_task();
+            journal
+                .commit(
+                    Vec::new(),
+                    vec![axe::durable::TaskRecord {
+                        id,
+                        kind: "agenda".into(),
+                        state: axe::durable::TaskState::Blocked,
+                        phase: "blocked".into(),
+                        checkpoint: serde_json::json!({ "name": "memoria", "last": 0 }),
+                        attempts: 5,
+                        updated: 0,
+                    }],
+                )
+                .unwrap();
+        }
 
         let response = get(server.port, "/api/agenda", Some(&cookie));
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -2876,6 +3376,9 @@ done
         assert_eq!(tasks[1]["paused"], true);
         assert!(tasks[1]["runs"].as_array().unwrap().is_empty());
         assert_eq!(tasks[0]["unread"], 7, "nada leído todavía");
+        assert_eq!(tasks[0]["blocked"], true);
+        assert_eq!(tasks[0]["attempts"], 5);
+        assert_eq!(tasks[1]["blocked"], false);
 
         let read = post_with(
             server.port,
@@ -2960,5 +3463,106 @@ done
             false
         );
         let _ = std::fs::remove_dir_all(server.root.parent().unwrap());
+    }
+
+    #[test]
+    fn el_panel_muestra_el_general_y_los_proyectos_vacios() {
+        use heimdall::crypto::Key;
+
+        let dir = std::env::temp_dir().join(format!("jimmy-panel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(
+            dir.join("heimdall.db"),
+            Key::from_hex(&"ab".repeat(32)).unwrap(),
+        )
+        .unwrap();
+        store.create_environment("demo", "dev", "test").unwrap();
+
+        let panel = panel(&store).unwrap();
+        let rows: Vec<(String, String, u64)> = panel["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["project"].as_str().unwrap().to_string(),
+                    row["env"].as_str().unwrap().to_string(),
+                    row["keys"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("demo".to_string(), "dev".to_string(), 0),
+                ("general".to_string(), "dev".to_string(), 0),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn starting_an_mcp_connection_needs_a_session_and_the_three_params() {
+        let server = start("mcp-start");
+
+        let anonymous = get(server.port, "/mcp/start?name=x&url=y&account=z", None);
+        assert!(anonymous.starts_with("HTTP/1.1 401"), "{anonymous}");
+
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let partial = get(server.port, "/mcp/start?name=x&url=y", Some(&cookie));
+        assert!(partial.starts_with("HTTP/1.1 400"), "{partial}");
+    }
+
+    #[test]
+    fn the_mcp_endpoints_answer_401_without_a_session() {
+        let server = start("mcp-guard");
+        for (method, path) in [
+            ("GET", "/api/mcp"),
+            ("GET", "/mcp/tools?name=x"),
+            ("POST", "/api/mcp/disconnect"),
+            ("POST", "/mcp/call"),
+        ] {
+            let response = if method == "GET" {
+                get(server.port, path, None)
+            } else {
+                post(server.port, path, "{}")
+            };
+            assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+        }
+    }
+
+    #[test]
+    fn a_callback_without_a_valid_state_answers_a_page() {
+        let server = start("oauth-callback");
+
+        let response = get(server.port, "/oauth/callback?code=abc&state=nope", None);
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("text/html"), "{response}");
+        assert!(response.contains("No se pudo"), "{response}");
+    }
+
+    #[test]
+    fn the_mcp_list_is_empty_until_something_is_saved() {
+        let server = start("mcp-list");
+        let cookie = login(server.port, "bob@ejemplo.com");
+
+        let response = get(server.port, "/api/mcp", Some(&cookie));
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = json_in(&response);
+        assert_eq!(body["servers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn listing_a_server_that_is_not_connected_is_a_404() {
+        let server = start("mcp-unknown");
+        let cookie = login(server.port, "bob@ejemplo.com");
+
+        let response = get(server.port, "/mcp/tools?name=nope", Some(&cookie));
+
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
     }
 }

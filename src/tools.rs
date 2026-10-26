@@ -4,7 +4,70 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub fn all() -> Vec<Tool> {
-    vec![browse()]
+    vec![browse(), mcp()]
+}
+
+#[derive(Deserialize)]
+struct McpArgs {
+    server: String,
+    tool: String,
+    #[serde(default)]
+    arguments: Option<serde_json::Value>,
+}
+
+/// Un solo tool para todos los servidores MCP conectados: el nombre es fijo,
+/// así no hace falta que el agente conozca los tools de cada servidor.
+fn mcp() -> Tool {
+    let mut tool = axe::new_tool(
+        "mcp",
+        "Llama una tool de un servidor MCP conectado. Si no sabés el nombre del servidor, el error te lo lista.",
+        r#"{"type":"object","properties":{"server":{"type":"string","description":"Nombre del servidor conectado"},"tool":{"type":"string","description":"Nombre de la tool del servidor"},"arguments":{"type":"object","description":"Argumentos que espera la tool"}},"required":["server","tool"]}"#,
+        |args: McpArgs| call(&args),
+    );
+    tool.snippet = "Llama una tool de un servidor MCP conectado.";
+    tool.sequential = true;
+    tool
+}
+
+fn call(args: &McpArgs) -> String {
+    let root = crate::root_from_env();
+    let Some(server) = crate::servers::find(&root, &args.server) else {
+        let names: Vec<String> = crate::servers::list(&root)
+            .into_iter()
+            .map(|server| server.name)
+            .collect();
+        if names.is_empty() {
+            return "mcp: no hay servidores conectados".to_string();
+        }
+        return format!(
+            "mcp: no conozco el servidor {}; tengo: {}",
+            args.server,
+            names.join(", ")
+        );
+    };
+    let Some(held) = crate::vault::store() else {
+        return format!("mcp: {}", crate::vault::message());
+    };
+    let token = {
+        let store = held.lock().unwrap_or_else(|error| error.into_inner());
+        match crate::servers::access_token(&store, &server) {
+            Ok(token) => token,
+            Err(error) => return format!("mcp: {error}"),
+        }
+    };
+    let arguments = args
+        .arguments
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "{}".to_string());
+    let mut session = match crate::mcp::Session::connect(&server.url, &token) {
+        Ok(session) => session,
+        Err(error) => return format!("mcp: {error}"),
+    };
+    match session.call_tool(&args.tool, &arguments) {
+        Ok(text) => text,
+        Err(error) => format!("mcp: {error}"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -178,12 +241,27 @@ mod tests {
 
     #[test]
     fn extra_tools_join_the_builtin_list() {
-        let mut tools = axe::tools::build_tools("/tmp");
+        let mut tools = axe::tools::build_tools_with(
+            std::sync::Arc::new(axe::machine::Local::new("/tmp")),
+            Some(axe::web::Web::new("test")),
+        );
         assert_eq!(tools.len(), 6);
         tools.extend(all());
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
         let browse = tools.iter().find(|t| t.name == "browse").unwrap();
         assert!(!browse.snippet.is_empty());
         assert!(browse.sequential);
+    }
+
+    #[test]
+    fn the_mcp_tool_is_offered() {
+        let tools = all();
+        let mcp = tools.iter().find(|t| t.name == "mcp").unwrap();
+        assert!(!mcp.snippet.is_empty());
+        assert!(mcp.sequential);
+        assert_eq!(
+            mcp.parameters["required"],
+            serde_json::json!(["server", "tool"])
+        );
     }
 }

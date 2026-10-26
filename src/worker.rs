@@ -1,16 +1,8 @@
-//! One worker process per conversation. It owns the axe session and the
-//! transcript in the chat directory, and speaks the JSONL protocol with the
-//! parent that spawned it: a prompt or a resume in, events out.
-//!
-//! The turn logic is the same code the parent used to run in process; what
-//! changes is that it now happens in a process of its own, with its own
-//! working directory and its own children. The parent talks to the chat, the
-//! worker talks to the model.
-
 use crate::agent::Inflight;
 use crate::protocol::{Command, Event};
 use crate::transport::{Msg, Session, Transport};
 use crate::Config;
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,16 +12,15 @@ use std::sync::Arc;
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let chat = crate::flag(&args, "--chat").ok_or("worker necesita --chat")?;
     let config = Config::from_env()?;
+    axe::sentinel::seed(&config.api_key);
+    crate::vault::open(&config.root);
     let mut agent = crate::build_agent(&config)?;
     let session = crate::session_from_key(&chat).ok_or("clave de chat inválida")?;
-    if let Some(cwd) = crate::flag(&args, "--cwd") {
-        agent.set_cwd(&cwd);
-    }
+    let cwd = crate::flag(&args, "--cwd").unwrap_or_else(|| config.workspace.clone());
+    agent.set_cwd(&cwd);
     let pipe = Pipe::new();
     agent.set_pipe(pipe.clone());
 
-    // El turno corre en este hilo, así que alguien tiene que seguir leyendo la
-    // entrada: es lo que deja cancelar sin esperar a que termine.
     let cancel = Arc::new(AtomicBool::new(false));
     agent.set_cancel(cancel.clone());
     let (commands, incoming) = std::sync::mpsc::channel();
@@ -46,6 +37,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
         if matches!(command, Command::Cancel) {
             continue;
+        }
+        if matches!(command, Command::Prompt { .. }) {
+            crate::vault::inject(Path::new(&cwd));
         }
         let dir = agent.conversation(&session).dir;
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -72,7 +66,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 text,
                 images,
                 author,
-            } => agent.local_prompt(pipe.as_ref(), &session, &text, images, &author),
+                request,
+            } => agent.local_prompt(pipe.as_ref(), &session, &text, images, &author, &request),
             Command::Resume => agent.local_resume(pipe.as_ref(), &session, &dir),
             Command::Compact => agent.local_compact(pipe.as_ref(), &session),
             Command::Cancel | Command::Shutdown => continue,
@@ -87,7 +82,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Una cancelación se atiende acá mismo; el resto va para el hilo del turno.
 fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
@@ -102,6 +96,7 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
             };
             if matches!(command, Command::Cancel) {
                 cancel.store(true, Ordering::SeqCst);
+                kill_descendants();
                 continue;
             }
             if commands.send(command).is_err() {
@@ -111,8 +106,6 @@ fn read_commands(commands: Sender<Command>, cancel: Arc<AtomicBool>) {
     });
 }
 
-/// The worker's end of the pipe: every event it tells the parent goes through
-/// here, whether it comes from the turn or from the session machinery.
 #[derive(Default)]
 pub struct Pipe {
     answered: AtomicBool,
@@ -175,5 +168,74 @@ impl Transport for Pipe {
 
     fn send_media(&self, _: &Session, _: &Path, _: Option<&str>) -> Result<Msg, String> {
         Err("el worker no manda archivos".into())
+    }
+}
+
+fn kill_descendants() {
+    for pid in descendants_of(std::process::id() as i32) {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+fn descendants_of(root: i32) -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for pid in entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.parse::<i32>().ok())
+    {
+        if let Some(parent) = parent(pid) {
+            children.entry(parent).or_default().push(pid);
+        }
+    }
+    let mut victims = Vec::new();
+    let mut pending = vec![root];
+    while let Some(pid) = pending.pop() {
+        for child in children.get(&pid).into_iter().flatten() {
+            victims.push(*child);
+            pending.push(*child);
+        }
+    }
+    victims
+}
+
+fn parent(pid: i32) -> Option<i32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:")?.trim().parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn descendants_include_grandchildren() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg("sleep 30 & sleep 31 & wait")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pgid = child.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut found = Vec::new();
+        while Instant::now() < deadline {
+            found = descendants_of(pgid);
+            if found.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(found.len() >= 2, "esperaba los dos sleep: {found:?}");
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        child.wait().unwrap();
     }
 }

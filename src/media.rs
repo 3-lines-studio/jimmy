@@ -1,7 +1,3 @@
-//! Los adjuntos de una conversación: los archivos que viven en su `uploads/`,
-//! cómo se llaman, y la cola de lo que el asistente mandó y todavía no está en
-//! el log.
-
 use crate::conversations::Conversation;
 use crate::protocol::Event;
 use std::path::{Path, PathBuf};
@@ -9,7 +5,6 @@ use std::path::{Path, PathBuf};
 pub const UPLOADS: &str = "uploads";
 const OUTBOX: &str = "outbox.jsonl";
 
-/// Las que la web sabe mostrar.
 pub fn is_image(name: &str) -> bool {
     matches!(
         extension(name).as_str(),
@@ -37,16 +32,13 @@ pub fn dir(conversation: &Conversation) -> PathBuf {
     conversation.dir.join(UPLOADS)
 }
 
-/// Guarda los bytes con un nombre único y devuelve el nombre.
 pub fn store(dir: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let name = unique_name(name);
-    std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+    axe::atomic_write(&dir.join(&name), bytes).map_err(|e| e.to_string())?;
     Ok(name)
 }
 
-/// Lo que llega por la query o por el nombre del archivo es un nombre y nada
-/// más: sin barras, sin `..` y sin nada que `join` pueda leer como un camino.
 pub fn safe_name(name: &str) -> Option<&str> {
     let clean = !name.is_empty()
         && name.len() <= 80
@@ -57,8 +49,6 @@ pub fn safe_name(name: &str) -> Option<&str> {
     clean.then_some(name)
 }
 
-/// El cliente elige la parte legible y el sello de tiempo la hace única, así dos
-/// `foto.png` no se pisan.
 fn unique_name(name: &str) -> String {
     let base: String = name
         .chars()
@@ -79,15 +69,12 @@ fn unique_name(name: &str) -> String {
     format!("{stamp}-{base}")
 }
 
-/// Deja anotado lo que el asistente manda: el CLI es otro proceso y el log lo
-/// escribe el padre, así que esto espera a que termine el turno.
 pub fn queue(conversation: &Conversation, event: &Event) -> Result<(), String> {
     let dir = conversation.dir.join(UPLOADS);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     append(&conversation.dir.join(OUTBOX), event)
 }
 
-/// Lo que quedó en la cola, y la vacía.
 pub fn drain(conversation: &Conversation) -> Vec<Event> {
     let path = conversation.dir.join(OUTBOX);
     let Ok(text) = std::fs::read_to_string(&path) else {

@@ -1,6 +1,15 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { vaultKey, vaultScope, vaultCount, vaultMask, vaultAction, vaultClock } = require("./vault.js");
+const {
+  vaultKey,
+  vaultScope,
+  vaultProjects,
+  vaultCount,
+  vaultMask,
+  vaultAction,
+  vaultClock,
+  vaultValue,
+} = require("./vault.js");
 
 test("el entorno se nombra proyecto y entorno", () => {
   assert.equal(vaultKey({ project: "picsel", env: "dev" }), "picsel/dev");
@@ -9,6 +18,25 @@ test("el entorno se nombra proyecto y entorno", () => {
 test("el alcance de un token se lee sin abrirlo", () => {
   assert.equal(vaultScope({ project: "*", env: "dev" }), "*/dev");
   assert.equal(vaultScope({ admin: true, project: "_", env: "_" }), "admin");
+});
+
+test("los entornos se agrupan por proyecto, general primero", () => {
+  const groups = vaultProjects([
+    { project: "zeta", env: "prd", keys: 0 },
+    { project: "general", env: "dev", keys: 1 },
+    { project: "alfa", env: "prd", keys: 2 },
+    { project: "alfa", env: "dev", keys: 0 },
+  ]);
+  assert.deepEqual(groups.map((group) => group.project), ["general", "alfa", "zeta"]);
+  assert.deepEqual(groups[2].environments.map((environment) => environment.env), ["prd"]);
+  assert.deepEqual(groups[1].environments.map((environment) => environment.env), ["dev", "prd"]);
+  assert.deepEqual(vaultProjects([]), []);
+});
+
+test("la casilla de secreto viaja como on o nada", () => {
+  assert.equal(vaultValue({ type: "checkbox", checked: true }), "on");
+  assert.equal(vaultValue({ type: "checkbox", checked: false }), "");
+  assert.equal(vaultValue({ type: "text", value: "  AUTHOR  " }), "AUTHOR");
 });
 
 test("las claves se cuentan en singular y en plural", () => {

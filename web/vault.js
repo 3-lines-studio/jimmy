@@ -1,7 +1,3 @@
-/* El vault: los secretos de jimmy, con la cara de casa. El store vive en este
-   mismo proceso y el server escucha en loopback, así que acá no hay login
-   propio: entra el que ya entró a jimmy, y esa visita queda en el audit. */
-
 const VAULT = "vault";
 
 const VAULT_ACTIONS = {
@@ -16,9 +12,11 @@ const VAULT_ACTIONS = {
 
 let vaultPanel = null;
 let vaultSecrets = null;
+let vaultPlain = new Set();
 let vaultOpen = null;
 let vaultRevealed = new Set();
 let vaultMinted = null;
+let vaultEditing = null;
 
 function isVault(id) {
   return id === VAULT;
@@ -31,6 +29,21 @@ function vaultKey(environment) {
 function vaultScope(token) {
   if (token.admin) return "admin";
   return `${token.project}/${token.env}`;
+}
+
+function vaultProjects(environments) {
+  const groups = new Map();
+  for (const environment of environments || []) {
+    if (!groups.has(environment.project)) groups.set(environment.project, []);
+    groups.get(environment.project).push(environment);
+  }
+  const weight = (project) => (project === "general" ? 0 : 1);
+  return [...groups.entries()]
+    .map(([project, list]) => ({
+      project,
+      environments: list.slice().sort((a, b) => a.env.localeCompare(b.env)),
+    }))
+    .sort((a, b) => weight(a.project) - weight(b.project) || a.project.localeCompare(b.project));
 }
 
 function vaultCount(keys) {
@@ -85,6 +98,7 @@ async function loadSecrets(environment) {
   const key = vaultKey(environment);
   if (!data || vaultOpen !== key) return;
   vaultSecrets = data.secrets || {};
+  vaultPlain = new Set(data.plain || []);
   renderVault();
 }
 
@@ -116,24 +130,33 @@ function vaultSection(title, actions = []) {
 
 function vaultEnvsEl() {
   const section = vaultSection("Entornos");
-  const list = document.createElement("div");
-  list.className = "vault-envs";
-  for (const environment of vaultPanel.environments || []) {
-    const key = vaultKey(environment);
-    const button = document.createElement("button");
-    button.className = "vault-env" + (key === vaultOpen ? " open" : "");
-    const name = document.createElement("span");
-    name.className = "vault-env-name";
-    name.textContent = key;
-    const count = document.createElement("span");
-    count.className = "vault-env-count";
-    count.textContent = vaultCount(environment.keys);
-    button.append(name, count);
-    button.onclick = () => openVaultEnv(environment);
-    list.append(button);
+  const groups = vaultProjects(vaultPanel.environments);
+  for (const group of groups) {
+    const block = document.createElement("div");
+    block.className = "vault-project";
+    const name = document.createElement("h3");
+    name.className = "vault-project-name";
+    name.textContent = group.project;
+    const list = document.createElement("div");
+    list.className = "vault-envs";
+    for (const environment of group.environments) {
+      const key = vaultKey(environment);
+      const button = document.createElement("button");
+      button.className = "vault-env" + (key === vaultOpen ? " open" : "");
+      const label = document.createElement("span");
+      label.className = "vault-env-name";
+      label.textContent = environment.env;
+      const count = document.createElement("span");
+      count.className = "vault-env-count";
+      count.textContent = vaultCount(environment.keys);
+      button.append(label, count);
+      button.onclick = () => openVaultEnv(environment);
+      list.append(button);
+    }
+    block.append(name, list);
+    section.append(block);
   }
-  if (!list.children.length) list.append(vaultNote("Todavía no hay entornos."));
-  section.append(list);
+  if (!groups.length) section.append(vaultNote("Todavía no hay entornos."));
   section.append(
     vaultForm([{ placeholder: "proyecto" }, { placeholder: "entorno" }], "Crear entorno", (values) =>
       vaultOrder("/api/vault/environment", { op: "create", project: values[0], env: values[1] }),
@@ -144,6 +167,7 @@ function vaultEnvsEl() {
 
 async function openVaultEnv(environment) {
   const key = vaultKey(environment);
+  vaultEditing = null;
   if (vaultOpen === key) {
     vaultOpen = null;
     vaultSecrets = null;
@@ -172,11 +196,22 @@ function vaultSecretsEl() {
   const list = document.createElement("div");
   list.className = "vault-keys";
   for (const name of keys) {
+    if (vaultEditing === name) {
+      list.append(vaultEditRow(project, env, name, secrets[name]));
+      continue;
+    }
     const row = document.createElement("div");
     row.className = "vault-row";
     const label = document.createElement("span");
     label.className = "vault-key";
-    label.textContent = name;
+    label.append(document.createTextNode(name));
+    if (vaultPlain.has(name)) {
+      const tag = document.createElement("span");
+      tag.className = "vault-tag";
+      tag.textContent = "var";
+      tag.title = "Variable: no se redacta";
+      label.append(tag);
+    }
     const shown = vaultRevealed.has(name);
     const value = document.createElement("button");
     value.className = "vault-value" + (shown ? "" : " masked");
@@ -191,6 +226,16 @@ function vaultSecretsEl() {
     actions.className = "vault-actions";
     actions.append(copyButton(secrets[name], `Copiar ${name}`));
     actions.append(
+      iconButton(
+        "pencil",
+        `Editar ${name}`,
+        () => {
+          vaultEditing = name;
+          renderVault();
+        },
+      ),
+    );
+    actions.append(
       iconButton("close", `Borrar ${name}`, () => vaultOrder("/api/vault/unset", { project, env, name })),
     );
     row.append(label, value, actions);
@@ -200,12 +245,72 @@ function vaultSecretsEl() {
   section.append(list);
   section.append(
     vaultForm(
-      [{ placeholder: "CLAVE" }, { placeholder: "valor" }],
+      [{ placeholder: "CLAVE" }, { placeholder: "valor" }, { placeholder: "secreto", type: "checkbox", checked: true }],
       "Guardar",
-      (values) => vaultOrder("/api/vault/set", { project, env, name: values[0], value: values[1] }),
+      (values) =>
+        vaultOrder("/api/vault/set", {
+          project,
+          env,
+          name: values[0],
+          value: values[1],
+          secret: values[2] === "on",
+        }),
     ),
   );
   return section;
+}
+
+function vaultCheck(checked, text = "secreto") {
+  const label = document.createElement("label");
+  label.className = "vault-check";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(checked);
+  input.defaultChecked = Boolean(checked);
+  label.append(input, document.createTextNode(text));
+  return { label, input };
+}
+
+function vaultEditRow(project, env, name, value) {
+  const row = document.createElement("div");
+  row.className = "vault-row vault-editing";
+  const label = document.createElement("span");
+  label.className = "vault-key";
+  label.textContent = name;
+  const form = document.createElement("form");
+  form.className = "vault-form vault-edit";
+  const input = document.createElement("input");
+  input.value = value;
+  input.setAttribute("aria-label", `Valor de ${name}`);
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  const check = vaultCheck(!vaultPlain.has(name));
+  check.input.setAttribute("aria-label", "secreto");
+  const save = document.createElement("button");
+  save.textContent = "Guardar";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancelar";
+  cancel.onclick = () => {
+    vaultEditing = null;
+    renderVault();
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const data = await api("/api/vault/set", {
+      project,
+      env,
+      name,
+      value: input.value,
+      secret: check.input.checked,
+    });
+    if (!data) return;
+    vaultEditing = null;
+    await loadSecrets({ project, env });
+  };
+  form.append(input, check.label, save, cancel);
+  row.append(label, form);
+  return row;
 }
 
 function vaultTokensEl() {
@@ -300,13 +405,31 @@ function vaultNote(text) {
   return note;
 }
 
+function vaultValue(input) {
+  if (input.type === "checkbox") return input.checked ? "on" : "";
+  return input.value.trim();
+}
+
+function vaultReset(input) {
+  if (input.type === "checkbox") input.checked = input.defaultChecked;
+  else input.value = "";
+}
+
 function vaultForm(placeholders, action, submit) {
   const form = document.createElement("form");
   form.className = "vault-form";
-  const inputs = placeholders.map(({ placeholder, type }) => {
+  const inputs = placeholders.map(({ placeholder, type, checked }) => {
+    if (type === "checkbox") {
+      const box = vaultCheck(checked, placeholder);
+      box.input.setAttribute("aria-label", placeholder);
+      box.input.title = placeholder;
+      form.append(box.label);
+      return box.input;
+    }
     const input = document.createElement("input");
     input.placeholder = placeholder;
     input.setAttribute("aria-label", placeholder);
+    input.title = placeholder;
     input.type = type || "text";
     input.spellcheck = false;
     input.autocomplete = "off";
@@ -319,8 +442,8 @@ function vaultForm(placeholders, action, submit) {
   form.append(button);
   form.onsubmit = async (event) => {
     event.preventDefault();
-    const values = inputs.map((input) => input.value.trim());
-    if (await submit(values)) for (const input of inputs) input.value = "";
+    const values = inputs.map(vaultValue);
+    if (await submit(values)) for (const input of inputs) vaultReset(input);
   };
   return form;
 }
@@ -336,5 +459,14 @@ async function vaultRevoke(token) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { vaultKey, vaultScope, vaultCount, vaultMask, vaultAction, vaultClock };
+  module.exports = {
+    vaultKey,
+    vaultScope,
+    vaultProjects,
+    vaultCount,
+    vaultMask,
+    vaultAction,
+    vaultClock,
+    vaultValue,
+  };
 }

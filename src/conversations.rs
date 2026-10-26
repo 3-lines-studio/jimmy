@@ -1,20 +1,10 @@
-//! Projects and conversations.
-//!
-//! A project is a directory under `workspace/projects`, nothing else: no id, no
-//! registry, no metadata. A conversation is a chat with a directory of its own
-//! under `root/chats`, and it belongs either to a project or to `general`.
-//!
-//! The conversations that arrive through a transport are not created by
-//! anybody: they exist because Telegram or Slack names them, they live in
-//! `general`, and the web frontend watches them without writing. The ones the
-//! web frontend creates carry a `meta.json` with their project and title.
-
 use axe::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 pub const GENERAL: &str = "general";
@@ -26,6 +16,7 @@ struct Meta {
     title: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Conversation {
     pub key: String,
     pub dir: PathBuf,
@@ -36,15 +27,18 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    /// Lo último que pasó en la conversación: es lo que ordena la lista. El log
-    /// y el transcript se escriben en cada turno, la metadata al crear o al
-    /// renombrar.
     pub fn updated(&self) -> SystemTime {
-        ["conversation.jsonl", "transcript.jsonl", "meta.json"]
-            .iter()
-            .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok()?.modified().ok())
-            .max()
-            .unwrap_or(SystemTime::UNIX_EPOCH)
+        [
+            "conversation.jsonl",
+            "transcript.jsonl",
+            "journal.jsonl",
+            "state.json",
+            "meta.json",
+        ]
+        .iter()
+        .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok()?.modified().ok())
+        .max()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
     }
 }
 
@@ -58,9 +52,6 @@ pub fn chat_dir(root: &Path, key: &str) -> PathBuf {
     root.join("chats").join(key)
 }
 
-/// Un key de chat es un nombre, o dos con una barra en el medio, como el
-/// `canal/hilo` de Slack. Cada parte tiene que ser un nombre de los que se ven
-/// en un directorio, así un `..` no saca el camino de `chats/`.
 pub fn valid_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 128
@@ -73,8 +64,6 @@ pub fn valid_key(key: &str) -> bool {
         })
 }
 
-/// Resolves a key that may not have a conversation yet, which is the case of
-/// every chat a transport names for the first time.
 pub fn get(root: &Path, workspace: &Path, key: &str) -> Conversation {
     let dir = chat_dir(root, key);
     let meta = read_meta(&dir);
@@ -125,6 +114,71 @@ pub fn projects(root: &Path, workspace: &Path) -> Vec<Project> {
         .collect()
 }
 
+#[derive(Clone, PartialEq)]
+struct Stamp {
+    conversation: Option<(u64, Option<SystemTime>)>,
+    transcript: Option<(u64, Option<SystemTime>)>,
+}
+
+#[derive(Default)]
+pub struct Listing {
+    projects: Mutex<Option<(u64, Arc<Vec<Project>>)>>,
+    last: Mutex<HashMap<PathBuf, (Stamp, Option<String>)>>,
+}
+
+const CACHE_LIMIT: usize = 1024;
+
+impl Listing {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn projects(&self, root: &Path, workspace: &Path, version: u64) -> Arc<Vec<Project>> {
+        let mut slot = self.projects.lock().unwrap();
+        if let Some((at, projects)) = slot.as_ref() {
+            if *at == version {
+                return projects.clone();
+            }
+        }
+        let projects = Arc::new(projects(root, workspace));
+        *slot = Some((version, projects.clone()));
+        projects
+    }
+
+    pub fn invalidate(&self) {
+        *self.projects.lock().unwrap() = None;
+    }
+
+    pub fn last(&self, dir: &Path) -> Option<String> {
+        let stamp = stamp(dir);
+        let cached = self.last.lock().unwrap().get(dir).cloned();
+        if let Some((known, value)) = cached {
+            if known == stamp {
+                return value;
+            }
+        }
+        let value = last_message(dir);
+        let mut cache = self.last.lock().unwrap();
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(dir.to_path_buf(), (stamp, value.clone()));
+        value
+    }
+}
+
+fn stamp(dir: &Path) -> Stamp {
+    Stamp {
+        conversation: file_stamp(&dir.join("conversation.jsonl")),
+        transcript: file_stamp(&dir.join("transcript.jsonl")),
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
 pub fn create(root: &Path, workspace: &Path, project: &str, title: &str) -> Result<String, String> {
     if project != GENERAL && !project_dir(workspace, project).is_dir() {
         return Err(format!("no existe el proyecto {project}"));
@@ -156,9 +210,6 @@ pub fn project_dir(workspace: &Path, project: &str) -> PathBuf {
     }
 }
 
-/// Le pone otro nombre a la carpeta del proyecto y a la meta de cada una de sus
-/// conversaciones. `general` no se renombra: es dónde viven las que no son de
-/// nadie.
 pub fn rename_project(root: &Path, workspace: &Path, from: &str, to: &str) -> Result<(), String> {
     if from == GENERAL || to == GENERAL {
         return Err("ese proyecto no se renombra".into());
@@ -189,9 +240,6 @@ pub fn rename_project(root: &Path, workspace: &Path, from: &str, to: &str) -> Re
     Ok(())
 }
 
-/// Un proyecto duplicado es otro directorio con los mismos archivos: la copia
-/// es literal, con git y lo que esté ignorado adentro. Las conversaciones no
-/// viajan, son del proyecto original.
 pub fn duplicate(workspace: &Path, from: &str, to: &str) -> Result<(), String> {
     if from == GENERAL || to == GENERAL {
         return Err("eso no se duplica".into());
@@ -221,9 +269,6 @@ pub fn duplicate(workspace: &Path, from: &str, to: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Lo que el proyecto ocupa en el volumen: los bloques que reserva cada
-/// archivo, que es lo que descuenta el `df`, y no los bytes que dice tener. No
-/// sigue symlinks, igual que `du`.
 pub fn size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -241,10 +286,24 @@ pub fn size(dir: &Path) -> u64 {
 const TAIL: u64 = 16 * 1024;
 const SNIPPET: usize = 140;
 
-/// Lo último que contestó el asistente, en un renglón y sin markdown: es el pie
-/// del proyecto en la sidebar. Mira el final del archivo, que puede ser enorme,
-/// y se queda con la primera línea entera que encuentra.
 pub fn last_message(dir: &Path) -> Option<String> {
+    last_event(dir).or_else(|| last_transcript(dir))
+}
+
+fn last_event(dir: &Path) -> Option<String> {
+    let text = tail(&dir.join("conversation.jsonl"), TAIL)?;
+    text.lines().rev().find_map(|line| {
+        let event: serde_json::Value = serde_json::from_str(line).ok()?;
+        let kind = event.get("event")?.as_str()?;
+        if !matches!(kind, "done" | "assistant") {
+            return None;
+        }
+        let content = event.get("text")?.as_str()?.trim();
+        (!content.is_empty()).then(|| cut(&flatten(content), SNIPPET))
+    })
+}
+
+fn last_transcript(dir: &Path) -> Option<String> {
     let text = tail(&dir.join("transcript.jsonl"), TAIL)?;
     text.lines()
         .rev()
@@ -252,8 +311,6 @@ pub fn last_message(dir: &Path) -> Option<String> {
         .map(|said| cut(&flatten(&said), SNIPPET))
 }
 
-/// Lo que dijo el asistente en esa línea, si dijo algo: los turnos que sólo
-/// llaman herramientas no cuentan.
 fn said_line(line: &str) -> Option<String> {
     let entry: serde_json::Value = serde_json::from_str(line).ok()?;
     let message = entry.get("message")?;
@@ -279,7 +336,6 @@ fn tail(path: &Path, size: u64) -> Option<String> {
     text.split_once('\n').map(|(_, rest)| rest.to_string())
 }
 
-/// Un solo renglón, sin el markdown que en la sidebar no se renderiza.
 fn flatten(text: &str) -> String {
     let linked = unlink(text);
     let bare: String = linked.chars().filter(|c| !"`*".contains(*c)).collect();
@@ -291,7 +347,6 @@ fn flatten(text: &str) -> String {
         .to_string()
 }
 
-/// `[así](https://ejemplo.com)` se queda con `así`.
 fn unlink(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -353,8 +408,6 @@ fn list_dirs(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Every chat directory that has something in it, at any depth: a Slack thread
-/// is a level deeper than a Telegram chat.
 fn discovered(root: &Path) -> Vec<String> {
     let mut keys = Vec::new();
     walk(&root.join("chats"), "", &mut keys);
@@ -362,12 +415,23 @@ fn discovered(root: &Path) -> Vec<String> {
     keys
 }
 
-/// A chat that was created but never used has only its metadata, and still
-/// counts: it is what the web frontend just made.
-fn is_conversation(path: &Path) -> bool {
-    ["transcript.jsonl", "conversation.jsonl", "meta.json"]
-        .iter()
-        .any(|name| path.join(name).exists())
+pub(crate) fn is_conversation(path: &Path) -> bool {
+    [
+        "transcript.jsonl",
+        "conversation.jsonl",
+        "journal.jsonl",
+        "state.json",
+        "meta.json",
+    ]
+    .iter()
+    .any(|name| path.join(name).exists())
+}
+
+pub(crate) fn chats(root: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    walk(&root.join("chats"), "", &mut keys);
+    keys.sort();
+    keys
 }
 
 fn walk(dir: &Path, prefix: &str, keys: &mut Vec<String>) {

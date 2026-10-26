@@ -1,27 +1,22 @@
-//! Who is connected, and who is watching what.
-//!
-//! The log on disk is the backlog; the bus is what is happening while somebody
-//! is connected. Writing an event and telling the watchers happen under the
-//! same lock, so somebody who attaches in the middle never misses one nor sees
-//! it twice.
-
 use crate::log::Log;
 use crate::protocol::Event;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+
+const QUEUE: usize = 128;
 
 struct Connection {
     id: u64,
     user: String,
-    /// La conversación que mira, o nada si sólo quiere saber quién está.
     topic: Option<String>,
-    sender: Sender<Event>,
+    sender: SyncSender<Event>,
 }
 
 pub struct Bus {
     connections: Mutex<Vec<Connection>>,
     next: AtomicU64,
+    version: AtomicU64,
 }
 
 impl Bus {
@@ -29,13 +24,13 @@ impl Bus {
         Arc::new(Bus {
             connections: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
+            version: AtomicU64::new(0),
         })
     }
 
-    /// Everything from here on, for a reader that already read its own backlog.
     pub fn attach(&self, key: &str, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(QUEUE);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         connections.push(Connection {
             id,
@@ -48,10 +43,9 @@ impl Bus {
         (id, receiver)
     }
 
-    /// Una conexión que sólo espera la presencia: quién está conectado.
     pub fn watch(&self, user: &str) -> (u64, Receiver<Event>) {
         let mut connections = self.connections.lock().unwrap();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(QUEUE);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         connections.push(Connection {
             id,
@@ -63,9 +57,6 @@ impl Bus {
         (id, receiver)
     }
 
-    /// Se va esa conexión y ninguna otra: quien recarga la página se conecta de
-    /// nuevo antes de que la vieja se entere, y la vieja no se lleva puesta a la
-    /// nueva.
     pub fn detach(&self, key: &str, id: u64) {
         let mut connections = self.connections.lock().unwrap();
         connections.retain(|watch| watch.id != id);
@@ -79,7 +70,12 @@ impl Bus {
         tell_who_is_online(&mut connections);
     }
 
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
+    }
+
     pub fn publish(&self, key: &str, log: &Log, event: &Event) {
+        self.version.fetch_add(1, Ordering::Relaxed);
         let mut connections = self.connections.lock().unwrap();
         if !matches!(
             event,
@@ -94,7 +90,6 @@ impl Bus {
         send(&mut connections, key, event);
     }
 
-    /// Un evento que no queda guardado: lo ven los que están mirando ahora.
     pub fn show(&self, key: &str, event: &Event) {
         let mut connections = self.connections.lock().unwrap();
         send(&mut connections, key, event);
@@ -102,8 +97,16 @@ impl Bus {
 }
 
 fn send(connections: &mut Vec<Connection>, key: &str, event: &Event) {
+    let cosmetic = matches!(event, Event::Delta { .. } | Event::ToolDelta { .. });
     connections.retain(|watch| {
-        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+        if watch.topic.as_deref() != Some(key) {
+            return true;
+        }
+        match watch.sender.try_send(event.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => cosmetic,
+            Err(TrySendError::Disconnected(_)) => false,
+        }
     });
 }
 
@@ -115,14 +118,14 @@ fn tell_who_is_watching(connections: &mut Vec<Connection>, key: &str) {
     );
     let event = Event::Presence { users };
     connections.retain(|watch| {
-        watch.topic.as_deref() != Some(key) || watch.sender.send(event.clone()).is_ok()
+        watch.topic.as_deref() != Some(key) || watch.sender.try_send(event.clone()).is_ok()
     });
 }
 
 fn tell_who_is_online(connections: &mut Vec<Connection>) {
     let users = names(connections.iter());
     let event = Event::Online { users };
-    connections.retain(|watch| watch.sender.send(event.clone()).is_ok());
+    connections.retain(|watch| watch.sender.try_send(event.clone()).is_ok());
 }
 
 fn names<'a>(connections: impl Iterator<Item = &'a Connection>) -> Vec<String> {

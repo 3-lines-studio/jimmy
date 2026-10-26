@@ -16,3 +16,4 @@ lint:
 test:
 	node --test web/
 	cargo test
+

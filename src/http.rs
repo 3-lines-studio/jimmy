@@ -1,12 +1,7 @@
-//! Just enough HTTP/1.1 for a web frontend: request parsing and response
-//! writing. One request per connection, no keep-alive.
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
-/// Lo más grande que aceptamos leer. Con la web expuesta, un cuerpo sin tope es
-/// una forma de quedarse sin memoria.
 pub const MAX_BODY: usize = 24 * 1024 * 1024;
 
 pub struct Request {
@@ -15,7 +10,6 @@ pub struct Request {
     pub query: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
-    /// El cuerpo se pasó del tope y no lo leímos.
     pub too_large: bool,
 }
 
@@ -53,9 +47,13 @@ impl Request {
     }
 
     pub fn flag(&self, name: &str) -> bool {
+        self.flag_or(name, false)
+    }
+
+    pub fn flag_or(&self, name: &str, fallback: bool) -> bool {
         self.json()
             .and_then(|json| json.get(name).and_then(|value| value.as_bool()))
-            .unwrap_or(false)
+            .unwrap_or(fallback)
     }
 
     pub fn list(&self, name: &str) -> Vec<String> {
@@ -164,6 +162,17 @@ pub fn send_text(
     respond(stream, status, content_type, &[], text.as_bytes())
 }
 
+pub fn gone(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::NotConnected
+    )
+}
+
 pub fn sse_open(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
@@ -174,6 +183,13 @@ pub fn sse_open(stream: &mut TcpStream) -> std::io::Result<()> {
 pub fn sse_data(stream: &mut TcpStream, data: &str) -> std::io::Result<()> {
     stream.write_all(b"data: ")?;
     stream.write_all(data.as_bytes())?;
+    stream.write_all(b"\n\n")?;
+    stream.flush()
+}
+
+pub fn sse_json(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
+    stream.write_all(b"data: ")?;
+    stream.write_all(data)?;
     stream.write_all(b"\n\n")?;
     stream.flush()
 }
@@ -248,6 +264,16 @@ mod tests {
             body: Vec::new(),
             too_large: false,
         }
+    }
+
+    #[test]
+    fn a_missing_flag_falls_back_to_the_caller_default() {
+        let mut empty = request("");
+        assert!(empty.flag_or("secret", true));
+        assert!(!empty.flag("secret"));
+        empty.body = br#"{"secret":false}"#.to_vec();
+        assert!(!empty.flag_or("secret", true));
+        assert!(!empty.flag("secret"));
     }
 
     #[test]

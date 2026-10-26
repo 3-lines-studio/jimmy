@@ -5,25 +5,25 @@ mod bus;
 mod conversations;
 mod files;
 mod http;
+mod keepalive;
 mod log;
 mod machine;
 mod mail;
 mod markdown;
+mod mcp;
 mod media;
-mod memlog;
-mod memo;
+mod oauth;
 mod pool;
 mod preview;
-mod prompt;
 mod protocol;
 mod random;
-mod reap;
 mod schedule;
+mod servers;
 mod skill;
+mod store;
 mod tools;
 mod transport;
 mod vault;
-mod watch;
 mod web;
 mod worker;
 
@@ -36,17 +36,17 @@ use transport::slack;
 use transport::telegram;
 use transport::{Event, EventSource, Idle, Null, Session, Transport};
 
+const SYSTEM: &str = include_str!("../prompts/jimmy.md");
+
 struct Config {
     api_key: String,
-    transcribe_key: Option<String>,
     base: String,
     model: String,
     context_window: Option<usize>,
     root: PathBuf,
     workspace: String,
-    prompt: String,
-    vars: String,
     allowed: Vec<String>,
+    transcribe_key: Option<String>,
 }
 
 impl Config {
@@ -55,7 +55,6 @@ impl Config {
         let root = root_from_env();
         let workspace = workspace_from_env().display().to_string();
         let allowed = env("JIMMY_ALLOWED_USER_IDS")
-            .or_else(|| env("TELEGRAM_ALLOWED_USER_IDS"))
             .map(|v| {
                 v.split(',')
                     .map(|id| id.trim().to_string())
@@ -65,7 +64,6 @@ impl Config {
             .unwrap_or_default();
         Ok(Self {
             api_key,
-            transcribe_key: env("TRANSCRIBE_API_KEY"),
             base: env("AXE_BASE").unwrap_or_else(|| "https://api.deepseek.com".into()),
             model: env("AXE_MODEL").unwrap_or_else(|| "deepseek-flash".into()),
             context_window: Some(
@@ -75,9 +73,8 @@ impl Config {
             ),
             root,
             workspace,
-            prompt: env("JIMMY_PROMPT").unwrap_or_else(|| prompt::DEFAULT.into()),
-            vars: env("JIMMY_VARS").unwrap_or_default(),
             allowed,
+            transcribe_key: env("TRANSCRIBE_API_KEY"),
         })
     }
 }
@@ -86,9 +83,6 @@ fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// El mismo binario es `heimdall` y `doppler` cuando lo llaman así: los
-/// Makefiles de los proyectos los invocan por nombre, y adentro el vault es el
-/// que corre en este proceso.
 fn invoked_as() -> Option<String> {
     let name = Path::new(&std::env::args().next()?)
         .file_name()?
@@ -99,6 +93,9 @@ fn invoked_as() -> Option<String> {
 
 fn heimdall_command(name: &str) -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if env("HEIMDALL_DIR").is_none() {
+        std::env::set_var("HEIMDALL_DIR", vault::dir(&root_from_env()));
+    }
     match heimdall::cli::run(&args) {
         Ok(()) => 0,
         Err(e) => {
@@ -108,7 +105,7 @@ fn heimdall_command(name: &str) -> i32 {
     }
 }
 
-fn root_from_env() -> PathBuf {
+pub(crate) fn root_from_env() -> PathBuf {
     PathBuf::from(
         env("JIMMY_ROOT")
             .or_else(|| env("RAILWAY_VOLUME_MOUNT_PATH"))
@@ -123,19 +120,8 @@ fn workspace_from_env() -> PathBuf {
     )
 }
 
-/// Los nombres que jimmy atiende como orden y no como arranque del bot.
-const SUBCOMMANDS: [&str; 6] = [
-    "memo",
-    "send",
-    "conversations",
-    "skill",
-    "preview",
-    "worker",
-];
+const SUBCOMMANDS: [&str; 5] = ["send", "conversations", "skill", "preview", "worker"];
 
-/// Con argumentos, jimmy sólo hace lo que le pidieron. Un nombre que no conoce
-/// no puede terminar arrancando el bot entero: sería una segunda instancia
-/// escuchando el mismo puerto y robándole los mensajes a la que ya corre.
 fn unknown_command(args: &[String]) -> Option<&str> {
     let first = args.first()?;
     (!SUBCOMMANDS.contains(&first.as_str())).then_some(first.as_str())
@@ -147,9 +133,6 @@ fn main() {
         std::process::exit(heimdall_command(&name));
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("memo") {
-        std::process::exit(memo_command(&args[1..]));
-    }
     if args.first().map(String::as_str) == Some("send") {
         std::process::exit(send_command(&args[1..]));
     }
@@ -200,6 +183,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    keepalive::spawn(agent.clone());
     let transport = match transport_from_env() {
         Ok(transport) => transport,
         Err(e) => {
@@ -214,9 +198,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let workspace = PathBuf::from(config.workspace.clone());
     let previews = preview::Previews::new(Path::new(&config.workspace));
-    let agenda = schedule::spawn(transport.clone(), agent.clone(), workspace.clone());
+    let agenda = schedule::spawn(
+        transport.clone(),
+        agent.clone(),
+        PathBuf::from(config.workspace.clone()),
+    );
     vault::open(&config.root);
     serve_web(
         &config,
@@ -225,23 +212,6 @@ fn main() {
         agenda,
         previews.clone(),
     );
-    let mut reaper = reap::Reaper::default();
-    let mut watch = watch::Watch::default();
-    let root = config.root.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(60));
-        reaper.reap(std::time::Instant::now());
-        memlog::sample(&workspace);
-        let memory = machine::usage(&root).memory;
-        let quiet = !pool::busy() && previews.list().is_empty();
-        if watch.overdue(memory.used, quiet) {
-            eprintln!(
-                "jimmy: {} MB en el cgroup sin nadie corriendo: salgo para que me levanten",
-                memory.used / 1024 / 1024
-            );
-            std::process::exit(1);
-        }
-    });
     install_sigterm();
     recover(&agent, transport.clone(), &config.root);
     eprintln!(
@@ -319,13 +289,16 @@ fn main() {
                     return;
                 }
                 let images = match image {
-                    Some(file_id) => match fetch_image(transport.as_ref(), &session, &file_id) {
-                        Ok(image) => vec![image],
-                        Err(e) => {
-                            transport.note(&session, &format!("⚠️ no pude bajar la imagen: {e}"));
-                            return;
+                    Some(file_id) => {
+                        match fetch_image(&agent, transport.as_ref(), &session, &file_id) {
+                            Ok(image) => vec![image],
+                            Err(e) => {
+                                transport
+                                    .note(&session, &format!("⚠️ no pude bajar la imagen: {e}"));
+                                return;
+                            }
                         }
-                    },
+                    }
                     None => Vec::new(),
                 };
                 if let Err(e) = agent.respond(transport.as_ref(), &session, &text, images, &author)
@@ -387,8 +360,6 @@ fn usage() -> i32 {
     2
 }
 
-/// The web frontend is opt-in: without a port to listen on, jimmy is what it
-/// always was.
 fn serve_web(
     config: &Config,
     bus: Arc<bus::Bus>,
@@ -417,8 +388,10 @@ fn serve_web(
         eprintln!("jimmy: JIMMY_WEB_DEV=1: el link de entrada sale en la respuesta");
     }
     let web = web::Web::new(
-        config.root.clone(),
-        PathBuf::from(&config.workspace),
+        web::Paths {
+            root: config.root.clone(),
+            workspace: PathBuf::from(&config.workspace),
+        },
         bus,
         agent,
         auth,
@@ -433,14 +406,14 @@ fn serve_web(
         }
     };
     eprintln!("jimmy: web escuchando en el puerto {port}");
-    std::thread::spawn(move || web::serve(web, listener));
+    std::thread::Builder::new()
+        .name("web".into())
+        .spawn(move || web::serve(web, listener))
+        .expect("failed to spawn thread");
     std::thread::spawn(move || preview::listen(previews));
 }
 
 fn build_agent(config: &Config) -> Result<Agent, String> {
-    let mut vars = prompt::parse_vars(&config.vars);
-    vars.push(("skills".into(), skill::index(&skills_dirs())));
-    let fragments = prompt::assemble(&config.prompt, &prompt::dirs(&config.root), &vars)?;
     Ok(Agent::new(
         config.base.clone(),
         config.model.clone(),
@@ -448,7 +421,7 @@ fn build_agent(config: &Config) -> Result<Agent, String> {
         config.context_window,
         config.root.clone(),
         config.workspace.clone(),
-        fragments,
+        SYSTEM.to_string(),
     ))
 }
 
@@ -575,9 +548,6 @@ fn send_command(args: &[String]) -> i32 {
     }
 }
 
-/// Una imagen que va a una conversación de la web no sale por ningún transporte:
-/// queda en el chat, que es donde se mira. Y la que sale por Telegram también
-/// queda, porque la web muestra las mismas conversaciones.
 fn keep(
     conversation: &conversations::Conversation,
     path: &str,
@@ -640,47 +610,6 @@ fn skill_command(args: &[String]) -> i32 {
     }
 }
 
-fn memo_command(args: &[String]) -> i32 {
-    let workspace = workspace_from_env();
-    let result = match args.first().map(String::as_str) {
-        Some("sync") => memo::sync(&workspace),
-        Some("migrate") => memo::migrate(&workspace),
-        Some("list") => Ok(memo::list(&workspace)),
-        Some("render") => Ok(memo::render(
-            &workspace,
-            args.get(1).map(String::as_str).unwrap_or(""),
-        )),
-        Some("add") => match (args.get(1), args.get(2), args.get(3..)) {
-            (Some(key), Some(kind), Some(rest)) if !rest.is_empty() => {
-                memo::add(&workspace, key, kind, &rest.join(" "))
-            }
-            _ => Err("memo add: uso `jimmy memo add <clave> <tipo> <texto>`".into()),
-        },
-        Some("miss") => match args[1..].join(" ").trim() {
-            "" => Err("memo miss: falta el texto".into()),
-            text => memo::miss(&workspace, text),
-        },
-        Some("show") => match args[1..].join(" ").trim() {
-            "" => Err("memo show: falta la clave".into()),
-            key => memo::show(&workspace, key),
-        },
-        _ => Err(
-            "uso: jimmy memo <sync|migrate|list|render [proyecto]|add clave tipo texto|miss texto|show clave>"
-                .into(),
-        ),
-    };
-    match result {
-        Ok(report) => {
-            println!("{report}");
-            0
-        }
-        Err(e) => {
-            eprintln!("jimmy memo: {e}");
-            1
-        }
-    }
-}
-
 fn transcribe_voice(
     transport: &dyn Transport,
     session: &Session,
@@ -714,6 +643,7 @@ fn audio_extension(file_path: &str) -> &str {
 }
 
 fn fetch_image(
+    agent: &Agent,
     transport: &dyn Transport,
     session: &Session,
     file_id: &str,
@@ -723,44 +653,145 @@ fn fetch_image(
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("jpg");
-    let name = format!(
-        "jimmy-image-{}-{}.{ext}",
-        session.channel,
-        axe::session::now_ms()
-    );
-    let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
-    axe::image::attach(&path.display().to_string())
+    let fallback = format!("jimmy-{}-{}.{ext}", session.channel, axe::session::now_ms());
+    let name = Path::new(&file_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or(fallback);
+    let conversation = agent.conversation(session);
+    save_image(&media::dir(&conversation), &name, &data)
+}
+
+fn save_image(dir: &Path, name: &str, data: &[u8]) -> Result<axe::Image, String> {
+    let name = media::store(dir, name, data)?;
+    let path = dir.join(&name);
+    axe::image::attach_data(&path.display().to_string(), data)
 }
 
 fn recover(agent: &Agent, transport: Arc<dyn Transport>, root: &Path) {
+    for key in conversations::chats(root) {
+        heal_projection(&conversations::chat_dir(root, &key));
+    }
     for key in inflight_chats(root) {
         let Some(session) = session_from_key(&key) else {
             continue;
         };
-        eprintln!("jimmy: reanudando el turno de {key}");
-        let agent = agent.clone();
-        let transport = transport.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = agent.resume(transport.as_ref(), &session) {
-                eprintln!("jimmy: no pude reanudar {key}: {e}");
+        let dir = agent.conversation(&session).dir;
+        match store::recover_turn(&dir) {
+            Ok(store::Recovered::Resume) => {
+                eprintln!("jimmy: reanudando el turno de {key}");
+                let agent = agent.clone();
+                let transport = transport.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = agent.resume(transport.as_ref(), &session) {
+                        eprintln!("jimmy: no pude reanudar {key}: {e}");
+                    }
+                });
             }
-        });
+            Ok(store::Recovered::Blocked(limit)) => {
+                let _ = std::fs::remove_file(dir.join("inflight"));
+                eprintln!("jimmy: {key} quedó bloqueado tras {limit} reinicios");
+                transport.note(
+                    &session,
+                    &format!(
+                        "⚠️ el turno quedó bloqueado tras {limit} reinicios. Mandá otro mensaje."
+                    ),
+                );
+            }
+            Ok(store::Recovered::Nothing) => {
+                let _ = std::fs::remove_file(dir.join("inflight"));
+            }
+            Err(e) => eprintln!("jimmy: no pude recuperar {key}: {e}"),
+        }
     }
 }
 
-/// Chats with a turn that was cut short, which is what the marker file means.
-fn inflight_chats(root: &Path) -> Vec<String> {
-    let Ok(chats) = std::fs::read_dir(root.join("chats")) else {
-        return Vec::new();
+fn heal_projection(dir: &Path) {
+    use axe::durable::{Journal, TaskState};
+    use axe::session::Entry;
+
+    let stamp = |name: &str| {
+        std::fs::metadata(dir.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
     };
-    let mut keys: Vec<String> = chats
+    let Some(durable) = [stamp("journal.jsonl"), stamp("state.json")]
+        .into_iter()
         .flatten()
-        .filter(|entry| entry.path().join("inflight").exists())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+        .max()
+    else {
+        return;
+    };
+    if stamp("conversation.jsonl").is_some_and(|log| log >= durable) {
+        return;
+    }
+    let Ok(tasks) = Journal::load_tasks(dir) else {
+        return;
+    };
+    let Some(turn) = tasks
+        .iter()
+        .filter(|task| task.kind == "turn")
+        .max_by_key(|task| task.id)
+    else {
+        return;
+    };
+    if turn.state != TaskState::Done {
+        return;
+    }
+    let Ok(records) = Journal::load(dir) else {
+        return;
+    };
+    let Some(answer) = records.iter().rev().find_map(|record| match &record.entry {
+        Entry::Message { message }
+            if message.role == "assistant" && !message.content.trim().is_empty() =>
+        {
+            Some(message.content.clone())
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    let log = crate::log::Log::in_dir(dir);
+    if log.last_answer().as_deref() == Some(answer.as_str()) {
+        return;
+    }
+    log.append(&crate::protocol::Event::Done { text: answer });
+}
+
+fn inflight_chats(root: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    walk_inflight(&root.join("chats"), "", &mut keys);
     keys.sort();
     keys
+}
+
+fn walk_inflight(dir: &Path, prefix: &str, keys: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let key = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path.join("inflight").exists() {
+            keys.push(key);
+            continue;
+        }
+        if conversations::is_conversation(&path) {
+            continue;
+        }
+        walk_inflight(&path, &key, keys);
+    }
 }
 
 fn session_from_key(key: &str) -> Option<Session> {
@@ -880,68 +911,51 @@ mod tests {
     #[test]
     fn an_unknown_command_never_starts_the_bot() {
         assert_eq!(unknown_command(&[]), None);
-        assert_eq!(unknown_command(&["memo".into(), "sync".into()]), None);
+        assert_eq!(unknown_command(&["send".into(), "x".into()]), None);
         assert_eq!(unknown_command(&["worker".into(), "--chat".into()]), None);
         assert_eq!(unknown_command(&["stats".into()]), Some("stats"));
         assert_eq!(unknown_command(&["--help".into()]), Some("--help"));
     }
 
     #[test]
-    fn telegram_voice_extension_is_ogg_not_oga() {
-        assert_eq!(audio_extension("voice/file_12.oga"), "ogg");
-    }
-
-    #[test]
-    fn other_audio_extensions_pass_through() {
-        assert_eq!(audio_extension("audio/song.mp3"), "mp3");
-        assert_eq!(audio_extension("audio/no-extension"), "ogg");
-    }
-
-    #[test]
-    fn session_key_round_trips() {
-        assert_eq!(
-            session_from_key("123456789").unwrap(),
-            Session::channel("123456789")
-        );
-        assert_eq!(
-            session_from_key("C1/1699.1").unwrap(),
-            Session {
-                channel: "C1".into(),
-                thread: Some("1699.1".into())
-            }
-        );
-    }
-
-    #[test]
-    fn an_image_for_a_web_conversation_is_kept_and_queued() {
-        let dir = std::env::temp_dir().join(format!("jimmy-send-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_turn_missing_from_the_log_is_healed() {
+        let root = std::env::temp_dir().join(format!("jimmy-heal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("chats/x");
         std::fs::create_dir_all(&dir).unwrap();
-        let image = dir.join("circulo.png");
-        std::fs::write(&image, b"\x89PNG\r\n\x1a\nlos bytes").unwrap();
-        let conversation = conversations::Conversation {
-            key: "web-1".into(),
-            dir: dir.join("chats/web-1"),
-            cwd: dir.clone(),
-            project: "general".into(),
-            title: None,
-            read_only: false,
-        };
+        crate::log::Log::in_dir(&dir).append(&crate::protocol::Event::User {
+            text: "hola".into(),
+            author: String::new(),
+            images: Vec::new(),
+        });
+        {
+            let mut journal = crate::store::open(&dir).unwrap();
+            let mut task = crate::store::new_turn(&mut journal, "");
+            task.state = axe::durable::TaskState::Done;
+            let message = axe::Message {
+                role: "assistant".into(),
+                content: "listo".into(),
+                tool_calls: Vec::new(),
+                tool_call_id: String::new(),
+                reasoning: String::new(),
+                images: Vec::new(),
+            };
+            journal
+                .commit(vec![axe::session::Entry::Message { message }], vec![task])
+                .unwrap();
+        }
 
-        let name = keep(&conversation, image.to_str().unwrap(), Some("el círculo")).unwrap();
-        assert!(name.ends_with("-circulo.png"), "{name}");
-        let kept = std::fs::read(media::dir(&conversation).join(&name)).unwrap();
-        assert_eq!(kept, b"\x89PNG\r\n\x1a\nlos bytes");
+        heal_projection(&dir);
+        heal_projection(&dir);
 
-        let queued = media::drain(&conversation);
-        assert_eq!(queued.len(), 1);
-        assert!(
-            matches!(&queued[0], protocol::Event::Image { name: kept, caption } if kept == &name && caption == "el círculo")
+        assert_eq!(
+            crate::log::Log::in_dir(&dir).last_answer().as_deref(),
+            Some("listo")
         );
-
-        let other = dir.join("informe.pdf");
-        assert!(keep(&conversation, other.to_str().unwrap(), None).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(conversations::last_message(&dir).as_deref(), Some("listo"));
+        let log = std::fs::read_to_string(dir.join("conversation.jsonl")).unwrap();
+        assert_eq!(log.matches("\"done\"").count(), 1, "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -958,10 +972,24 @@ mod tests {
     }
 
     #[test]
-    fn the_default_spec_assembles_with_the_vars_the_agent_gets() {
-        let mut vars = prompt::parse_vars("usuario=Ana,asistente=Jimmy");
-        vars.push(("skills".into(), "browse — Nav".into()));
-        let out = prompt::assemble(prompt::DEFAULT, &prompt::dirs(Path::new(".")), &vars).unwrap();
-        assert!(out.contains("browse — Nav"));
+    fn inflight_chats_reaches_a_slack_thread() {
+        let root =
+            std::env::temp_dir().join(format!("jimmy-inflight-slack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("chats/C01/1726570000.123")).unwrap();
+        std::fs::create_dir_all(root.join("chats/C01/1726570000.999/uploads")).unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.123/meta.json"), "{}").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.123/inflight"), b"").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.999/meta.json"), "{}").unwrap();
+        std::fs::write(root.join("chats/C01/1726570000.999/uploads/inflight"), b"").unwrap();
+
+        assert_eq!(inflight_chats(&root), ["C01/1726570000.123"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_system_prompt_carries_no_placeholders() {
+        assert!(SYSTEM.contains("Never answer in Chinese."));
+        assert!(!SYSTEM.contains("{{"));
     }
 }

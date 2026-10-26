@@ -1,5 +1,3 @@
-/* El vault: entornos, claves, tokens y audit, en el mismo idioma que el resto. */
-
 .pane.vault {
   overflow-y: auto;
   padding: calc(52px + env(safe-area-inset-top) + var(--s4)) var(--s4) var(--s6);
@@ -45,6 +43,22 @@
   letter-spacing: 0.04em;
 }
 
+.vault-project {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.vault-project-name {
+  margin: 0;
+  padding: 0 var(--s1);
+  color: var(--faint);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .vault-envs {
   display: flex;
   flex-wrap: wrap;
@@ -71,6 +85,17 @@
 .vault-env.open {
   background: var(--accent);
   color: var(--accent-fg);
+}
+
+.vault-tag {
+  margin-left: var(--s1);
+  padding: 0 var(--s1);
+  border-radius: var(--r-full);
+  background: var(--hover);
+  color: var(--faint);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .vault-env-count {
@@ -185,6 +210,32 @@
   outline: none;
   border-color: var(--line-strong);
   box-shadow: 0 0 0 3px var(--ring);
+}
+
+.vault-form input[type="checkbox"] {
+  flex: none;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.vault-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--muted);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+}
+
+.vault-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vault-editing .vault-key {
+  max-width: 30%;
 }
 
 .vault-form button {

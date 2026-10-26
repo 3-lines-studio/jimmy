@@ -1,25 +1,19 @@
 # Jimmy
 
-A personal assistant that lives in a web frontend, with Telegram and Slack as
-optional channels. It embeds axe as a library and gives
+A personal assistant that lives in a web frontend, with Slack as an optional
+channel. It embeds axe as a library and gives
 it the machine of its own: every message it replies to is an axe agent run with
 the full `read`, `write`, `edit`, and `bash` toolset on the container
 filesystem.
 
-One session per chat — a web conversation, a Telegram chat, or a Slack thread — stored as
-append-only JSONL under `$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl`. Telegram
-listens by long polling and Slack over Socket Mode, so there is no public URL
-and no webhook to configure. Sending a message shows one `pensando`
-placeholder, which is replaced by the reply when the agent finishes. There is no
-per-token streaming, so the chat does not flicker. That placeholder carries a
-stop button: pressing it cancels the turn in progress. On a turn that runs long,
-the same message says what the agent is doing — `leyendo src/web.rs` — and
-refreshes itself at most every two minutes.
-
-Replies are converted from Markdown to Telegram HTML: bold and italic, inline
-code and fenced blocks, links, blockquotes, and monospaced tables. If Telegram
-rejects the markup, the message falls back to plain text. Long replies are split
-on line boundaries, with code fences closed and reopened across chunks.
+One session per chat — a web conversation or a Slack thread — stored
+under `$JIMMY_ROOT/chats/<chat_id>/` as a snapshot plus an append-only journal. Every
+admitted input, assistant message, and tool result is committed and fsynced before it is
+shown, so a restart resumes from the last one instead of repeating it. The web
+follows the turn over an event stream; Slack listens over Socket Mode, so there
+is no public URL and no webhook to configure. A running turn can be cancelled
+from the web, and after two minutes the stream says what the agent is doing —
+`leyendo src/web.rs`.
 
 ## Commands
 
@@ -28,304 +22,29 @@ agent:
 
 - `/status` — context used vs. the window, model, commit, workspace.
 - `/compact` — summarize the context now, without waiting for the threshold.
-- `/clear` — archive this chat's transcript so the next message starts fresh.
+- `/clear` — commit a reset so the next message starts fresh; the history stays stored.
 - `/help`, `/start` — list the commands.
 
 Anything else, including unknown `/`-commands, goes to the agent.
 
 ## Attachments
 
-Sending a photo, or an image sent as a file, attaches it to the prompt: the
-file is downloaded from Telegram and passed to the agent as an inline image, so
-the model can look at it. A caption becomes the prompt text; without a caption
-the image goes on its own. Non-image documents are ignored.
-
-Voice notes are transcribed with Groq (`whisper-large-v3`) when
-`TRANSCRIBE_API_KEY` is set, up to 300 seconds. The transcript is echoed back
-and used as the prompt. Without the key, voice notes are rejected. Only
-Telegram voice notes are handled; audio sent as a document is ignored.
+An image uploaded from the web or sent to Slack is passed to the agent as an
+inline image, so the model can look at it. A caption becomes the prompt text;
+without a caption the image goes on its own. Non-image documents are ignored.
 
 ## Memory
 
-A fact lives on its own, one entry per file, and where it lives says how far it
-reaches. `$JIMMY_WORKSPACE/notes/memory/` holds the cross-cutting facts —who the
-user is, the map of projects, the platform, how memory itself works— and
-`notes/projects/<project>.md` holds the ones that belong to a project.
-`jimmy memo add <key> <kind> <text>` writes one.
-
-The prompt gets every cross-cutting fact plus the two newest of the project the
-conversation belongs to. The rest is not lost: it stays in its file, and `jimmy
-memo show <key>` or `rg` bring it back. Because a new fact has an owner, it never
-competes with what was already there, and that is what keeps the prompt small: a
-project's manual does not sit in front of every conversation.
-
-Each entry starts with `## key · kind · YYYY-MM-DD`. The key is what makes an
-updated fact replace the old one instead of duplicating it, so an entry is a
-topic, not a line in a log. `notes/memory.jsonl` is append-only and holds every
-state a fact went through: `jimmy memo sync` diffs the facts against it, appends
-the changes and reports what it saw, and `jimmy memo miss` records a memory that
-failed to surface. `jimmy memo list` prints the files and their keys. Nothing is
-ever deleted.
-
-Those commands write one JSON event per run to
-`$JIMMY_WORKSPACE/state/memory-events.jsonl`, next to the scheduler's state.
-`stats` reads it and appends the memory state to its report: how many facts,
-the syncs, the renders and misses.
-
-### Moving an instance to facts
-
-The binary keeps reading `notes/memory.md` while `notes/memory/` does not exist,
-so an upgrade needs no migration, and changing your mind is one `rm -rf` away.
-Per instance:
-
-1. `jimmy memo migrate` splits `notes/memory.md` into facts, one file per key:
-   keys without a slash to `notes/memory/`, the rest to
-   `notes/projects/<family>.md`.
-2. Fix what landed in the wrong place: a key that names a project without a
-   slash (`paper`) belongs in `notes/projects/paper.md`, and a catch-all entry
-   like `decisiones-vigentes` is worth splitting into its own topics.
-3. `jimmy memo list` to check, then `jimmy memo sync`.
-4. Drop `jimmy memo demote` from that instance's `state/schedule.toml`: the
-   command is gone.
-
-Facts are per instance: the deploy carries the mechanism and the prompt, not
-what another jimmy learned.
-
-## Scheduled tasks
-
-`$JIMMY_WORKSPACE/state/schedule/` holds one file per task. A thread wakes
-every 60 seconds, reads the directory, and runs whatever is due. Each run is a
-fresh agent run in a clean context — the system prompt and the task's `prompt`,
-nothing else — and runs are not written to the chat transcript.
-
-```toml
-# state/schedule/morning-report.toml
-at = "09:00"
-target = "123456789"
-prompt = "Summarize what is still pending."
-```
-
-The file name is the task name. The agenda lives in the web frontend: the
-**Agenda** tab is where tasks are listed, run on the spot and paused, and where
-their history is read. `target` (or `chat`, its older name) is only a backup
-alert: with it the reply also goes to that chat, without it the run just leaves
-its result in the history. A target the configured transport does not know — an
-old Telegram chat, say, when the process runs with `JIMMY_TRANSPORT=none` — does
-not cancel the run: it happens anyway and the history says it did not go out.
-
-Every run appends a line to `<task>.jsonl`, next to the file: time, duration and
-the reply. The last twenty are kept. That history is also the state — a task is
-due based on its own runs — so nothing else is written on its behalf.
-
-Exactly one schedule key per task: `when = "YYYY-MM-DDTHH:MM"` runs once, `at =
-"HH:MM"` runs daily, `every = "30m"` runs on an interval (`s`, `m`, `h`, `d`).
-Times are local: UTC plus `JIMMY_TZ_OFFSET` hours. A one-shot task keeps its
-file after it fires, so its result is still there to read; a daily task fires
-once per local date; an interval task fires once the interval has elapsed since
-its last run, so a restart catches up on a missed run. A task that fails records
-the error, and each task is capped at 6 runs per hour. `paused = true` keeps the
-file and stops the clock.
-
-The **Agenda** tab of the web frontend lists the tasks with their last runs, runs
-one on the spot and pauses it. Each task shows how many runs you have not looked
-at yet, the sidebar carries the total, and opening a task — or the "Marcar Todo
-Leído" button — clears it.
-
-A task with `silent = true` only speaks when it has something to say: it skips
-the progress placeholder and an empty reply is not sent (the usual `✅ listo`
-fallback does not apply). It is meant for watchdogs that should report failures
-and stay quiet otherwise. Anything the reply does contain is sent as usual.
-
-The directory is meant to be edited by the agent: ask it to schedule something
-and it writes a file. The tick picks it up without a restart. An older single
-`state/schedule.toml` is migrated on the first boot and left beside it as
-`schedule.toml.old`.
-
-## Config
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `JIMMY_TRANSPORT` | `none` | `telegram`, `slack` or `none` |
-| `TELEGRAM_BOT_TOKEN` | — | required by the `telegram` transport |
-| `SLACK_BOT_TOKEN` | — | required by the `slack` transport (bot token, `xoxb-`) |
-| `SLACK_APP_TOKEN` | — | required by the `slack` transport (app-level token, `xapp-`) |
-| `OPENAI_API_KEY` | — | required; DeepSeek (or any OpenAI-compatible) key |
-| `TRANSCRIBE_API_KEY` | empty | Groq key for voice transcription; empty rejects voice notes |
-| `GEMINI_API_KEY` | empty | Google AI Studio key for the `gen-image` tool; empty disables it |
-| `AXE_BASE` | `https://api.deepseek.com` | API base URL |
-| `AXE_MODEL` | `deepseek-flash` | model name |
-| `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
-| `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
-| `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
-| `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | first directory with Agent Skills; the builtin one comes after (see below) |
-| `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means the bot answers nobody |
-| `JIMMY_WEB_PORT` | empty | port for the web frontend; empty means there is no web |
-| `JIMMY_WEB_EMAILS` | empty | comma-separated mails that can ask for a link; empty means nobody |
-| `RESEND_API_KEY` | empty | Resend key that sends the link; without it, and without `JIMMY_WEB_DEV`, nobody gets in |
-| `JIMMY_WEB_FROM` | empty | sender of that mail, e.g. `Jimmy <jimmy@ejemplo.com>`; required alongside the key, or there is no mail provider |
-| `JIMMY_WEB_URL` | `https://<host>` | public URL the link points to |
-| `JIMMY_WEB_DEV` | empty | `1` returns the link in the response instead of mailing it; development and tests only |
-| `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
-| `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
-| `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
-| `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
-| `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
-| `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |
-| `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
-| `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
-
-Jimmy only answers the ids in `JIMMY_ALLOWED_USER_IDS`, and with the list empty
-it answers nobody. That is the wall between a stranger who finds the bot and a
-shell on the machine, so it is worth getting right. To find your own id, put any
-placeholder in the list, send the bot a message and read the
-`jimmy: ignoré un mensaje de <id>` line it logs.
-
-### Web
-
-With `JIMMY_WEB_PORT` set, Jimmy also serves the same conversations the
-transports have, plus the ones created in the browser. There are no passwords:
-whoever is in `JIMMY_WEB_EMAILS` asks for a link, the link arrives by mail
-(Resend, with `RESEND_API_KEY` and `JIMMY_WEB_FROM`) and lasts fifteen minutes
-and one use. Without a key nobody gets in: `JIMMY_WEB_DEV=1` returns the link in
-the response instead, which is how it works locally and in the tests. Sessions
-live in `$JIMMY_ROOT/sessions.json`, last thirty days, and survive a redeploy. Conversations that come from a transport show up read-only.
-
-An image attached in the composer is uploaded as it is picked (10 MB per file) to
-`$JIMMY_ROOT/chats/<key>/uploads/`, and the message carries the file name, not
-the bytes: the log keeps the name and `GET /api/file` serves the file, so the
-image is still there after a reload and on another device. A message can be just
-an image, with no text. The images Jimmy sends with `jimmy send` land in the same
-place and are shown the same way, so a chart or a screenshot it made appears in
-the conversation.
-
-The page is quiet on purpose: the reply is the content, and what the agent did
-on the way is one folded line per run of steps — `6 pasos · 1m 51s` — which
-opens into the individual tool calls. A tool that fails opens its group and says
-so in red. It follows the system theme; the button in the sidebar overrides it
-and remembers.
-
-Searching the sidebar looks through what was said in every conversation, and
-each result opens its transcript with the matches marked.
-
-### Previews
-
-`jimmy preview start <name> --cmd 'command' [--cwd dir]` runs a project as a
-child of the main process and serves it at `/preview/<name>/` on the web port,
-behind the same session as the rest of the UI: no extra domain, no second
-certificate. A preview is never an orphan, which is what keeps the reaper's
-hands off it. The command gets `PORT` and `PREVIEW_NAME` in its environment, and
-the last lines of its output land in
-`$JIMMY_WORKSPACE/state/previews/<name>.log`.
-
-A preview runs bare, the way it would on your machine. The proxy strips the
-prefix on the way in and puts it back on everything that comes out pointing at
-the root — HTML attributes, CSS `url()`, JavaScript string literals and
-redirects — so nothing has to know where it lives. A streamed body, a binary or
-a WebSocket upgrade are copied raw.
-
-What the rewrite cannot see: a JSON payload that carries paths, or a path built
-at runtime by the app. Start the project with its strict-port flag so it cannot
-drift to another port.
-
-A preview that nobody visits takes itself down after thirty minutes: every
-request through the proxy resets that clock, so looking at it or iterating on it
-keeps it up. A redeploy takes the rest. They are for looking at work in progress,
-not for hosting. `jimmy preview list` shows what is up — and how long since the
-last visit — and `jimmy preview stop <name>` takes one down. Names are slugs:
-lowercase, digits and dashes.
-
-The sidebar lists the running previews above the projects, each one a link that
-opens it in a new tab. They come in `GET /api/state` as `previews`, so the panel
-refreshes with the rest of the sidebar.
-
-### Recipes
-
-A project's start-up line is worth writing once. `$JIMMY_WORKSPACE/state/previews.toml`
-holds one recipe per name, and then `jimmy preview start <name>` needs no `--cmd`:
-
-```toml
-[bifrost]
-about = "the App Router demo: Vite build, Go SSR"
-cwd = "projects/bifrost/example/app-router-demo"
-cmd = "make dev"
-```
-
-`cwd` is relative to the workspace and defaults to it. `about` is only for the
-listing. `jimmy preview recipes` prints them all with their command, and a
-`--cmd` given on the spot wins over the recipe, so one-off previews still work.
-When a name has no recipe and no command, the error lists the recipes that do
-exist instead of just saying no.
-
-The command runs with a clean environment: `PATH`, `HOME`, `LANG`, `TZ`, plus
-`PORT` and `PREVIEW_NAME`. It does not inherit jimmy's own environment, so a
-preview cannot read jimmy's secrets by accident — what a project needs, it
-declares in its own recipe, in plain sight.
-
-### Slack app
-
-The `slack` transport uses Socket Mode, so no public URL is needed. In the app:
-
-- Enable Socket Mode and create an app-level token with the `connections:write`
-  scope (`SLACK_APP_TOKEN`).
-- Bot scopes: `app_mentions:read`, `im:history`, `chat:write`, `files:read`,
-  `files:write`.
-- Event subscriptions: `app_mention` and `message.im`.
-- The bot token goes in `SLACK_BOT_TOKEN`. The allowlist holds Slack user ids.
-
-A channel mention opens a thread and jimny answers there: one thread is one
-session. A direct message is a single continuous session.
-
-## Skills
-
-A skill is a folder of instructions and bundled files the agent loads on
-demand, so they stay out of the context until a task matches. Each skill is
-`<dir>/<name>/SKILL.md`, with `name` and `description` in its frontmatter:
-
-```
-skills/charts/SKILL.md
-skills/charts/render_chart.py
-```
-
-`skills/` in the repo ships in the image at `/usr/local/share/jimmy/skills`, so
-every instance gets them from a deploy. `JIMMY_SKILLS` (default
-`$JIMMY_ROOT/skills`, on the volume) comes first and shadows the builtin ones:
-that is where an instance keeps its own. The prompt carries the index —one line
-per skill, from the frontmatter— and the agent loads one with
-`jimmy skill load <name>`. `jimmy skill list` does the same by hand.
-
-## Data tools
-
-The image ships `bqx` (read-only BigQuery) and `pgx` (read-only PostgreSQL), the
-same CLI tools the AX ecosystem uses:
-
-```sh
-printf '{"sql":"SELECT 1"}' | bqx run bigquery_query
-printf '{"sql":"SELECT 1"}' | pgx run postgres_query
-```
-
-Both stop at 1,000 rows; `bqx` dry-runs and only executes what BigQuery
-classifies as `SELECT`, `pgx` runs in a read-only transaction. `bqx gcs-copy
-BUCKET OBJECT FILE` downloads a private GCS object. They are inert until an
-instance adds the `data` prompt fragment (`JIMMY_PROMPT=...,data,...`) and its
-credentials: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS` for
-`bqx`, `DATABASE_URL` for `pgx`. Versions are pinned in the `Dockerfile`
-(`BQX_VERSION`, `PGX_VERSION`).
-
-## Content
-
-The `contenido` prompt fragment, opt-in via `JIMMY_PROMPT`, expects a content
-operation under `projects/contenido/`: `marca/` (tone, product, audience,
-references), `assets/`, `templates/` (HTML publication layouts) and `semanas/`
-(one markdown per week). It tells the agent to read the brand, propose angles,
-fill a template, render it with `browse --shot` and preview it with
-`jimmy send`. The image ships no brand and no templates: each instance provides
-its own, usually by cloning a private repo there.
+There is none built in. `$JIMMY_WORKSPACE/notes/` is the agent's memory: plain
+markdown it writes, edits and deletes as it sees fit, searched with `rg`. The
+prompt says that much; facts are per instance, and the deploy carries none of
+what another jimmy wrote.
 
 ## Workspace
 
 `JIMMY_WORKSPACE` (`$JIMMY_ROOT/workspace`) is the agent's working directory.
-Jimmy creates it at startup with a fixed layout and `prompts/workspace.md` tells
-the agent to keep to it:
+Jimmy creates it at startup with a fixed layout and the default prompt
+(`prompts/jimmy.md`) tells the agent to keep to it:
 
 - `notes/` — long-lived notes and memory
 - `projects/` — one directory per piece of work; code or not (a repo, a document,
@@ -334,8 +53,11 @@ the agent to keep to it:
 - `scratch/` — temporary, safe to delete
 - `state/` — the scheduler's task list and run state
 
-`$JIMMY_ROOT/chats/<chat_id>/transcript.jsonl` holds each chat's history. It is
-Jimmy's own state and the agent is told to leave it alone.
+`$JIMMY_ROOT/chats/<chat_id>/` holds each chat's history: `state.json` is the
+latest snapshot and `journal.jsonl` the commits after it. Both are Jimmy's own
+state and the agent is told to leave them alone. A chat created before the
+journal existed has its `transcript.jsonl` imported on first open and renamed
+to `transcript.imported.jsonl`.
 
 ## Model, base URL, and system prompt
 
@@ -348,37 +70,19 @@ AXE_BASE=https://openrouter.ai/api/v1 AXE_MODEL=x-ai/grok-4.6
 AXE_BASE=https://api.z.ai/api/coding/paas/v4 AXE_MODEL=glm-5.3-flash
 ```
 
-The system prompt is assembled from fragments. Axe contributes the tool list;
-Jimmy appends the fragments it is told to, in order, separated by a blank line,
-then the runtime context and the memory.
+`AXE_REASONING_EFFORT` sets `reasoning_effort` (`none`, `low`, `high`, `max`;
+`none` turns thinking mode off). It defaults to `max`, the most reasoning DeepSeek
+serves. `AXE_MAX_TOKENS` sets `max_tokens`, which counts reasoning tokens too;
+`0`, the default, leaves it to the server (8K without thinking, 64K with it,
+128K at `max`, which is what runs here). Every request carries the chat as
+`user_id`, so context cache, content safety and scheduling stay isolated per
+chat.
 
-`JIMMY_PROMPT` is a comma-separated list of fragment names. The default is
-`identidad,estilo,codigo,jimmy,herramientas,dev,workspace,memoria,agenda,git`.
-Each name resolves to `<name>.md`, first under `$JIMMY_ROOT/prompts` and then
-under the image's `/usr/local/share/jimmy/prompts`. A name with no file is a
-startup error, so a typo fails loudly instead of dropping a fragment in silence.
-
-The image ships the default fragments. Override one by dropping a file with the
-same name in `$JIMMY_ROOT/prompts`; that copy wins. Swap the set with
-`JIMMY_PROMPT`:
-
-```sh
-JIMMY_PROMPT=identidad,estilo,herramientas,workspace,memoria,agenda
-```
-
-A fragment may carry `{{clave}}` placeholders. `JIMMY_VARS` supplies them as
-comma-separated `clave=valor` pairs. The default fragments use `{{usuario}}` and
-`{{asistente}}`:
-
-```sh
-JIMMY_VARS="usuario=Ana,asistente=Jimmy"
-```
-
-A placeholder with no value is a startup error. Single braces are left alone, so
-a fragment can carry JSON like `{"action":"goto"}`.
-
-The list and the vars are read once at startup and the assembled prompt does not
-change while the process lives, so the model's prefix cache stays warm.
+Axe contributes the tool list; Jimmy appends one system prompt of its own, and
+then the runtime context. That prompt is
+[`prompts/jimmy.md`](prompts/jimmy.md), compiled in with `include_str!`: there is
+no setting for it and nothing to override at runtime. Fork the repo to change
+it.
 
 ## Tools
 
@@ -440,7 +144,7 @@ Guardrails:
 ## Build and run
 
 ```sh
-cp .env.example .env   # fill in the token, key, and your user id
+cp .env.example .env   # fill in the key and your user id
 make build
 make run
 ```
@@ -485,19 +189,16 @@ The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
 ## Layout
 
 ```
-src/main.rs       config, event loop, per-session locking, memo/send/skill CLIs
-src/transport/    the transport seam, with the Telegram and Slack adapters
+src/main.rs       config, event loop, per-session locking, send/skill CLIs
+src/transport/    the transport seam, with the Slack adapter
 src/agent.rs      axe turn loop, runtime context, session persistence
-src/audio.rs      voice transcription via Groq
-src/schedule.rs   scheduled tasks, clean-context runs
+src/schedule.rs   scheduled tasks: clean-context runs, retried and parked
 src/skill.rs      the skills directory: list and load
-src/markdown.rs   Markdown to Telegram HTML, message splitting
-src/memo.rs       the memory facts: render, sync, add, migrate, miss
-src/prompt.rs     assemble the system prompt from fragments
-bin/              the CLIs the agent gets: browse, gen-image, recall, stats
-web/              the browser frontend, embedded with include_str!
+src/markdown.rs   splitting long messages, closing and reopening code fences
+bin/              the CLIs the agent gets: browse, gen-image, stats
+web/              the vanilla-JS frontend, embedded with include_str!
 mise.toml         global mise tool set baked into the image
-prompts/          system prompt fragments, baked into the image
+prompts/jimmy.md  the system prompt, compiled in with include_str!
 ```
 
 ## License

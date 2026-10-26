@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.98-bookworm AS builder
 RUN rustup toolchain install nightly --profile minimal && rustup default nightly
+
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock /build/jimmy/
 COPY src /build/jimmy/src
 COPY web /build/jimmy/web
+COPY prompts /build/jimmy/prompts
 WORKDIR /build/jimmy
 RUN cargo build --release --locked
 
@@ -59,9 +61,7 @@ RUN ln -sf /usr/local/bin/jimmy /usr/local/bin/heimdall \
     && doppler help > /dev/null
 
 ENV XDG_CONFIG_HOME=/root/.config
-COPY prompts /usr/local/share/jimmy/prompts
 COPY skills /usr/local/share/jimmy/skills
-COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image

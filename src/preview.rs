@@ -1,11 +1,3 @@
-//! Previews: a project running in a child process of this one, served under
-//! /preview/<name>/ by the web frontend.
-//!
-//! The registry lives in memory because the owner is this process: a preview
-//! that answered an order over a socket is never an orphan, which is what keeps
-//! the reaper's hands off it. The orders come in over a unix socket, so the CLI
-//! is a thin client and the process that spawns is always the same one.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -21,14 +13,10 @@ use std::time::{Duration, Instant};
 pub const PREFIX: &str = "/preview/";
 const SOCKET: &str = "state/preview.sock";
 const LOGS: &str = "state/previews";
-/// Las recetas de arranque, una por proyecto. Escribirlas una vez es lo que hace
-/// que levantar un preview sea un nombre y no un comando que hay que reconstruir.
 const RECIPES: &str = "state/previews.toml";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEAD: usize = 32 * 1024;
 
-/// Un preview sin visitas se baja solo: nadie pidió que viviera para siempre y
-/// un proceso olvidado se come memoria y puerto hasta el próximo deploy.
 const IDLE: Duration = Duration::from_secs(30 * 60);
 const TICK: Duration = Duration::from_secs(60);
 
@@ -64,7 +52,6 @@ pub struct Summary {
     pub port: u16,
     pub pid: u32,
     pub seconds: u64,
-    /// Segundos desde la última visita, que es lo que decide cuándo se cae.
     pub idle: u64,
 }
 
@@ -85,15 +72,6 @@ pub struct RecipeSummary {
     pub about: Option<String>,
 }
 
-/// Las recetas que el proyecto no trae. Un `state/previews.toml` con un nombre
-/// por receta:
-///
-/// ```toml
-/// [bifrost]
-/// cwd = "projects/bifrost"
-/// cmd = "make dev"
-/// about = "el demo del App Router"
-/// ```
 fn recipes(workspace: &Path) -> Result<HashMap<String, Recipe>, String> {
     let path = workspace.join(RECIPES);
     if !path.exists() {
@@ -123,7 +101,6 @@ impl Previews {
         })
     }
 
-    /// El puerto de un preview vivo, o `None` si no está o se murió.
     pub fn port(&self, name: &str) -> Option<u16> {
         let mut running = self.running.lock().ok()?;
         let entry = running.get_mut(name)?;
@@ -136,7 +113,6 @@ impl Previews {
         }
     }
 
-    /// Cada visita al preview corre el reloj de su inactividad.
     pub fn touch(&self, name: &str) {
         let Ok(mut running) = self.running.lock() else {
             return;
@@ -146,9 +122,6 @@ impl Previews {
         }
     }
 
-    /// Baja los previews que nadie visitó por más de `ttl` y devuelve sus
-    /// nombres. El proceso se mata fuera del candado: matar puede esperar cinco
-    /// segundos y no hay razón para dejar a los demás esperando.
     fn expire(&self, now: Instant, ttl: Duration) -> Vec<String> {
         let mut ripe = Vec::new();
         let Ok(mut running) = self.running.lock() else {
@@ -168,7 +141,6 @@ impl Previews {
         ripe
     }
 
-    /// El final del log del preview, para saber por qué no arrancó.
     pub fn output(&self, name: &str) -> String {
         let path = self.workspace.join(LOGS).join(format!("{name}.log"));
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -365,8 +337,6 @@ impl Previews {
     }
 }
 
-/// El socket sobre el que llegan las órdenes. Un preview viejo de un arranque
-/// anterior no puede quedar vivo, así que el socket se rehace siempre.
 pub fn listen(previews: Arc<Previews>) {
     expire_loop(previews.clone());
     let path = previews.workspace.join(SOCKET);
@@ -417,7 +387,6 @@ fn answer(previews: &Arc<Previews>, mut stream: UnixStream) -> std::io::Result<(
     stream.flush()
 }
 
-/// El cliente del socket: el proceso que pide no es el que lanza.
 pub fn call(workspace: &Path, order: &Order) -> Result<Answer, String> {
     let path = workspace.join(SOCKET);
     let mut stream =
@@ -458,7 +427,6 @@ pub fn valid_name(name: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-/// El nombre del preview al que apunta un path, si es un path de preview.
 pub fn name_from_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix(PREFIX)?;
     match rest.split_once('/') {
@@ -467,9 +435,6 @@ pub fn name_from_path(path: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// Cabecera de un pedido, cruda: el proxy tiene que reenviarla tal como llegó.
-/// Un pedido de preview no se parsea con `http::read` porque el cuerpo que
-/// sigue puede ser el de un WebSocket, y ese se reenvía sin entenderlo.
 pub struct Head {
     pub method: String,
     pub target: String,
@@ -496,8 +461,6 @@ impl Head {
     }
 }
 
-/// Si el pedido en el socket es de un preview, sin consumir un solo byte: el
-/// resto del ruteo sigue leyendo de un stream intacto.
 pub fn wants_preview(stream: &mut TcpStream) -> std::io::Result<bool> {
     let mut buffer = [0u8; 1024];
     for _ in 0..40 {
@@ -550,13 +513,6 @@ pub fn read_head(stream: &mut TcpStream) -> std::io::Result<Option<Head>> {
     }))
 }
 
-/// Reenvía el pedido al preview, sin el prefijo, y devuelve la respuesta
-/// reescrita: el proyecto se sirve en `/` y no sabe que vive bajo
-/// `/preview/<nombre>/`, así que todo lo que sale apuntando a la raíz vuelve
-/// prefijado.
-///
-/// Sólo se reescribe lo que es texto de la página (HTML, CSS y JavaScript). Un
-/// cuerpo con streaming, un binario o un `Upgrade` se copian crudos.
 pub fn forward(stream: &mut TcpStream, head: &Head, name: &str, port: u16) -> std::io::Result<()> {
     let prefix = format!("{PREFIX}{name}/");
     let mut upstream = match TcpStream::connect(("127.0.0.1", port)) {
@@ -673,8 +629,6 @@ fn networking_header(name: &str) -> bool {
         .any(|skip| name.eq_ignore_ascii_case(skip))
 }
 
-/// El preview no puede tocar la cookie de sesión de jimmy: pisarla deja afuera
-/// al que mira. Las suyas pasan.
 fn session_cookie(name: &str, value: &str) -> bool {
     name.eq_ignore_ascii_case("set-cookie")
         && value
@@ -710,8 +664,6 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
         .map(|(_, value)| value.as_str())
 }
 
-/// Un redirect que sale apuntando a la raíz tiene que volver al preview, o el
-/// navegador se va a jimmy.
 fn with_location(headers: &[(String, String)], prefix: &str) -> Vec<(String, String)> {
     headers
         .iter()
@@ -797,8 +749,6 @@ fn read_line(stream: &mut TcpStream) -> std::io::Result<String> {
     }
 }
 
-/// El prefijo va sobre los paths que quedaron apuntando a la raíz. Un path que
-/// ya empieza con `//` (un host prestado) se deja como está.
 fn rewrite(ctype: &str, body: &[u8], prefix: &str) -> Vec<u8> {
     let text = String::from_utf8_lossy(body).to_string();
     let text = if ctype.contains("text/html") {
@@ -845,9 +795,6 @@ fn missing_command(name: &str, recipes: &HashMap<String, Recipe>) -> String {
     }
 }
 
-/// El preview no ve el entorno de jimmy: ni sus secretos ni nada que la app no
-/// haya pedido. Lo que un proyecto necesite lo declara en el comando de su
-/// receta, que es también donde queda a la vista.
 fn minimal_env() -> Vec<(&'static str, OsString)> {
     ["PATH", "HOME", "LANG", "TZ"]
         .into_iter()
@@ -1020,8 +967,6 @@ mod tests {
         panic!("no apareció {}", path.display());
     }
 
-    /// Un directorio sólo para el test: el resto comparte uno y un archivo de
-    /// recetas escrito desde acá los pisaría a todos.
     fn recipe_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jimmy-preview-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1421,7 +1366,6 @@ mod tests {
         String::from_utf8_lossy(&head).to_string()
     }
 
-    /// Un cliente y el otro extremo, como los ve el proxy.
     fn pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();

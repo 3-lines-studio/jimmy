@@ -130,6 +130,12 @@ vaultSlot.className = "slot";
 vaultSlot.append(icon("key", 16));
 vaultEl.prepend(vaultSlot);
 vaultEl.onclick = () => openTab(VAULT);
+const mcpEl = document.getElementById("mcp");
+const mcpSlot = document.createElement("span");
+mcpSlot.className = "slot";
+mcpSlot.append(icon("globe", 16));
+mcpEl.prepend(mcpSlot);
+mcpEl.onclick = () => openTab(MCP);
 const sendEl = document.querySelector("#composer .send");
 const sendIcon = icon("up", 17);
 const stopIcon = icon("stop", 15);
@@ -209,12 +215,13 @@ function titleOf(id) {
   if (isFiles(id)) return "Archivos: " + projectTitle(filesProject(id));
   if (isAgenda(id)) return "Agenda";
   if (isVault(id)) return "Vault";
+  if (isMcp(id)) return "MCP";
   const conversation = conversationById(id);
   return conversation ? conversation.title || conversation.key : id;
 }
 
 function knownTab(id) {
-  return isFiles(id) || isAgenda(id) || isVault(id) || Boolean(conversationById(id));
+  return isFiles(id) || isAgenda(id) || isVault(id) || isMcp(id) || Boolean(conversationById(id));
 }
 
 function isRunning(id) {
@@ -255,7 +262,7 @@ async function refresh() {
     for (const conversation of project.conversations) live.add(conversation.key);
   }
   for (const id of [...tabs.keys()]) {
-    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id)) closeTab(id);
+    if (!live.has(id) && !isFiles(id) && !isAgenda(id) && !isVault(id) && !isMcp(id)) closeTab(id);
   }
   renderSidebar();
   renderPreviews();
@@ -264,8 +271,6 @@ async function refresh() {
   renderActions();
   updateTitle();
 }
-
-/* Sidebar */
 
 const groupEls = new Map();
 
@@ -697,8 +702,6 @@ async function deleteProject(project) {
   await refresh();
 }
 
-/* Tabs */
-
 const TABS_KEY = "jimmy-tabs";
 
 function readTabs() {
@@ -738,6 +741,7 @@ function createTab(id) {
   if (isFiles(id)) return createFilesTab(id);
   if (isAgenda(id)) return createAgendaTab(id);
   if (isVault(id)) return createVaultTab(id);
+  if (isMcp(id)) return createMcpTab(id);
   const pane = document.createElement("div");
   pane.className = "pane";
   const transcript = document.createElement("div");
@@ -827,9 +831,6 @@ function subscribe(tab) {
   stream.onmessage = (message) => render(tab, JSON.parse(message.data));
 }
 
-/// Al volver del background el stream puede haber quedado muerto sin avisar: el
-/// navegador lo cierra y el server no siempre se entera. Se rearma, que el
-/// server contesta con lo que falta desde el último evento visto.
 function revive() {
   const tab = activeId ? tabs.get(activeId) : null;
   if (tab && !tab.files) subscribe(tab);
@@ -860,8 +861,6 @@ async function loadEarlier(tab) {
   renderNav(tab);
 }
 
-/// Los eventos viejos van arriba, en orden, y la vista se queda donde estaba:
-/// el alto que creció arriba es el que se suma al scroll.
 function prepend(tab, events) {
   const state = { live: tab.live, steps: tab.steps, tools: tab.tools };
   const height = tab.transcript.scrollHeight;
@@ -883,6 +882,7 @@ function unsubscribe(tab) {
 function clearTab(tab) {
   tab.transcript.replaceChildren();
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
   tab.tools = {};
   tab.count = 0;
@@ -897,9 +897,10 @@ function activate(id) {
   activeId = id;
   for (const tab of tabs.values()) tab.pane.hidden = tab.id !== id;
   const tab = tabs.get(id);
-  if (tab && !tab.stream && !tab.files && !tab.agenda && !tab.vault) subscribe(tab);
+  if (tab && !tab.stream && !tab.files && !tab.agenda && !tab.vault && !tab.mcp) subscribe(tab);
   if (isAgenda(id)) loadAgenda();
   if (isVault(id)) loadVault();
+  if (isMcp(id)) loadMcp();
   if (tab) tab.attention = null;
   renderSidebar();
   renderTabs();
@@ -985,7 +986,7 @@ function renderTabs() {
 function renderActions() {
   const tab = activeId ? tabs.get(activeId) : null;
   const running = Boolean(tab) && isRunning(activeId);
-  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda) || Boolean(tab.vault));
+  const extra = Boolean(tab) && (Boolean(tab.files) || Boolean(tab.agenda) || Boolean(tab.vault) || Boolean(tab.mcp));
   tabActionsEl.hidden = !tab || extra;
   composerEl.hidden = !tab || extra || isReadOnly(activeId);
   cancelEl.hidden = !running || !composerEl.hidden;
@@ -1001,8 +1002,6 @@ function updateTitle() {
   const count = [...tabs.values()].filter((tab) => tab.attention).length;
   document.title = count ? `(${count}) Jimmy` : "Jimmy";
 }
-
-/* Rendering */
 
 const NOT_LOGGED = new Set(["delta", "tool_delta", "typing", "presence", "online", "synced"]);
 
@@ -1090,13 +1089,40 @@ function render(tab, event) {
   }
 }
 
-function scroll(tab) {
-  if (tab.follow) {
+let frame = 0;
+const pendingText = new Map();
+
+function scheduleFrame() {
+  if (frame) return;
+  frame = requestAnimationFrame(flushFrame);
+}
+
+function pushText(node, text) {
+  let chunks = pendingText.get(node);
+  if (!chunks) pendingText.set(node, (chunks = []));
+  chunks.push(text);
+  scheduleFrame();
+}
+
+function flushFrame() {
+  frame = 0;
+  for (const [node, chunks] of pendingText) node.appendData(chunks.join(""));
+  pendingText.clear();
+  for (const tab of tabs.values()) {
+    if (!tab.toBottom) continue;
+    tab.toBottom = false;
     tab.transcript.scrollTop = tab.transcript.scrollHeight;
+  }
+}
+
+function scroll(tab) {
+  if (!tab.follow) {
+    tab.down.hidden = false;
+    renderNav(tab);
     return;
   }
-  tab.down.hidden = false;
-  renderNav(tab);
+  tab.toBottom = true;
+  scheduleFrame();
 }
 
 function append(tab, element) {
@@ -1123,6 +1149,7 @@ function renderUser(tab, event) {
   }
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1161,11 +1188,11 @@ function renderDelta(tab, event) {
   if (!tab.live) {
     tab.live = document.createElement("div");
     tab.live.className = "event assistant streaming";
-    tab.live.dataset.raw = "";
+    tab.liveText = document.createTextNode("");
+    tab.live.append(tab.liveText);
     append(tab, tab.live);
   }
-  tab.live.dataset.raw += event.text;
-  tab.live.textContent = tab.live.dataset.raw;
+  pushText(tab.liveText, event.text);
   scroll(tab);
 }
 
@@ -1179,6 +1206,7 @@ function renderAssistant(tab, event) {
   tab.live.innerHTML = markdown(event.text);
   decorate(tab.live, event.text);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
   scroll(tab);
 }
@@ -1230,6 +1258,7 @@ function renderError(tab, event) {
   element.textContent = event.message;
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1239,6 +1268,7 @@ function renderStopped(tab, event) {
   element.textContent = `${event.author} frenó el turno`;
   append(tab, element);
   tab.live = null;
+  tab.liveText = null;
   tab.steps = null;
 }
 
@@ -1271,7 +1301,7 @@ function startTool(tab, event) {
 
   const body = document.createElement("div");
   body.className = "body";
-  const entry = { details, body, meta, output: null, stat: "", group: null };
+  const entry = { details, body, meta, output: null, text: null, stat: "", group: null };
   if (event.name === "edit") {
     const diff = diffNodes(event.args);
     body.append(...diff.nodes);
@@ -1284,6 +1314,8 @@ function startTool(tab, event) {
     meta.textContent = diff.stat;
   } else {
     const output = document.createElement("pre");
+    entry.text = document.createTextNode("");
+    output.append(entry.text);
     body.append(output);
     entry.output = output;
   }
@@ -1293,10 +1325,10 @@ function startTool(tab, event) {
   group.list.append(details);
   tab.tools[event.id] = entry;
   tab.live = null;
+  tab.liveText = null;
   scroll(tab);
 }
 
-/** Los pasos seguidos van en la misma línea, hasta que el agente dice algo. */
 function steps(tab, name) {
   if (tab.steps) {
     tab.steps.names.push(name);
@@ -1354,8 +1386,8 @@ function elapsed(ms) {
 
 function streamTool(tab, event) {
   const tool = tab.tools[event.id];
-  if (!tool || !tool.output) return;
-  tool.output.textContent += event.text;
+  if (!tool || !tool.text) return;
+  pushText(tool.text, event.text);
   scroll(tab);
 }
 
@@ -1438,8 +1470,6 @@ function plainLine(text) {
   pre.textContent = text;
   return pre;
 }
-
-/* Attachments */
 
 function pendingFor(id) {
   return pending.get(id) || [];
@@ -1551,8 +1581,6 @@ inputEl.addEventListener("paste", async (event) => {
   await attachFiles(files);
 });
 
-/* Composer */
-
 new ResizeObserver(() => {
   document.documentElement.style.setProperty("--composer-h", `${composerEl.offsetHeight}px`);
 }).observe(composerEl);
@@ -1568,6 +1596,7 @@ function grow() {
 }
 
 inputEl.addEventListener("input", () => {
+  requestId = null;
   grow();
   sayTyping();
 });
@@ -1581,6 +1610,8 @@ function sayTyping() {
   api("/api/typing", { conversation: activeId });
 }
 
+let requestId = null;
+
 composerEl.onsubmit = async (formEvent) => {
   formEvent.preventDefault();
   if (!activeId) return;
@@ -1588,8 +1619,15 @@ composerEl.onsubmit = async (formEvent) => {
   const text = inputEl.value.trim();
   if (!text && !list.length) return;
   const images = list.map((item) => item.name);
-  const sent = await api("/api/send", { conversation: activeId, text, images });
+  if (!requestId) requestId = crypto.randomUUID();
+  const sent = await api("/api/send", {
+    conversation: activeId,
+    text,
+    images,
+    request_id: requestId,
+  });
   if (!sent || !sent.started) return;
+  requestId = null;
   inputEl.value = "";
   grow();
   clearPending();
@@ -1619,8 +1657,6 @@ sendEl.onclick = (event) => {
 
 document.getElementById("cancel").onclick = cancelTurn;
 
-/* Proyectos */
-
 document.getElementById("new-project").onsubmit = async (event) => {
   event.preventDefault();
   const field = document.getElementById("project-name");
@@ -1631,8 +1667,6 @@ document.getElementById("new-project").onsubmit = async (event) => {
   field.value = "";
   await refresh();
 };
-
-/* Tema */
 
 const lightQuery = matchMedia("(prefers-color-scheme: light)");
 
@@ -1658,8 +1692,6 @@ lightQuery.addEventListener("change", () => {
 });
 
 showTheme();
-
-/* Volver a la lista */
 
 document.getElementById("menu").onclick = deselect;
 
@@ -1708,8 +1740,6 @@ function receiveShared() {
   inputEl.value = shared;
   grow();
 }
-
-/* Tirar para recargar */
 
 const refreshEl = document.getElementById("refresh");
 const REFRESH_AT = 64;

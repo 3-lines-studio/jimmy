@@ -1,14 +1,13 @@
-//! The worker as a process: it boots from the environment, speaks the JSONL
-//! protocol, resumes a turn that was cut short, runs a whole turn against a
-//! model it does not know is fake, and tells every step of the way.
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use axe::durable::TaskState;
+use axe::session::Entry;
+use axe::{Message, ToolCall};
 
 struct Worker {
     child: Child,
@@ -24,7 +23,6 @@ impl Worker {
             .env("OPENAI_API_KEY", "test")
             .env("JIMMY_ROOT", root)
             .env("JIMMY_WORKSPACE", root.join("workspace"))
-            .env("JIMMY_PROMPT", "jimmy")
             .env("AXE_BASE", base)
             .env("AXE_MODEL", "fake")
             .stdin(Stdio::piped())
@@ -50,7 +48,6 @@ impl Worker {
             .expect("no pude leer del worker")
     }
 
-    /// Reads until the turn ends, whatever happened in between.
     fn until_done(&mut self) -> Vec<String> {
         let mut events = Vec::new();
         loop {
@@ -81,9 +78,7 @@ fn scratch(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("jimmy-worker-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("chats/test")).unwrap();
-    std::fs::create_dir_all(root.join("prompts")).unwrap();
     std::fs::create_dir_all(root.join("workspace")).unwrap();
-    std::fs::write(root.join("prompts/jimmy.md"), "sos jimmy, un ayudante.").unwrap();
     root
 }
 
@@ -104,8 +99,6 @@ fn tool_chunk(command: &str) -> String {
     )
 }
 
-/// An OpenAI-compatible endpoint that answers with one body per request, in
-/// order. Returns the base URL and how many requests it served.
 fn model_server(bodies: Vec<String>) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -161,18 +154,70 @@ fn resumes_a_turn_that_was_cut_short() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// Takes the turn of that chat the way another instance would: the same
-/// `inflight` file, locked until the returned handle goes away.
-fn hold_the_turn(chat: &Path) -> std::fs::File {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(chat.join("inflight"))
-        .unwrap();
-    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    assert_eq!(taken, 0, "no pude tomar el turno");
-    file
+fn transcript(chat: &Path) -> String {
+    let records = axe::durable::Journal::load(chat).unwrap();
+    let mut out = String::new();
+    for record in records {
+        out.push_str(&serde_json::to_string(&record.entry).unwrap());
+        out.push('\n');
+    }
+    out
+}
+
+struct Held {
+    pid: libc::pid_t,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.pid, libc::SIGKILL);
+            libc::waitpid(self.pid, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+fn hold_the_turn(chat: &Path) -> Held {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(chat.join("inflight").as_os_str().as_bytes()).unwrap();
+    let mut pipe = [0i32; 2];
+    assert_eq!(
+        unsafe { libc::pipe(pipe.as_mut_ptr()) },
+        0,
+        "no pude abrir el pipe"
+    );
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "no pude forkear");
+    if pid == 0 {
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            libc::close(pipe[0]);
+            let file = libc::open(
+                path.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC,
+                0o644,
+            );
+            let taken = file >= 0 && libc::flock(file, libc::LOCK_EX | libc::LOCK_NB) == 0;
+            let answer = [u8::from(taken)];
+            libc::write(pipe[1], answer.as_ptr().cast(), 1);
+            if !taken {
+                libc::_exit(1);
+            }
+            loop {
+                libc::pause();
+            }
+        }
+    }
+    unsafe { libc::close(pipe[1]) };
+    let mut answer = [0u8; 1];
+    let read = unsafe { libc::read(pipe[0], answer.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(pipe[0]) };
+    if read != 1 || answer[0] != 1 {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        panic!("no pude tomar el turno");
+    }
+    Held { pid }
 }
 
 #[test]
@@ -218,7 +263,7 @@ fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
     assert_eq!(served.load(Ordering::SeqCst), 1, "solo el segundo turno");
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(!transcript.contains("primero"), "{transcript}");
     assert!(transcript.contains("segundo"), "{transcript}");
     assert!(!chat.join("inflight").exists());
@@ -226,7 +271,7 @@ fn a_prompt_that_loses_the_race_leaves_nothing_behind() {
 }
 
 #[test]
-fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
+fn runs_a_turn_against_the_model_and_leaves_a_journal() {
     let root = scratch("prompt");
     let chat = root.join("chats/test");
     let (base, served) = model_server(vec![answer_chunk("hola desde el fake")]);
@@ -242,13 +287,128 @@ fn runs_a_turn_against_the_model_and_leaves_a_transcript() {
     assert!(events.last().unwrap().contains("hola desde el fake"));
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(
         transcript.contains("[ana] hola"),
         "el modelo tiene que saber quién le habla: {transcript}"
     );
     assert!(transcript.contains("hola desde el fake"), "{transcript}");
     assert!(!chat.join("inflight").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_cut_tool_call_comes_back_interrupted_and_the_turn_continues() {
+    let root = scratch("intent");
+    let chat = root.join("chats/test");
+    {
+        let mut journal = axe::durable::Journal::open(&chat).unwrap();
+        journal
+            .append(vec![
+                Entry::Message {
+                    message: Message {
+                        role: "user".into(),
+                        content: "hola".into(),
+                        ..Message::default()
+                    },
+                },
+                Entry::Message {
+                    message: Message {
+                        role: "assistant".into(),
+                        tool_calls: vec![ToolCall {
+                            id: "call_1".into(),
+                            name: "bash".into(),
+                            arguments: "{\"command\":\"echo hola\"}".into(),
+                        }],
+                        ..Message::default()
+                    },
+                },
+                Entry::ToolIntent {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    arguments: "{\"command\":\"echo hola\"}".into(),
+                },
+            ])
+            .unwrap();
+        let id = journal.new_task();
+        journal
+            .commit(
+                Vec::new(),
+                vec![axe::durable::TaskRecord {
+                    id,
+                    kind: "turn".into(),
+                    state: TaskState::Running,
+                    phase: "request".into(),
+                    checkpoint: serde_json::Value::Null,
+                    attempts: 3,
+                    updated: 0,
+                }],
+            )
+            .unwrap();
+    }
+    let (base, served) = model_server(vec![answer_chunk("seguí")]);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"resume\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("seguí"), "{events:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+    drop(worker);
+
+    let journal = transcript(&chat);
+    assert!(journal.contains("interrupted"), "{journal}");
+    assert!(journal.contains("seguí"), "{journal}");
+    let tasks = axe::durable::Journal::load_tasks(&chat).unwrap();
+    assert_eq!(tasks[0].state, TaskState::Done);
+    assert_eq!(tasks[0].attempts, 0);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_request_id_is_admitted_once() {
+    let root = scratch("dedup");
+    let (base, served) = model_server(vec![answer_chunk("hola")]);
+    let mut worker = Worker::start(&root, &base, &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"uno\",\"request\":\"r1\"}");
+    let first = worker.until_done();
+    assert!(first.last().unwrap().contains("hola"), "{first:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"uno\",\"request\":\"r1\"}");
+    let second = worker.until_done();
+    assert!(second.last().unwrap().contains("hola"), "{second:?}");
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        1,
+        "no llamó de nuevo al modelo"
+    );
+    drop(worker);
+
+    let journal = transcript(&root.join("chats/test"));
+    assert_eq!(
+        journal
+            .lines()
+            .filter(|line| line.contains("\"Content\":\"uno\""))
+            .count(),
+        1,
+        "{journal}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_failed_turn_keeps_the_input_that_was_admitted() {
+    let root = scratch("admitted");
+    let mut worker = Worker::start(&root, "http://127.0.0.1:1/v1", &root.join("workspace"));
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"guardá esto\"}");
+    let events = worker.until_done();
+    assert!(events.last().unwrap().contains("\"error\""), "{events:?}");
+    drop(worker);
+
+    let journal = transcript(&root.join("chats/test"));
+    assert!(journal.contains("guardá esto"), "{journal}");
+    let tasks = axe::durable::Journal::load_tasks(&root.join("chats/test")).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].state, TaskState::Failed);
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -276,7 +436,7 @@ fn compacting_answers_with_what_it_summarized() {
     assert!(done.contains("compactado"), "{done}");
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     assert!(
         transcript.contains("\"type\":\"compaction\""),
         "{transcript}"
@@ -310,8 +470,6 @@ fn a_tool_call_shows_up_as_events() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// Two tool calls in one assistant message: they run in parallel and each
-/// result lands when it is ready, not in call order.
 fn parallel_tool_chunk(first: &str, second: &str) -> String {
     let args = |command: &str| serde_json::json!({"command": command}).to_string();
     let calls = serde_json::json!({
@@ -327,8 +485,6 @@ fn parallel_tool_chunk(first: &str, second: &str) -> String {
     )
 }
 
-/// Whatever the order they finish in, the results stay with the call that
-/// asked for them: the provider rejects anything else.
 #[test]
 fn a_parallel_batch_lands_next_to_its_call() {
     let root = scratch("batch");
@@ -343,7 +499,7 @@ fn a_parallel_batch_lands_next_to_its_call() {
     worker.until_done();
     drop(worker);
 
-    let transcript = std::fs::read_to_string(chat.join("transcript.jsonl")).unwrap();
+    let transcript = transcript(&chat);
     let roles: Vec<String> = transcript
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -370,4 +526,61 @@ fn the_tools_run_in_the_project_the_conversation_belongs_to() {
         "esperaba el directorio del proyecto en {result}"
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn cancelling_a_running_tool_stops_it_at_once() {
+    let root = scratch("cancel");
+    let workspace = root.join("workspace");
+    let pid_file = workspace.join("bash.pid");
+    let late = workspace.join("late");
+    let command = format!(
+        "echo $$ > {}; sleep 30; touch {}",
+        pid_file.display(),
+        late.display()
+    );
+    let (base, _) = model_server(vec![tool_chunk(&command), answer_chunk("listo")]);
+
+    let mut worker = Worker::start(&root, &base, &workspace);
+    worker.send("{\"cmd\":\"prompt\",\"text\":\"dormí\"}");
+    loop {
+        let event = worker.next();
+        if event.contains("tool_start") {
+            break;
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pid_file.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "el bash nunca arrancó"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let bash_pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    worker.send("{\"cmd\":\"cancel\"}");
+    let events = worker.until_done();
+    let elapsed = started.elapsed();
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let alive = Path::new(&format!("/proc/{bash_pid}")).exists();
+    let touched = late.exists();
+    std::fs::remove_dir_all(&root).ok();
+
+    assert!(
+        events.last().unwrap().contains("interrumpido"),
+        "el turno no avisó que se interrumpió: {events:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "el turno tardó {elapsed:?} en frenar"
+    );
+    assert!(!alive, "el bash {bash_pid} siguió vivo después del cancel");
+    assert!(!touched, "el comando siguió corriendo después del cancel");
 }

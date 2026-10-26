@@ -470,12 +470,34 @@ Jimmy runs as a container on a VPS behind a shared Caddy edge, deployed with
 `strategy: restart` is deliberate: Jimmy is one process that owns `/data` and
 polls the transports, so two slots would answer the same message twice.
 
-A release is `bee build --tag <sha>` and then `bee deploy --image ...@sha256:...`
-(or the same from the control plane). bee rsyncs the compose file, uploads
-`.env` from the operator machine with mode 0600, recreates the container and
-waits for the health and smoke checks; if they fail it restores the previous
-image. Nothing deploys on push, and `.github/workflows/release.yml` only
-publishes an image, on `main` and on `v*` tags.
+A push to `main` releases and deploys in one go: `.github/workflows/release.yml`
+runs the tests, builds and pushes the image, and the `deploy` job installs the
+`bee` CLI and runs `bee push --image ghcr.io/3-lines-studio/jimmy@<digest>
+--follow` against the control plane, which rolls that digest out to the host and
+streams the deploy log. Tags only build and publish; only `main` deploys. If the
+health or smoke check fails, bee restores the previous image.
+
+The deploy job reads secrets and variables from the repository:
+
+| name | what |
+| --- | --- |
+| `BEE_TOKEN` | secret; control plane API token used by the deploy |
+| `BEE_REPO_TOKEN` | secret; read-only token on the private `bee` repo, so the job can `go install` the CLI |
+| `JIMMY_ENV` | secret; the whole `.env`, written out before the push |
+| `BEE_SERVER` | variable; control plane URL |
+| `BEE_ORG` | variable; org slug |
+
+The deploy also needs the project registered in the control plane once
+(`bee projects create jimmy --host contabo-internal`).
+
+The `.env` is built from `JIMMY_ENV` on every deploy, so the repository is the
+only place the secrets live. Changing one is `gh secret set JIMMY_ENV --repo
+3-lines-studio/jimmy < .env`; the next push to `main` carries it. The bundle
+with that file is stored as part of the version the control plane keeps, which
+is the price of having it there.
+
+The manual path still works for a machine that has the `.env`: `bee build --tag
+<sha>`, then `bee deploy --image ...@sha256:...`.
 
 The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
 sessions and the workspace land there. Set `JIMMY_ROOT` to override.

@@ -565,8 +565,8 @@ impl Agent {
         let used = session::latest_context_tokens(&entries).unwrap_or(0);
         let window = self.context_window.unwrap_or(0);
         let percent = used.saturating_mul(100).checked_div(window).unwrap_or(0);
-        let commit = env("RAILWAY_GIT_COMMIT_SHA")
-            .or_else(|| env("JIMMY_COMMIT_SHA"))
+        let commit = env("JIMMY_COMMIT_SHA")
+            .or_else(|| env("RAILWAY_GIT_COMMIT_SHA"))
             .map(|sha| sha.chars().take(7).collect::<String>())
             .unwrap_or_else(|| "?".into());
         format!(
@@ -894,13 +894,13 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
-    if let Some(sha) = env("RAILWAY_GIT_COMMIT_SHA").or_else(|| env("JIMMY_COMMIT_SHA")) {
+    if let Some(sha) = env("JIMMY_COMMIT_SHA").or_else(|| env("RAILWAY_GIT_COMMIT_SHA")) {
         let short: String = sha.chars().take(7).collect();
         out.push_str(&format!("- Commit en ejecución: {short}\n"));
     }
-    if env("RAILWAY_PROJECT_ID").is_some() {
+    if Path::new("/.dockerenv").exists() {
         out.push_str(&format!(
-            "- Corre en Railway desde un Dockerfile, con volumen persistente en {}\n",
+            "- Corre en un contenedor Docker desde un Dockerfile, con volumen persistente en {}\n",
             root.display()
         ));
     }

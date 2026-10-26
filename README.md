@@ -155,7 +155,7 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `AXE_BASE` | `https://api.deepseek.com` | API base URL |
 | `AXE_MODEL` | `deepseek-flash` | model name |
 | `AXE_CONTEXT_WINDOW` | `1000000` | compaction threshold |
-| `JIMMY_ROOT` | `$RAILWAY_VOLUME_MOUNT_PATH` or `/data` | sessions and workspace root |
+| `JIMMY_ROOT` | `/data` | sessions and workspace root; falls back to `RAILWAY_VOLUME_MOUNT_PATH` |
 | `JIMMY_WORKSPACE` | `$JIMMY_ROOT/workspace` | directory the tools run in |
 | `JIMMY_SKILLS` | `$JIMMY_ROOT/skills` | first directory with Agent Skills; the builtin one comes after (see below) |
 | `JIMMY_ALLOWED_USER_IDS` | empty | comma-separated allowlist; falls back to `TELEGRAM_ALLOWED_USER_IDS`; empty means the bot answers nobody |
@@ -168,11 +168,10 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
-| `JIMMY_COMMIT_SHA` | empty | commit shown in `/status` and the runtime context, for runs outside Railway |
+| `JIMMY_COMMIT_SHA` | the `BEE_TAG` build arg | commit shown in `/status`, in the runtime context and in the versioned asset URLs; the image bakes in the tag `bee build` used |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
-| `RAILWAY_VOLUME_MOUNT_PATH` | injected | Railway's volume mount path; the default for `JIMMY_ROOT` |
-| `RAILWAY_GIT_COMMIT_SHA` | injected | Railway sets this; the commit shown in `/status` |
-| `RAILWAY_PROJECT_ID` | injected | Railway sets this; marks the runtime context as Railway |
+| `RAILWAY_VOLUME_MOUNT_PATH` | — | fallback for `JIMMY_ROOT` on Railway |
+| `RAILWAY_GIT_COMMIT_SHA` | — | fallback for the commit on Railway |
 
 Jimmy only answers the ids in `JIMMY_ALLOWED_USER_IDS`, and with the list empty
 it answers nobody. That is the wall between a stranger who finds the bot and a
@@ -400,7 +399,7 @@ The image ships:
 
 Edit `mise.toml` and rebuild to change the versions.
 Tools added at runtime with `mise use -g` land in the image filesystem, not on
-`/data`, so they do not survive a Railway redeploy.
+`/data`, so they do not survive a container redeploy.
 
 `uv` is pointed at the volume — `UV_PYTHON_INSTALL_DIR=/data/uv/python`,
 `UV_CACHE_DIR=/data/uv/cache`, `UV_PYTHON_PREFERENCE=only-managed` — so
@@ -418,12 +417,10 @@ request; the workflow — reuse the clone, reset to `dev`, branch,
 `make fmt lint test`, push, `gh pr create --base dev` — is written for the agent
 in `## Proyectos y git` of `prompts/git.md`.
 
-Deploy branches: `dev` is the development line and backs the owner's instance,
-`main` is production and backs the personal instance. Every agent change lands
-on `dev`; promoting to `main` is a `dev → main` pull request the owner approves.
-So point each Railway service at the branch it should track — the personal
-service at `main`, the owner's at `dev` — and Railway redeploys that branch on
-push.
+Deploy branches: `dev` is the development line, `main` is production. Every
+agent change lands on `dev`; promoting to `main` is a `dev → main` pull request
+the owner approves. There is one running instance, and it is deployed from
+`main`.
 
 `GITHUB_TOKEN` is a fine-grained PAT for this repo with **Contents: RW** and
 **Pull requests: RW**.
@@ -462,25 +459,31 @@ git -C ../axe rev-parse origin/main   # copy the sha into Cargo.toml
 cargo build --release                 # refreshes Cargo.lock
 ```
 
-## Railway
+## Deploy
 
-Deploy as a worker (no exposed port). Railway builds from the `Dockerfile` and
-fetches axe from GitHub.
+Jimmy runs as a container on a VPS behind a shared Caddy edge, deployed with
+[`bee`](https://github.com/3-lines-studio/bee) (private). `bee.yaml` and
+`compose.yaml` describe it: host `contabo-internal`, domain
+`jimmy.3lines.studio`, `tls: http`, `strategy: restart` and
+`web.health_path: /login`.
 
-For persistence, attach a Railway volume to the service and choose a mount
-path. Railway passes the path as `RAILWAY_VOLUME_MOUNT_PATH`, and Jimmy uses it
-as `JIMMY_ROOT`, so the sessions and the workspace land on the volume. Set
-`JIMMY_ROOT` to override.
+`strategy: restart` is deliberate: Jimmy is one process that owns `/data` and
+polls the transports, so two slots would answer the same message twice.
 
-Attach the volume from the service dashboard (Volumes > New Volume) or the CLI:
+A release is `bee build --tag <sha>` and then `bee deploy --image ...@sha256:...`
+(or the same from the control plane). bee rsyncs the compose file, uploads
+`.env` from the operator machine with mode 0600, recreates the container and
+waits for the health and smoke checks; if they fail it restores the previous
+image. Nothing deploys on push, and `.github/workflows/release.yml` only
+publishes an image, on `main` and on `v*` tags.
 
-```sh
-railway volume add --mount-path /data
-```
+The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
+sessions and the workspace land there. Set `JIMMY_ROOT` to override.
 
-Caveats: a service can have only one volume, replicas cannot be used with a
-volume, and each redeploy briefly stops the service to avoid concurrent mounts.
-The image runs as root, so no `RAILWAY_RUN_UID` tuning is needed.
+The commit comes from the deploy tag, not from `.env`: `bee build` passes the
+tag it built as the `BEE_TAG` build argument, and the `Dockerfile` turns it into
+`JIMMY_COMMIT_SHA`, so a container always reports the image it was built from.
+An explicit `JIMMY_COMMIT_SHA` in `.env` still wins at runtime.
 
 ## Layout
 

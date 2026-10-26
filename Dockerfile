@@ -46,6 +46,9 @@ ENV UV_PYTHON_INSTALL_DIR=/data/uv/python
 ENV UV_CACHE_DIR=/data/uv/cache
 ENV UV_PYTHON_PREFERENCE=only-managed
 
+ARG BEE_TAG=""
+ENV JIMMY_COMMIT_SHA=$BEE_TAG
+
 RUN git config --system user.name "Jimmy" \
     && git config --system user.email "jimmy@3lines.studio" \
     && git config --system credential."https://github.com".helper '!gh auth git-credential' \

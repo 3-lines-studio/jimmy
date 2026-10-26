@@ -205,6 +205,12 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             "application/manifest+json",
             versioned(MANIFEST).as_bytes(),
         ),
+        ("GET", "/oauth/callback") => oauth_callback(web, &request, stream),
+        ("GET", "/mcp/start") => mcp_start(web, &request, stream),
+        ("GET", "/mcp/tools") => mcp_tools(web, &request, stream),
+        ("POST", "/mcp/call") => mcp_call(web, &request, stream),
+        ("GET", "/api/mcp") => mcp_list(web, &request, stream),
+        ("POST", "/api/mcp/disconnect") => mcp_disconnect(web, &request, stream),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -392,6 +398,278 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         ("Location", location.as_str()),
     ];
     http::respond(stream, 303, "text/plain", &headers, b"")
+}
+
+/// Arranca la conexión de un servidor MCP: descubre sus endpoints, registra el
+/// cliente (RFC 7591) y manda al proveedor con PKCE.
+fn mcp_start(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let (Some(name), Some(url), Some(account)) = (
+        request.param("name"),
+        request.param("url"),
+        request.param("account"),
+    ) else {
+        return http::send_error(stream, 400, "faltan name, url o account");
+    };
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let outcome = connect(web, name, url, account, &redirect);
+    let body = match outcome {
+        Ok(location) => {
+            return http::respond(
+                stream,
+                303,
+                "text/plain",
+                &[("Location", location.as_str())],
+                b"",
+            )
+        }
+        Err(error) => error,
+    };
+    http::send_error(stream, 400, &body)
+}
+
+fn connect(
+    web: &Arc<Web>,
+    name: &str,
+    url: &str,
+    account: &str,
+    redirect: &str,
+) -> Result<String, String> {
+    let discovery = crate::oauth::discover(url)?;
+    let registration = crate::oauth::register(&discovery.metadata, redirect, name)?;
+    let verifier = crate::random::hex(32);
+    let state = crate::random::hex(24);
+    let location = crate::oauth::authorize_url(
+        &discovery.metadata,
+        &registration,
+        redirect,
+        &state,
+        &crate::oauth::challenge(&verifier),
+        &discovery.scopes,
+        &discovery.resource,
+    );
+    crate::oauth::remember(
+        &state,
+        name,
+        account,
+        &verifier,
+        discovery.metadata.clone(),
+        registration.clone(),
+        &discovery.resource,
+    );
+    let Some(held) = crate::vault::store() else {
+        return Err("el vault no arrancó".to_string());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    crate::servers::remember(&store, name, account, &registration)?;
+    crate::servers::save(
+        &web.root,
+        &crate::servers::Server {
+            name: name.to_string(),
+            url: url.to_string(),
+            account: account.to_string(),
+            resource: discovery.resource.clone(),
+            issuer: discovery.metadata.issuer.clone(),
+            authorize: discovery.metadata.authorization_endpoint.clone(),
+            token: discovery.metadata.token_endpoint.clone(),
+            register: discovery.metadata.registration_endpoint.clone(),
+            client_id: registration.client_id.clone(),
+            scopes: discovery.scopes.clone(),
+        },
+    )?;
+    Ok(location)
+}
+
+/// La vuelta del proveedor: canjea el código con el verifier guardado y deja
+/// los tokens en el vault.
+fn oauth_callback(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    let state = request.param("state").unwrap_or_default();
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let page = match (request.param("code"), request.param("error")) {
+        (_, Some(error)) => ("No se conectó", error.to_string()),
+        (Some(code), None) => match crate::oauth::complete(state, code, &redirect) {
+            Ok(authorized) => match save(&authorized) {
+                Ok(()) => (
+                    "Listo",
+                    format!(
+                        "{} quedó conectado como {}",
+                        authorized.server, authorized.account
+                    ),
+                ),
+                Err(error) => ("No se pudo", error),
+            },
+            Err(error) => ("No se pudo", error),
+        },
+        (None, None) => ("No se pudo", "volvió sin código".to_string()),
+    };
+    http::respond(
+        stream,
+        200,
+        HTML,
+        &[],
+        page_html(page.0, &page.1).as_bytes(),
+    )
+}
+
+fn save(authorized: &crate::oauth::Authorized) -> Result<(), String> {
+    let Some(held) = crate::vault::store() else {
+        return Err("el vault no arrancó".to_string());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    crate::servers::save_tokens(
+        &store,
+        &authorized.server,
+        &authorized.account,
+        &authorized.tokens,
+    )
+}
+
+fn page_html(title: &str, message: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title>\
+<body style=\"font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem\">\
+<h1>{title}</h1><p>{message}</p><p><a href=\"/\">Volver a Jimmy</a></p>"
+    )
+}
+
+fn mcp_list(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let servers: Vec<serde_json::Value> = crate::servers::list(&web.root)
+        .into_iter()
+        .map(|server| {
+            serde_json::json!({
+                "name": server.name,
+                "url": server.url,
+                "account": server.account,
+            })
+        })
+        .collect();
+    http::send_json(stream, 200, &serde_json::json!({ "servers": servers }))
+}
+
+fn mcp_disconnect(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(name) = request.field("name") else {
+        return http::send_error(stream, 400, "falta el nombre");
+    };
+    let kept: Vec<crate::servers::Server> = crate::servers::list(&web.root)
+        .into_iter()
+        .filter(|server| server.name != name)
+        .collect();
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let store = held.lock().unwrap_or_else(|error| error.into_inner());
+    let removed = crate::servers::list(&web.root)
+        .into_iter()
+        .find(|server| server.name == name);
+    if let Some(server) = &removed {
+        for key in [
+            "OAUTH_ACCESS_TOKEN",
+            "OAUTH_REFRESH_TOKEN",
+            "OAUTH_EXPIRES_AT",
+            "OAUTH_CLIENT_ID",
+            "OAUTH_CLIENT_SECRET",
+        ] {
+            let _ = store.unset(&server.name, &server.account, key, "mcp");
+        }
+    }
+    if let Err(error) = crate::servers::write(&web.root, &kept) {
+        return http::send_error(stream, 400, &error);
+    }
+    http::send_json(stream, 200, &serde_json::json!({ "removed": name }))
+}
+
+/// Llama una tool de un servidor conectado.
+fn mcp_call(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let (Some(name), Some(tool)) = (request.field("server"), request.field("tool")) else {
+        return http::send_error(stream, 400, "faltan server o tool");
+    };
+    let Some(server) = crate::servers::find(&web.root, &name) else {
+        return http::send_error(stream, 404, "ese servidor no está conectado");
+    };
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let token = {
+        let store = held.lock().unwrap_or_else(|error| error.into_inner());
+        match crate::servers::access_token(&store, &server) {
+            Ok(token) => token,
+            Err(error) => return http::send_error(stream, 400, &error),
+        }
+    };
+    let arguments = request
+        .json()
+        .and_then(|json| json.get("arguments").map(ToString::to_string))
+        .unwrap_or_else(|| "{}".to_string());
+    let mut session = match crate::mcp::Session::connect(&server.url, &token) {
+        Ok(session) => session,
+        Err(error) => return http::send_error(stream, 502, &error),
+    };
+    match session.call_tool(&tool, &arguments) {
+        Ok(text) => http::send_json(stream, 200, &serde_json::json!({ "text": text })),
+        Err(error) => http::send_error(stream, 502, &error),
+    }
+}
+
+/// Lista las tools que expone un servidor conectado, para verificar la sesión.
+fn mcp_tools(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(name) = request.param("name") else {
+        return http::send_error(stream, 400, "falta el nombre");
+    };
+    let Some(server) = crate::servers::find(&web.root, name) else {
+        return http::send_error(stream, 404, "ese servidor no está conectado");
+    };
+    let Some(held) = crate::vault::store() else {
+        return http::send_error(stream, 503, crate::vault::message());
+    };
+    let token = {
+        let store = held.lock().unwrap_or_else(|error| error.into_inner());
+        match crate::servers::access_token(&store, &server) {
+            Ok(token) => token,
+            Err(error) => return http::send_error(stream, 400, &error),
+        }
+    };
+    let mut session = match crate::mcp::Session::connect(&server.url, &token) {
+        Ok(session) => session,
+        Err(error) => return http::send_error(stream, 502, &error),
+    };
+    match session.tools() {
+        Ok(tools) => {
+            let tools: Vec<serde_json::Value> = tools
+                .into_iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "schema": tool.schema,
+                    })
+                })
+                .collect();
+            http::send_json(stream, 200, &serde_json::json!({ "tools": tools }))
+        }
+        Err(error) => http::send_error(stream, 502, &error),
+    }
 }
 
 fn encode_path(value: &str) -> String {
@@ -3217,5 +3495,68 @@ done
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn starting_an_mcp_connection_needs_a_session_and_the_three_params() {
+        let server = start("mcp-start");
+
+        let anonymous = get(server.port, "/mcp/start?name=x&url=y&account=z", None);
+        assert!(anonymous.starts_with("HTTP/1.1 401"), "{anonymous}");
+
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let partial = get(server.port, "/mcp/start?name=x&url=y", Some(&cookie));
+        assert!(partial.starts_with("HTTP/1.1 400"), "{partial}");
+    }
+
+    #[test]
+    fn the_mcp_endpoints_answer_401_without_a_session() {
+        let server = start("mcp-guard");
+        for (method, path) in [
+            ("GET", "/api/mcp"),
+            ("GET", "/mcp/tools?name=x"),
+            ("POST", "/api/mcp/disconnect"),
+            ("POST", "/mcp/call"),
+        ] {
+            let response = if method == "GET" {
+                get(server.port, path, None)
+            } else {
+                post(server.port, path, "{}")
+            };
+            assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+        }
+    }
+
+    #[test]
+    fn a_callback_without_a_valid_state_answers_a_page() {
+        let server = start("oauth-callback");
+
+        let response = get(server.port, "/oauth/callback?code=abc&state=nope", None);
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("text/html"), "{response}");
+        assert!(response.contains("No se pudo"), "{response}");
+    }
+
+    #[test]
+    fn the_mcp_list_is_empty_until_something_is_saved() {
+        let server = start("mcp-list");
+        let cookie = login(server.port, "bob@ejemplo.com");
+
+        let response = get(server.port, "/api/mcp", Some(&cookie));
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = json_in(&response);
+        assert_eq!(body["servers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn listing_a_server_that_is_not_connected_is_a_404() {
+        let server = start("mcp-unknown");
+        let cookie = login(server.port, "bob@ejemplo.com");
+
+        let response = get(server.port, "/mcp/tools?name=nope", Some(&cookie));
+
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
     }
 }

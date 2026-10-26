@@ -477,26 +477,27 @@ runs the tests, builds and pushes the image, and the `deploy` job installs the
 streams the deploy log. Tags only build and publish; only `main` deploys. If the
 health or smoke check fails, bee restores the previous image.
 
-The deploy job reads two secrets and two variables from the repository:
+The deploy job reads secrets and variables from the repository:
 
 | name | what |
 | --- | --- |
 | `BEE_TOKEN` | secret; control plane API token used by the deploy |
 | `BEE_REPO_TOKEN` | secret; read-only token on the private `bee` repo, so the job can `go install` the CLI |
+| `JIMMY_ENV` | secret; the whole `.env`, written out before the push |
 | `BEE_SERVER` | variable; control plane URL |
 | `BEE_ORG` | variable; org slug |
 
 The deploy also needs the project registered in the control plane once
-(`bee projects create jimmy --host contabo-internal`) and one version pushed
-from a machine that has the `.env`.
+(`bee projects create jimmy --host contabo-internal`).
 
-`.env` is host-owned: `env.keep: true` in `bee.yaml` makes bee copy it to the
-host only when it is missing and never overwrite it, so neither the repository
-nor the CI job carries secrets. To change a secret, edit the file on the host and
-redeploy.
+The `.env` is built from `JIMMY_ENV` on every deploy, so the repository is the
+only place the secrets live. Changing one is `gh secret set JIMMY_ENV --repo
+3-lines-studio/jimmy < .env`; the next push to `main` carries it. The bundle
+with that file is stored as part of the version the control plane keeps, which
+is the price of having it there.
 
 The manual path still works for a machine that has the `.env`: `bee build --tag
-<sha>` and then `bee deploy --image ...@sha256:...`.
+<sha>`, then `bee deploy --image ...@sha256:...`.
 
 The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
 sessions and the workspace land there. Set `JIMMY_ROOT` to override.

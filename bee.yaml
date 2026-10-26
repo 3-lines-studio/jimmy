@@ -6,7 +6,6 @@ domains:
 compose: compose.yaml
 env:
   file: .env
-  keep: true
 # One process owns /data and polls the transports; two slots would answer twice.
 strategy: restart
 tls: http

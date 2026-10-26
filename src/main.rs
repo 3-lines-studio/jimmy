@@ -1,4 +1,5 @@
 mod agent;
+mod audio;
 mod auth;
 mod bus;
 mod conversations;
@@ -29,6 +30,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 use transport::slack;
+use transport::telegram;
 use transport::{Event, EventSource, Idle, Null, Session, Transport};
 
 const SYSTEM: &str = include_str!("../prompts/jimmy.md");
@@ -41,6 +43,7 @@ struct Config {
     root: PathBuf,
     workspace: String,
     allowed: Vec<String>,
+    transcribe_key: Option<String>,
 }
 
 impl Config {
@@ -68,6 +71,7 @@ impl Config {
             root,
             workspace,
             allowed,
+            transcribe_key: env("TRANSCRIBE_API_KEY"),
         })
     }
 }
@@ -240,14 +244,36 @@ fn main() {
             }
             let agent = agent.clone();
             let transport = transport.clone();
+            let transcribe_key = config.transcribe_key.clone();
             std::thread::spawn(move || {
                 let Event {
                     session,
                     author,
                     text,
                     image,
+                    voice,
                     ..
                 } = event;
+                let mut text = text;
+                if let Some((file_id, duration)) = voice {
+                    match transcribe_voice(
+                        transport.as_ref(),
+                        &session,
+                        &file_id,
+                        duration,
+                        transcribe_key,
+                    ) {
+                        Ok(transcript) => {
+                            transport.note(&session, &format!("🎤 {transcript}"));
+                            text = transcript;
+                        }
+                        Err(e) => {
+                            transport
+                                .note(&session, &format!("⚠️ no pude transcribir el audio: {e}"));
+                            return;
+                        }
+                    }
+                }
                 eprintln!("jimmy: {} -> {}", session.channel, clamp(&text, 80));
                 if let Some(reply) = agent.command(&session, &text) {
                     transport.note(&session, &reply);
@@ -408,6 +434,7 @@ pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
 
 fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
     match transport_name().as_str() {
+        "telegram" => Ok(Arc::new(telegram::Telegram::new(telegram_token()?))),
         "slack" => Ok(Arc::new(slack::Slack::new(
             slack_bot_token()?,
             slack_app_token()?,
@@ -419,6 +446,9 @@ fn transport_from_env() -> Result<Arc<dyn Transport>, String> {
 
 fn source_from_env() -> Result<Box<dyn EventSource>, String> {
     match transport_name().as_str() {
+        "telegram" => Ok(Box::new(telegram::Updates::new(telegram::Telegram::new(
+            telegram_token()?,
+        )))),
         "slack" => Ok(Box::new(slack::Events::new(slack::Slack::new(
             slack_bot_token()?,
             slack_app_token()?,
@@ -429,14 +459,11 @@ fn source_from_env() -> Result<Box<dyn EventSource>, String> {
 }
 
 fn transport_name() -> String {
-    match env("JIMMY_TRANSPORT").unwrap_or_default().as_str() {
-        "telegram" => {
-            eprintln!("jimmy: el transporte telegram ya no existe; sigo sin transporte");
-            "none".into()
-        }
-        "" => "none".into(),
-        other => other.to_string(),
-    }
+    env("JIMMY_TRANSPORT").unwrap_or_else(|| "none".into())
+}
+
+fn telegram_token() -> Result<String, String> {
+    env("TELEGRAM_BOT_TOKEN").ok_or("TELEGRAM_BOT_TOKEN no está configurado".into())
 }
 
 fn slack_bot_token() -> Result<String, String> {
@@ -578,6 +605,38 @@ fn skill_command(args: &[String]) -> i32 {
             2
         }
     }
+}
+
+fn transcribe_voice(
+    transport: &dyn Transport,
+    session: &Session,
+    file_id: &str,
+    duration: u64,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    let Some(api_key) = api_key else {
+        return Err("falta TRANSCRIBE_API_KEY".into());
+    };
+    let (file_path, data) = transport.download(file_id)?;
+    let ext = audio_extension(&file_path);
+    let name = format!(
+        "jimmy-voice-{}-{}.{ext}",
+        session.channel,
+        axe::session::now_ms()
+    );
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+    let result = audio::transcribe(&api_key, &path, duration);
+    let _ = std::fs::remove_file(&path);
+    result
+}
+
+fn audio_extension(file_path: &str) -> &str {
+    Path::new(file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| *ext != "oga")
+        .unwrap_or("ogg")
 }
 
 fn fetch_image(

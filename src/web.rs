@@ -38,6 +38,8 @@ const TOOL: &str = include_str!("../web/tool.js");
 const AVATAR: &str = include_str!("../web/avatar.js");
 const VAULT_JS: &str = include_str!("../web/vault.js");
 const VAULT_CSS: &str = include_str!("../web/vault.css");
+const MCP_JS: &str = include_str!("../web/mcp.js");
+const MCP_CSS: &str = include_str!("../web/mcp.css");
 const AVATAR_STYLE: &str = include_str!("../web/avatar.css");
 const ICON: &str = include_str!("../web/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
@@ -197,6 +199,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/avatar.js") => asset(stream, JS, AVATAR.as_bytes()),
         ("GET", "/vault.js") => asset(stream, JS, VAULT_JS.as_bytes()),
         ("GET", "/vault.css") => asset(stream, CSS, VAULT_CSS.as_bytes()),
+        ("GET", "/mcp.js") => asset(stream, JS, MCP_JS.as_bytes()),
+        ("GET", "/mcp.css") => asset(stream, CSS, MCP_CSS.as_bytes()),
         ("GET", "/icon.svg") => asset(stream, "image/svg+xml", ICON.as_bytes()),
         ("GET", "/icon-192.png") => http::respond(stream, 200, "image/png", &[], ICON_192),
         ("GET", "/icon-512.png") => http::respond(stream, 200, "image/png", &[], ICON_512),
@@ -333,6 +337,8 @@ fn versioned(page: &str) -> String {
         .replace("/style.css", &format!("/style.css?v={version}"))
         .replace("/avatar.css", &format!("/avatar.css?v={version}"))
         .replace("/vault.css", &format!("/vault.css?v={version}"))
+        .replace("/mcp.js", &format!("/mcp.js?v={version}"))
+        .replace("/mcp.css", &format!("/mcp.css?v={version}"))
         .replace("/icon.svg", &format!("/icon.svg?v={version}"))
         .replace("/icon-192.png", &format!("/icon-192.png?v={version}"))
         .replace(

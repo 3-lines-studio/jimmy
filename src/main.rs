@@ -105,7 +105,7 @@ fn heimdall_command(name: &str) -> i32 {
     }
 }
 
-fn root_from_env() -> PathBuf {
+pub(crate) fn root_from_env() -> PathBuf {
     PathBuf::from(
         env("JIMMY_ROOT")
             .or_else(|| env("RAILWAY_VOLUME_MOUNT_PATH"))

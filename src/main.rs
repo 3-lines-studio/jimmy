@@ -9,12 +9,15 @@ mod log;
 mod machine;
 mod mail;
 mod markdown;
+mod mcp;
 mod media;
+mod oauth;
 mod pool;
 mod preview;
 mod protocol;
 mod random;
 mod schedule;
+mod servers;
 mod skill;
 mod store;
 mod tools;
@@ -98,7 +101,7 @@ fn heimdall_command(name: &str) -> i32 {
     }
 }
 
-fn root_from_env() -> PathBuf {
+pub(crate) fn root_from_env() -> PathBuf {
     PathBuf::from(
         env("JIMMY_ROOT")
             .or_else(|| env("RAILWAY_VOLUME_MOUNT_PATH"))

@@ -168,7 +168,7 @@ and it writes a file. The tick picks it up without a restart. An older single
 | `JIMMY_TZ_OFFSET` | `0` | hours added to UTC for `schedule.toml` times |
 | `JIMMY_PROMPT` | the default list of fragments | comma-separated fragment names, in order |
 | `JIMMY_VARS` | empty | comma-separated `clave=valor` pairs for fragment placeholders; the shipped fragments need `usuario` and `asistente`, or jimmy refuses to start |
-| `JIMMY_COMMIT_SHA` | the `BEE_TAG` build arg | commit shown in `/status`, in the runtime context and in the versioned asset URLs; the image bakes in the tag `bee build` used |
+| `JIMMY_COMMIT_SHA` | `/etc/jimmy-version` | commit shown in `/status`, in the runtime context and in the versioned asset URLs; the `Dockerfile` bakes it in from `.git` |
 | `GITHUB_TOKEN` | empty | fine-grained PAT so the agent can clone/push and open PRs |
 | `RAILWAY_VOLUME_MOUNT_PATH` | — | fallback for `JIMMY_ROOT` on Railway |
 | `RAILWAY_GIT_COMMIT_SHA` | — | fallback for the commit on Railway |
@@ -480,10 +480,11 @@ publishes an image, on `main` and on `v*` tags.
 The volume is mounted at `/data` and Jimmy uses it as `JIMMY_ROOT`, so the
 sessions and the workspace land there. Set `JIMMY_ROOT` to override.
 
-The commit comes from the deploy tag, not from `.env`: `bee build` passes the
-tag it built as the `BEE_TAG` build argument, and the `Dockerfile` turns it into
-`JIMMY_COMMIT_SHA`, so a container always reports the image it was built from.
-An explicit `JIMMY_COMMIT_SHA` in `.env` still wins at runtime.
+The commit comes from the image, not from `.env`: the `Dockerfile` reads it from
+`.git` during the build (`git rev-parse --short HEAD`, through a buildkit bind
+mount, so the build context needs `.git`) and writes `/etc/jimmy-version`, which
+Jimmy uses when `JIMMY_COMMIT_SHA` is unset. An explicit `JIMMY_COMMIT_SHA` in
+`.env` still wins at runtime.
 
 ## Layout
 

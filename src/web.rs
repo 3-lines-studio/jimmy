@@ -304,9 +304,7 @@ fn app_page(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::i
 /// Los assets llevan la versión en la URL: cada deploy cambia la URL, así que ni
 /// un proxy ni el navegador pueden seguir sirviendo los viejos.
 fn versioned(page: &str) -> String {
-    let version = crate::env("JIMMY_COMMIT_SHA")
-        .or_else(|| crate::env("RAILWAY_GIT_COMMIT_SHA"))
-        .unwrap_or_default();
+    let version = crate::agent::commit_sha().unwrap_or_default();
     page.replace("/app.js", &format!("/app.js?v={version}"))
         .replace("/files.js", &format!("/files.js?v={version}"))
         .replace("/machine.js", &format!("/machine.js?v={version}"))

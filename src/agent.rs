@@ -565,8 +565,7 @@ impl Agent {
         let used = session::latest_context_tokens(&entries).unwrap_or(0);
         let window = self.context_window.unwrap_or(0);
         let percent = used.saturating_mul(100).checked_div(window).unwrap_or(0);
-        let commit = env("JIMMY_COMMIT_SHA")
-            .or_else(|| env("RAILWAY_GIT_COMMIT_SHA"))
+        let commit = commit_sha()
             .map(|sha| sha.chars().take(7).collect::<String>())
             .unwrap_or_else(|| "?".into());
         format!(
@@ -894,7 +893,7 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
-    if let Some(sha) = env("JIMMY_COMMIT_SHA").or_else(|| env("RAILWAY_GIT_COMMIT_SHA")) {
+    if let Some(sha) = commit_sha() {
         let short: String = sha.chars().take(7).collect();
         out.push_str(&format!("- Commit en ejecución: {short}\n"));
     }
@@ -909,6 +908,23 @@ fn runtime_context(model: &str, base: &str, root: &Path, workspace: &str, cwd: &
 
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+const VERSION_FILE: &str = "/etc/jimmy-version";
+
+pub fn commit_sha() -> Option<String> {
+    env("JIMMY_COMMIT_SHA")
+        .or_else(|| env("RAILWAY_GIT_COMMIT_SHA"))
+        .or_else(|| read_version(Path::new(VERSION_FILE)))
+}
+
+fn read_version(path: &Path) -> Option<String> {
+    let value = std::fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 fn compact(
@@ -1104,6 +1120,19 @@ mod tests {
             name: "bash".into(),
             arguments: "{}".into(),
         }
+    }
+
+    #[test]
+    fn the_baked_version_file_holds_the_commit() {
+        let dir = std::env::temp_dir().join(format!("jimmy-version-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("version");
+        std::fs::write(&path, "a36a5b3\n").unwrap();
+        assert_eq!(read_version(&path).unwrap(), "a36a5b3");
+        std::fs::write(&path, "  \n").unwrap();
+        assert!(read_version(&path).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(read_version(&path).is_none());
     }
 
     #[test]

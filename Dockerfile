@@ -68,6 +68,8 @@ COPY --chmod=0755 bin/recall /usr/local/bin/recall
 COPY --chmod=0755 bin/browse /usr/local/bin/browse
 COPY --chmod=0755 bin/stats /usr/local/bin/stats
 COPY --chmod=0755 bin/gen-image /usr/local/bin/gen-image
+RUN --mount=type=bind,source=.git,target=/build/.git \
+    git --git-dir=/build/.git rev-parse --short HEAD > /etc/jimmy-version
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["jimmy"]

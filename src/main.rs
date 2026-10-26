@@ -10,6 +10,7 @@ mod machine;
 mod mail;
 mod markdown;
 mod media;
+mod oauth;
 mod pool;
 mod preview;
 mod protocol;

@@ -205,6 +205,8 @@ fn handle(web: &Arc<Web>, stream: &mut TcpStream) -> std::io::Result<()> {
             "application/manifest+json",
             versioned(MANIFEST).as_bytes(),
         ),
+        ("GET", "/oauth/callback") => oauth_callback(web, &request, stream),
+        ("GET", "/oauth/start") => oauth_start(web, &request, stream),
         ("POST", "/api/login") => login(web, &request, stream),
         ("GET", "/auth") => auth_link(web, &request, stream),
         ("POST", "/api/logout") => logout(web, &request, stream),
@@ -392,6 +394,68 @@ fn auth_link(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::
         ("Location", location.as_str()),
     ];
     http::respond(stream, 303, "text/plain", &headers, b"")
+}
+
+/// Arranca el baile: guarda el state y manda al proveedor. Pide sesión porque
+/// el que conecta una cuenta es alguien con la web abierta, no el callback.
+fn oauth_start(web: &Arc<Web>, request: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    if web.user(request).is_none() {
+        return http::send_error(stream, 401, "no estás adentro");
+    }
+    let Some(provider) = request.param("provider") else {
+        return http::send_error(stream, 400, "falta el proveedor");
+    };
+    let Some(account) = request.param("account") else {
+        return http::send_error(stream, 400, "falta la cuenta");
+    };
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let Ok(url) = crate::oauth::start(provider, account, &redirect) else {
+        return http::send_error(stream, 400, "no pude armar la autorización");
+    };
+    http::respond(
+        stream,
+        303,
+        "text/plain",
+        &[("Location", url.as_str())],
+        b"",
+    )
+}
+
+/// La vuelta del proveedor: canjea el code, guarda los tokens en el vault y le
+/// muestra a la persona una página chica, porque acá se acaba el viaje.
+fn oauth_callback(
+    web: &Arc<Web>,
+    request: &Request,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    let state = request.param("state").unwrap_or_default();
+    let redirect = format!("{}/oauth/callback", web.base_url(request));
+    let page = match (request.param("code"), request.param("error")) {
+        (_, Some(error)) => ("No se conectó", error.to_string()),
+        (Some(code), None) => match crate::oauth::callback(code, state, &redirect) {
+            Ok((provider, account)) => (
+                "Listo",
+                format!("{provider} quedó conectado como {account}"),
+            ),
+            Err(error) => ("No se pudo", error),
+        },
+        (None, None) => ("No se pudo", "volvió sin código".to_string()),
+    };
+    http::respond(
+        stream,
+        200,
+        HTML,
+        &[],
+        oauth_page(page.0, &page.1).as_bytes(),
+    )
+}
+
+fn oauth_page(title: &str, message: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{title}</title>\
+<body style=\"font:16px system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem\">\
+<h1>{title}</h1><p>{message}</p><p><a href=\"/\">Volver a Jimmy</a></p>"
+    )
 }
 
 fn encode_path(value: &str) -> String {
@@ -3217,5 +3281,40 @@ done
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn starting_a_connection_needs_a_session() {
+        let server = start("oauth-start");
+
+        let anonymous = get(
+            server.port,
+            "/oauth/start?provider=notion&account=manu",
+            None,
+        );
+        assert!(anonymous.starts_with("HTTP/1.1 401"), "{anonymous}");
+
+        let cookie = login(server.port, "bob@ejemplo.com");
+        let missing = get(server.port, "/oauth/start?provider=notion", Some(&cookie));
+        assert!(missing.starts_with("HTTP/1.1 400"), "{missing}");
+
+        let unknown = get(
+            server.port,
+            "/oauth/start?provider=loquesea&account=manu",
+            Some(&cookie),
+        );
+        assert!(unknown.starts_with("HTTP/1.1 400"), "{unknown}");
+    }
+
+    #[test]
+    fn a_callback_without_a_valid_state_answers_a_page_and_does_not_blow_up() {
+        let server = start("oauth-callback");
+
+        let response = get(server.port, "/oauth/callback?code=abc&state=nope", None);
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("text/html"), "{response}");
+        assert!(response.contains("No se pudo"), "{response}");
+        assert!(response.contains("state"), "{response}");
     }
 }
